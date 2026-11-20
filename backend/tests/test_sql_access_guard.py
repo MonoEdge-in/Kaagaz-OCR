@@ -63,7 +63,6 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/autofile.py", "_PRE_CHECK"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
     ("db/autofile.py", "_STATE"): (SHARED_WITH_WORKER, f"auto-filing; {_UPLOAD}"),
     ("db/autofile.py", "_BY_KEY"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
-    ("db/autofile.py", "_BY_NAME"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
     ("db/autofile.py", "_DEPARTMENTS"): (SHARED_WITH_WORKER, "auto-filing finds its department"),
     ("db/autofile.py", "_SAME_NUMBER"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
     ("db/autofile.py", "_CHILD"): (SHARED_WITH_WORKER, "auto-filing finds its folder"),
@@ -91,7 +90,11 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/documents.py", "REFUSED_ALONE"): (DUPLICATE_LOOKUP, "a refused copy is replaced, not a duplicate"),
     ("db/documents.py", "_REFUSED_COPY"): (DUPLICATE_LOOKUP, "a refused copy is replaced, not a duplicate"),
     ("db/documents.py", "_READY_STATE"): (SHARED_WITH_WORKER, "the pipeline's store; the upload's own row"),
-    ("db/documents.py", "_READ_BEFORE"): (SHARED_WITH_WORKER, "the pipeline's store; the upload's own row"),
+    # Changed on purpose (#713): Stop reads it too, after _document_or_404.
+    ("db/documents.py", "_READ_BEFORE"): (
+        SHARED_WITH_WORKER,
+        "the pipeline's store; the upload's own row; POST /documents/{id}/stop: _document_or_404 first",
+    ),
     ("db/documents.py", "_REPROCESS_STATE"): (
         WRITE_AFTER_CHECK,
         "reprocess and read again: _document_or_404 first",
@@ -99,6 +102,12 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/documents.py", "_ENSEMBLE_RUNNING"): (
         SHARED_WITH_WORKER,
         "reprocess and read again: _document_or_404 first",
+    ),
+    # Changed on purpose (#713): Stop's change returns the rows it stopped (RETURNING id), for Stop and
+    # Move to Trash (DELETE /documents/{id}, under the family lock after _document_or_404).
+    ("db/trash.py", "_STOP_READING"): (
+        WRITE_AFTER_CHECK,
+        "POST /documents/{id}/stop and DELETE /documents/{id}: _document_or_404 first",
     ),
     ("db/documents.py", "_REQUEST_PAGE"): (
         WRITE_AFTER_CHECK,
@@ -435,8 +444,13 @@ NOT_EXISTS_CHECKED: dict[tuple[str, str], str] = {
     ("answering/fixed_queries.py", "_EXTREME_VALUE"): "SAME:the visible document's own invoice",
     ("answering/fixed_queries.py", "_TOP_GROUP"): "SAME:the visible document's own invoice",
     ("answering/hard_to_read.py", "_WORD_MARKS"): "SAME:the visible document's own word changes",
+    # Changed on purpose (PRD 9 F-17, #673): an Ensemble line is open while no change in force has its key.
+    ("db/listing.py", "_NEEDS_ATTENTION"): "SAME:the visible document's own word changes",
     ("db/chat.py", "MARKS"): "SAME:the visible document's own learning removals",
     ("db/documents.py", "REFUSED_ALONE"): _ALL_OR_NONE,
+    # Changed on purpose (#713): Stop and Move to Trash ask whether the file was read before (a ready
+    # run of its own), after the route found it through the view.
+    ("db/trash.py", "_STOP_READING"): "SAME:the visible document's own runs",
     ("db/folder_uploads.py", "_INSERT_LEVEL"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
     ("db/folders.py", "_FREE"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
     ("db/folders.py", "_MOVE_FREE"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
@@ -462,6 +476,9 @@ ACCESS_READERS = {
     # Changed on purpose (#648, after PR 9): a link's versions, each seen first (kaagaz_link_families), with
     # whom each is given to, for its count and Undo; Accept's Undo taking back the gifts the join copied.
     ("db/version_links.py", "_STATE"), ("db/versions.py", "_JOIN_GIFTS"),
+    # Changed on purpose (#707): My access, the person's own gifts (s.user_id = the caller), on files
+    # visible_documents shows them, with who gave each.
+    ("db/access.py", "_GIVEN_TO_ME"),
 }  # fmt: skip
 PR9: dict[tuple[str, str], str] = {
     # Changed on purpose (#648, after PR 9): Undo's name check and the Versions tab's Undo hint.
@@ -517,10 +534,6 @@ PR9: dict[tuple[str, str], str] = {
     (
         "db/autofile.py",
         "_BY_KEY",
-    ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
-    (
-        "db/autofile.py",
-        "_BY_NAME",
     ): "FEWER_OK:auto-filing runs as the worker; a folder hidden from a person is not reused (Q12)",
     (
         "db/autofile.py",

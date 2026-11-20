@@ -345,14 +345,18 @@ def test_day_one_never_runs_the_given_or_lock_lookups(db: Database) -> None:
 VIEW_READERS = {
     # Changed on purpose (#601): the access API's writes, and 10b's Departments tab and one-time card.
     # Changed on purpose (#601, PR 10c): in_department (_ME); a folder holding what the person can't see.
+    # Changed on purpose (#707): My access, the files given to the caller that they can still see.
     "db/access.py": {
-        "_DEPARTMENTS", "_DEPARTMENT_LIST", "_HOLDS_PRIVATE", "_KEEPS", "_ME", "_NAMED_ON", "_PLACE",
+        "_DEPARTMENTS", "_DEPARTMENT_LIST", "_GIVEN_TO_ME", "_HOLDS_PRIVATE", "_KEEPS", "_ME", "_NAMED_ON",
+        "_PLACE",
     },
     # PR 8 (#602): Ask, reached from the API only (the SQL guard's worker test).
     "answering/clarify.py": {"_ANY_KEYS", "_CANDIDATES", "_NEAR", "_PICKED_PAGE"},
     "answering/exhaustive.py": {"_IN_SCOPE", "_PIECES"},
     # Changed on purpose (#644): package K's focus profile and related documents, through the view.
     "answering/focus.py": {"_MATCHES", "_PROFILE"},
+    # Changed on purpose (#718): an answer's folder paths, reached from Ask (the API) only.
+    "answering/sources.py": {"_DOCUMENT_PATHS"},
     "answering/fixed_queries.py": {
         "_AVAILABLE_FIELDS", "_COUNT_DOCUMENTS", "_COUNT_INVOICES", "_EXTREME_VALUE", "_FIGURES",
         "_TOP_GROUP", "_VALUE_REFS",
@@ -362,6 +366,9 @@ VIEW_READERS = {
     "answering/owners.py": {"_EVERY_RECORD", "_KEYED", "_OWNED", "_RESOLVE", "_SHARES_AS_PRINTED"},
     "answering/unchecked.py": {"_CARD_DOCUMENTS"},
     "db/audit.py": {"_FOLDER_PATHS", "_OF_FAMILY", "_SEEN"},
+    # Changed on purpose (PRD 9 F-02, #681): may Kaagaz sort, i.e. a department the person sees; from the
+    # upload limits API and the WhatsApp channel, as the person; never a worker (the SQL guard's worker test).
+    "db/autofile.py": {"_APPLIES"},
     # Changed on purpose (#605): who may open a locked file (Ask's fixed line), and a route's lock check.
     "db/chat.py": {
         "MARKS", "_DOCUMENT_QUESTIONS", "add_pin", "document_states", "live_document_names",
@@ -537,6 +544,7 @@ _ROUTES: list[tuple[str, str, Any]] = [
     ("GET", "/api/documents/{d}/ensemble/estimate?scope=document", None),
     ("GET", "/api/documents/{d}/compare?with={v}", None),
     ("POST", "/api/documents/{d}/reprocess", None),
+    ("POST", "/api/documents/{d}/stop", None),  # Changed on purpose (#713): Stop
     ("POST", "/api/documents/{d}/pages/1/read-again", None),
     ("POST", "/api/documents/{d}/pages/1/accept", None),
     ("POST", "/api/documents/{d}/autofile/undo", None),
@@ -561,6 +569,8 @@ _ROUTES: list[tuple[str, str, Any]] = [
     ("DELETE", "/api/documents/{d}/my-story?user_id={u}", None),
     # Changed on purpose (#600): page turns saved for everyone.
     ("PATCH", "/api/documents/{d}/page-turns", {"changes": [{"page_no": 1, "turn": 90}], "user_id": "{u}"}),
+    # Changed on purpose (#709): Straighten pages reads the page pictures.
+    ("POST", "/api/documents/{d}/straighten", None),
     ("DELETE", "/api/documents/{d}", None),
 ]
 _KEY = "0" * 64

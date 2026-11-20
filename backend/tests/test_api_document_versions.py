@@ -124,6 +124,11 @@ def test_a_duplicate_of_a_document_in_trash_says_so_on_both_routes(db: Database)
     signed = api.new_signed()
     binned = _upload(signed, PDF_BYTES).json()
     assert binned["in_trash"] is False  # a new file
+    # Changed on purpose (PRD 9 F-03): a copy in Trash that was never read is replaced, so this one was read.
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(
+            text("UPDATE documents SET status = 'ready' WHERE id = :d"), {"d": binned["document"]["id"]}
+        )
     _trash(db, signed, binned["document"]["id"])
     live = api.add_document(signed.customer_id)
 

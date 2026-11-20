@@ -48,6 +48,8 @@ export const LINK_TEXT = {
   connection: "Check your connection, then try again.",
   // The library and the Versions tab (the row menu's words are in documents/library.ts).
   addVersion: "Add an older or newer version",
+  // #690: said beside the greyed-out action, never hidden without a word (mayLinkVersions).
+  onlyManagers: "Only Management, or an Admin in an admin session, can link versions.",
   undoLink: "Undo linking",
   bulk: (n: number) => `Link as versions (${n})`,
   // The Possible versions view (V17) and the Kept apart list (V18).
@@ -97,11 +99,12 @@ export function mayLinkVersions(me: Me): boolean {
   return me.user.role === "admin" ? me.session.scope === "admin" : me.access?.management === true;
 }
 
-/** A file in the link dialog: `date` is its own date, else the upload date (ISO). */
+/** A file in the link dialog: `date` is its own date, else the upload date (ISO); `uploaded` its upload date. */
 export interface LinkFile {
   id: string;
   name: string;
   date: string;
+  uploaded?: string;
   familyId?: string;
   folderId?: string | null;
   pages?: number | null;
@@ -111,6 +114,7 @@ export const fromSummary = (document: DocumentSummary): LinkFile => ({
   id: document.id,
   name: document.display_name,
   date: document.document_date ?? document.created_at,
+  uploaded: document.created_at,
   familyId: document.family_id,
   folderId: document.folder_id,
   pages: document.page_count,
@@ -120,6 +124,7 @@ export const fromGroupFile = (file: VersionGroupFile): LinkFile => ({
   id: file.id,
   name: file.name,
   date: file.document_date ?? file.uploaded_at,
+  uploaded: file.uploaded_at,
   folderId: file.folder_id,
   pages: file.page_count,
 });
@@ -143,6 +148,12 @@ export function groupLink(
 export function byDate<T extends Pick<LinkFile, "date">>(files: readonly T[]): T[] {
   const when = (file: T) => Date.parse(file.date) || 0;
   return files.map((file, at) => ({ file, at })).sort((a, b) => when(a.file) - when(b.file) || a.at - b.at).map(({ file }) => file);
+}
+
+/** PRD 9 F-07: the file uploaded last (else by its date); of two at once, the later in the list. */
+export function newestUpload<T extends Pick<LinkFile, "date" | "uploaded">>(files: readonly T[]): T | undefined {
+  const when = (file: T) => Date.parse(file.uploaded ?? file.date) || 0;
+  return files.reduce<T | undefined>((newest, file) => (newest && when(newest) > when(file) ? newest : file), undefined);
 }
 
 /** The order with `id` moved one place up (-1) or down (1); unchanged at either end. */

@@ -12,6 +12,7 @@ import {
   isBusy,
   createSlots,
   queueReducer,
+  skippedText,
 } from "@/components/documents/uploadQueue";
 import type { UploadEntry } from "@/components/documents/uploadQueue";
 import type { DocumentSummary } from "@/lib/types";
@@ -145,5 +146,50 @@ describe("following a stored file (U10)", () => {
     const after = queueReducer(queue, { type: "batch", batchId: "b1", documents: [doc("d1"), doc("d2")], add: true });
     expect(after.entries.map((row) => row.key)).toEqual(["a", "document-d2"]);
     expect(after.entries[1]).toMatchObject({ name: "d2.pdf", size: 1000, pages: 2, batchId: "b1" });
+  });
+
+  it("never brings back a row Clear finished took out, while the drop's other files go on (#688)", () => {
+    const queue = queueReducer(EMPTY_QUEUE, {
+      type: "add",
+      entries: [
+        entry("a", { kind: "done", documentId: "d1", document: doc("d1") }),
+        entry("b", { kind: "reading", documentId: "d2", document: doc("d2", { status: "received" }) }),
+      ],
+    });
+    const cleared = queueReducer(queue, { type: "clear" });
+    expect(cleared.entries.map((row) => row.key)).toEqual(["b"]);
+    expect(cleared.cleared).toEqual(["d1"]);
+    const documents = [doc("d1"), doc("d2", { status: "received" }), doc("d3", { status: "received" })];
+    const asked = queueReducer(cleared, { type: "batch", batchId: "b1", documents, add: true });
+    expect(asked.entries.map((row) => row.key)).toEqual(["b", "document-d3"]); // d3 is new; d1 stays gone
+  });
+});
+
+describe("removing a row not uploaded (PRD 9 F-04)", () => {
+  it("takes out that failed or refused row only, and leaves every other row", () => {
+    const queue = {
+      ...EMPTY_QUEUE,
+      entries: [
+        entry("refused", { kind: "error", message: "Kaagaz can’t read .docm files." }),
+        entry("lost", { kind: "error", message: "Not sent.", retry: true }),
+        entry("sent", { kind: "done", documentId: "d1" }),
+        entry("going", { kind: "sending", fraction: 0.5 }),
+      ],
+    };
+    const once = queueReducer(queue, { type: "remove", key: "refused" });
+    expect(once.entries.map((row) => row.key)).toEqual(["lost", "sent", "going"]);
+    const twice = queueReducer(once, { type: "remove", key: "lost" });
+    expect(twice.entries.map((row) => row.key)).toEqual(["sent", "going"]);
+    for (const key of ["sent", "going"]) expect(queueReducer(twice, { type: "remove", key }).entries).toEqual(twice.entries);
+  });
+});
+
+describe("the files a pick left out (PRD 9 F-04)", () => {
+  it("names them once, up to three, and says nothing when none was left out", () => {
+    expect(skippedText([])).toBe("");
+    expect(skippedText([".DS_Store"])).toBe("Skipped 1 hidden or system file (.DS_Store).");
+    expect(skippedText([".DS_Store", "Thumbs.db", "desktop.ini", "~$a.docx"])).toBe(
+      "Skipped 4 hidden or system files (.DS_Store, Thumbs.db, desktop.ini, …).",
+    );
   });
 });

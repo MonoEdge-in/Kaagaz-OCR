@@ -134,6 +134,13 @@
   A queued document is no longer failed, so a second run never queues it again. Ids and counts only.
   On a server: ``$DC run --rm migrate python -m kaagaz.cli read-again-failed [--apply]``; migrate
   has the owner's login and, in docker-compose.prod.yml, the SQS env that ``--apply`` queues to.
+* ``regrade-pages [--customer ID] [--apply]`` (PRD 9 F-11, D5): pages read before unpinned lines
+  alone graded a page good still say uncertain. It grades each uncertain page's stored issues and
+  counts again (``page_quality.grade``; no model call, nothing read), out of Trash and not kept as
+  is; without ``--apply`` it lists each customer's pages that would turn good, by document; with it,
+  it sets those good, REGRADE_BATCH a transaction, each customer in its own with the customer set
+  first. A page already good is never listed again. Ids and counts only. On a server:
+  ``$DC run --rm migrate python -m kaagaz.cli regrade-pages [--apply]``.
 * ``check-access`` (PRD 7, #590): works out every live folder's and live document's department
   and private folder again from the folder tree, each customer in its own ``db.customer()``, and
   prints one line for each stored value that differs, then one for each member row whose folder
@@ -241,6 +248,7 @@ from kaagaz.reading.ocr import (
     is_word_mark,
     values_of,
 )
+from kaagaz.reading.page_quality import grade
 from kaagaz.reading.rapid_pool import shared_pool
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
@@ -266,6 +274,8 @@ REEMBED_PROBE = "probe"
 REEMBED_STORIES = 32
 # read-again-failed (#667): the documents one transaction queues.
 READ_AGAIN_BATCH = 50
+# regrade-pages (PRD 9 F-11): the pages one transaction grades again.
+REGRADE_BATCH = 500
 
 # Made-up companies on the reserved ".example" domain.
 DEMO_CUSTOMERS = (
@@ -408,6 +418,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     again.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
     again.add_argument("--apply", action="store_true", help="queue them (default: only list them)")
+
+    regrade = commands.add_parser(
+        "regrade-pages",
+        help="grade good the uncertain pages whose only problem is unpinned lines (PRD 9 F-11; no model"
+        " call; on a server, run it in migrate: $DC run --rm migrate python -m kaagaz.cli regrade-pages)",
+    )
+    regrade.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
+    regrade.add_argument("--apply", action="store_true", help="grade them good (default: only list them)")
 
     commands.add_parser("check-access", help="each stored department and private folder against the tree")
 
@@ -1010,6 +1028,73 @@ def _read_again_failed(
         out.write(f"{_documents(total)} queued\n")
     else:
         out.write(f"{_documents(total)}, {pages} scanned pages, not queued (add --apply)\n")
+
+
+# regrade-pages (module notes): one customer's uncertain pages with an unpinned line, out of Trash and
+# not kept as is, by document and page; then one page set good while it is still uncertain.
+_UNPINNED_PAGES = text(
+    "SELECT p.document_id, p.page_no, p.read_issues, p.unsure_words, p.illegible_words FROM pages p"
+    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+    " WHERE p.customer_id = :c AND p.read_quality = 'uncertain' AND p.accepted_at IS NULL"
+    " AND 'unpinned' = ANY(p.read_issues) AND d.deleted_at IS NULL ORDER BY p.document_id, p.page_no"
+)
+_SET_GOOD = text(
+    "UPDATE pages SET read_quality = 'good' WHERE customer_id = :c AND document_id = :d AND page_no = :p"
+    " AND read_quality = 'uncertain'"
+)
+
+
+def _pages(count: int) -> str:
+    return f"{count} page{'' if count == 1 else 's'}"
+
+
+def _regrade_pages(db: Database, customer_id: str | None, apply: bool, out: TextIO) -> None:
+    """regrade-pages: each customer's uncertain pages (``_UNPINNED_PAGES``) that ``grade`` now
+    grades good from their stored issues and counts, listed by document, or set good REGRADE_BATCH a
+    transaction; then a total. O(P) statements for P pages set good."""
+    if customer_id is None:
+        with db.system() as conn:
+            customers = indexing.customer_ids(conn)
+    else:
+        try:
+            customers = [str(uuid.UUID(customer_id))]
+        except ValueError:
+            raise CliError("the customer id is not valid") from None
+    total = 0
+    for customer in customers:
+        with db.customer(customer) as conn:
+            rows = conn.execute(_UNPINNED_PAGES, {"c": customer}).all()
+        good = [
+            row
+            for row in rows
+            if grade(
+                row.read_issues,
+                model_quality=None,
+                words=0,
+                illegible_words=row.illegible_words,
+                unsure_words=row.unsure_words,
+            )
+            == "good"
+        ]
+        if not good:
+            continue
+        if not apply:
+            out.write(f"customer {customer}: {_pages(len(good))} to grade good\n")
+            documents = Counter(str(row.document_id) for row in good)
+            out.writelines(
+                f"  document {document}: {_pages(count)}\n" for document, count in documents.items()
+            )
+            total += len(good)
+            continue
+        changed = 0
+        for start in range(0, len(good), REGRADE_BATCH):
+            with db.customer(customer) as conn:
+                for row in good[start:][:REGRADE_BATCH]:
+                    params = {"c": customer, "d": row.document_id, "p": row.page_no}
+                    changed += conn.execute(_SET_GOOD, params).rowcount
+        out.write(f"customer {customer}: {_pages(changed)} graded good\n")
+        total += changed
+    out.write(f"{_pages(total)} graded good\n" if apply else f"{_pages(total)}, not changed (add --apply)\n")
 
 
 # check-access: each live folder's department (its top-level folder when that is a department) and
@@ -1892,6 +1977,8 @@ def main(
 
                 queue = SqsQueue(settings)
             _read_again_failed(db, settings, queue, args.customer_id, args.apply, stdout)
+        elif args.command == "regrade-pages":  # no model: it grades the stored issues again
+            _regrade_pages(db, args.customer_id, args.apply, stdout)
         elif args.command == "check-access":
             if _check_access(db, stdout):
                 return 1

@@ -22,7 +22,6 @@ import libraryStyles from "@/components/documents/Library.module.css";
 import {
   ABOUT_ENSEMBLE,
   CHANGES_NOTE,
-  DOWNLOAD_LABEL,
   ENSEMBLE_DOCUMENT,
   ENSEMBLE_FLAGGED,
   ENSEMBLE_INFO,
@@ -248,7 +247,7 @@ export interface SummaryBarProps {
   scanningIcon: KIconName; // #549: its chip's icon, so a failure isn't drawn with a clock
   reviewing: boolean;
   reviewRef: RefObject<HTMLButtonElement | null>;
-  onReview(): void;
+  onReview?(): void; // #698: none in Trash, so no Check it (its crops are page pictures)
   onEnsemble(scope: EnsembleScope): void;
   ensembleBusy: boolean;
   ensembleError: string | null;
@@ -321,7 +320,7 @@ export function SummaryBar(props: SummaryBarProps) {
           <KIcon name={line.clear ? "check" : ready ? "eye" : props.scanningIcon} className={styles.statusIcon} />
           <span className="tabular">{line.text}</span>
         </p>
-        {ready && status.remaining > 0 && (
+        {ready && status.remaining > 0 && onReview && (
           <button ref={reviewRef} type="button" className="btn" aria-pressed={reviewing} onClick={onReview}>
             {checkLabel(status)}
           </button>
@@ -435,10 +434,11 @@ export function SummaryBar(props: SummaryBarProps) {
 
 /** The document's "⋯" menu items from the review (24 Oct 2026: one menu, no "More" of its own):
  * Run Ensemble on full document (when the API allows it, else disabled with its reason while
- * scanning), Export (disabled until scanning finishes) and Download original. */
+ * scanning) and Export (disabled until scanning finishes). Issue 692: no Download original here,
+ * the Download button sits beside the menu. */
 export function documentMoreItems(
   status: ReviewStatus | null,
-  actions: { onEnsemble(scope: EnsembleScope): void; onExport(): void; download: string | null },
+  actions: { onEnsemble(scope: EnsembleScope): void; onExport(): void },
 ): MoreItem[] {
   if (!status) return [];
   const ready = status.status === "ready";
@@ -463,14 +463,11 @@ export function documentMoreItems(
       onSelect: actions.onExport,
       disabledReason: ready ? null : EXPORT_WAIT,
     },
-    ...(actions.download
-      ? [{ label: DOWNLOAD_LABEL, hint: "Save the file exactly as it was uploaded.", onSelect: () => downloadFile(actions.download ?? "") }]
-      : []),
   ];
 }
 
-/** A download, never a page change: the original file (as the header's Download link), or a file made here. */
-function downloadFile(href: string, name = "") {
+/** A download, never a page change: a file made here. */
+function downloadFile(href: string, name: string) {
   const link = document.createElement("a");
   link.href = href;
   link.download = name;

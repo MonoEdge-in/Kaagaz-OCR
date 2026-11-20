@@ -377,6 +377,10 @@ describe("layout guards", () => {
       // Changed on purpose (PRD 7, #604): Add people on the Departments tab keeps one height and
       // scrolls inside it, so a long organisation never stretches the tab.
       "components/access/Access.module.css: .pickerScroll: overscroll-behavior",
+      // Changed on purpose (#711): a long row menu scrolls inside, never taller than the window,
+      // and its scroll never runs on into the page.
+      "components/admin/Admin.module.css: .rowMenu: overscroll-behavior",
+      "components/documents/Library.module.css: .menuList: overscroll-behavior",
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): sideways only, the tabs, the
       // tables and the usage chart scroll in their own box and never hand the swipe to the page.
       "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",
@@ -496,6 +500,15 @@ describe("layout guards", () => {
     const css = "components/documents/ActionDialog.module.css";
     expect(rulesFor(css, ".panel").filter((rule) => /max-height/.test(rule.body))).toEqual([]);
     expect(rulesFor(css, ".dialog[open]")[0]?.body).toMatch(/display:\s*flex;[\s\S]*flex-direction:\s*column/);
+  });
+
+  it("draws a dialog's text as the page does, wherever it is mounted (#686)", () => {
+    // The status bar is monospace and nowrap; a dialog mounted in it (the new-version pop-up) inherited both.
+    const dialog = rulesFor("components/documents/ActionDialog.module.css", ".dialog")[0]?.body ?? "";
+    expect(dialog).toMatch(/font-family:\s*var\(--k-font-body\)/);
+    expect(dialog).toMatch(/font-size:\s*var\(--fs-base\)/);
+    expect(dialog).toMatch(/line-height:\s*var\(--k-lh-ui\)/);
+    expect(dialog).toMatch(/white-space:\s*normal/);
   });
 
   it("moves an upload bar and card without animating width or shadows", () => {

@@ -79,7 +79,7 @@ def test_a_verified_bill_goes_into_a_folder_for_its_party_inside_invoices(db: Da
     department, invoices, mehta = by_name["Accounts and HR"], by_name["Invoices"], by_name["Mehta Textiles"]
     assert (mehta[2], mehta[3], mehta[4]) == (invoices[0], f"party:{MEHTA}", admin)
     assert audit(db, customer) == [
-        ("folder.create", None, {"parent_id": None, "auto": True}),
+        # Changed on purpose (PRD 9 F-02, D2): the department is the admin's, not made here.
         ("folder.create", None, {"parent_id": department[0], "auto": True}),
         ("folder.create", None, {"parent_id": invoices[0], "auto": True}),
         ("document.autofile", None, {"folder_id": mehta[0]}),
@@ -125,7 +125,9 @@ def test_a_bill_that_needs_review_stays_in_invoices(db: Database) -> None:
 
 
 def test_a_persons_folder_of_that_name_is_never_taken_the_gstin_is_added(db: Database) -> None:
-    customer, admin = organisation(db)
+    customer, admin = organisation(
+        db, accounts=False
+    )  # Changed on purpose (PRD 9 F-02, D2): Finance is the only one
     history(db, customer)
     with db.customer(customer) as conn:
         department = create_folder(
@@ -186,4 +188,5 @@ def test_a_moved_and_renamed_party_folder_is_still_used_and_undo_goes_to_the_top
     assert state(db, customer, first) == (None, None)
     # Changed on purpose (Vrushit UAT 3, 27 Oct 2026): moving Mehta out left Invoices and its
     # department empty, and Kaagaz made them, so they went; the party folder stays.
-    assert [f[1] for f in folders(db, customer)] == ["Mehta 2026"]
+    # Changed on purpose (PRD 9 F-02, D2): the department is the admin's, so it stays too.
+    assert [f[1] for f in folders(db, customer)] == ["Accounts and HR", "Mehta 2026"]

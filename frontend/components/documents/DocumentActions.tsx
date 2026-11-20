@@ -56,7 +56,7 @@ export interface RowMenuProps {
   /** The document screen's menu (DD2): Read again first when `readAgain`. */
   place?: "list" | "document";
   readAgain?: boolean;
-  /** #648 (V13): Link to another version… (Admins and Management). */
+  /** #648 (V13): Make it a version of… (Admins and Management; PRD 9 F-09). */
   linkVersions?: boolean;
   /** The document screen's other actions (24 Oct 2026: Ensemble, Export as Data, Download original),
    * after the menu's own and before Move to Trash, each with one plain line; disabled ones say why. */
@@ -86,7 +86,7 @@ export function RowMenu({
   access,
 }: RowMenuProps) {
   const [open, setOpen] = useState(false);
-  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+  const [at, setAt] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
   const button = useRef<HTMLButtonElement | null>(null);
   const list = useRef<HTMLUListElement>(null);
   const menuId = useId();
@@ -116,7 +116,7 @@ export function RowMenu({
       width: window.innerWidth,
       height: window.innerHeight,
     });
-    setAt({ top: spot.top, left: spot.left });
+    setAt({ top: spot.top, left: spot.left, maxHeight: spot.maxHeight });
     menu.querySelector<HTMLElement>("[role=menuitem]")?.focus();
   }, [open]);
 
@@ -169,7 +169,9 @@ export function RowMenu({
     const next = menuItemAfterKey(items.indexOf(event.target as HTMLElement), event.key, items.length);
     if (next === null) return;
     event.preventDefault();
-    items[next]?.focus();
+    // Kept in view, the menu scrolling only as far as it needs (#711).
+    items[next]?.focus({ preventScroll: true });
+    items[next]?.scrollIntoView({ block: "nearest" });
   }
 
   function pick(action: RowAction) {
@@ -212,7 +214,7 @@ export function RowMenu({
             role="menu"
             className={`motion-pop ${styles.menuList}`}
             aria-label={`Actions for ${item.display_name}`}
-            style={at ? { top: at.top, left: at.left } : { top: 0, left: 0 }}
+            style={at ?? { top: 0, left: 0 }}
             onKeyDown={onMenuKey}
           >
             {entries.filter((entry) => !isDanger(entry)).map(entryItem)}
@@ -225,6 +227,7 @@ export function RowMenu({
                   className={styles.menuItem}
                   aria-disabled={extra.disabledReason ? true : undefined}
                   aria-describedby={`${menuId}-more-${index}`}
+                  title={extra.disabledReason ?? extra.hint}
                   onClick={() => {
                     if (extra.disabledReason) return;
                     close(true);
@@ -260,6 +263,7 @@ export function RowMenu({
             download
             aria-label="Download original"
             aria-describedby={`${menuId}-download`}
+            title={ACTION_HELP.download}
             onClick={() => close(true)}
           >
             <span className={styles.menuWords}>
@@ -277,6 +281,7 @@ export function RowMenu({
             className={entry.danger ? `${styles.menuItem} ${styles.danger}` : styles.menuItem}
             aria-label={entry.words}
             aria-describedby={`${menuId}-${entry.action}`}
+            title={ACTION_HELP[entry.action]}
             onClick={() => pick(entry.action)}
           >
             {entry.danger && <Icon name="trash" />}
@@ -461,16 +466,18 @@ export interface MoveFormProps {
   /** A folder was made here: the screen asks for the folders again. */
   onFolderCreated?(): void;
   onCancel(): void;
+  /** PRD 9 F-01: the place chosen at first ("Looks like X", Move there), in place of the suggested one. */
+  to?: string;
 }
 
-export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreated, onCancel }: MoveFormProps) {
+export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreated, onCancel, to }: MoveFormProps) {
   const places = new Set(items.map((item) => item.folder_id ?? TOP));
   const current = places.size === 1 ? [...places][0] : null; // where they all are now
   const [suggested] = useState(() => moveSuggestion(items, tree)); // kept while the folders reload
   const suggestedId = suggested && "folderId" in suggested ? suggested.folderId : null;
   const suggestedName = suggested && "newName" in suggested ? suggested.newName : null;
   const [choice, setChoice] = useState<string | null>(
-    suggestedId ?? (suggestedName !== null ? SUGGESTED_NEW : null),
+    to ?? suggestedId ?? (suggestedName !== null ? SUGGESTED_NEW : null),
   );
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);

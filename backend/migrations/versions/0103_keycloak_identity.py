@@ -10,14 +10,14 @@ The signed logout entry is deliberately narrow: its caller must first verify the
 logout token signature, issuer, audience, event, time claims and replay identifier. It revokes
 only the exact issuer, subject and Keycloak session ID supplied by that verified token.
 
-Revision ID: 0102
-Revises: 0101 (backup reader)
+Revision ID: 0103
+Revises: 0102 (Trash re-upload)
 """
 
 from alembic import op
 
-revision = "0102"
-down_revision = "0101"
+revision = "0103"
+down_revision = "0102"
 branch_labels = None
 depends_on = None
 

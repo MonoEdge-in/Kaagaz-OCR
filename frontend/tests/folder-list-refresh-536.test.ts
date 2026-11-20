@@ -36,7 +36,8 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   listFolderUploads: async () => ({ items: [] }), // nothing to bring back
   getPreviousFolderUpload: async () => ({ previous: null }),
 }));
-vi.mock("@/lib/session", () => ({ useSession: () => ({ me: { user: { id: "u1", role: "admin" } } }) }));
+// Changed on purpose (#697): the shell now asks canDeleteForever(me), which reads the session's scope.
+vi.mock("@/lib/session", () => ({ useSession: () => ({ me: { user: { id: "u1", role: "admin" }, session: { scope: "admin" } } }) }));
 vi.mock("@/components/documents/pageCount", () => ({ checkPages: async () => ({ pages: null, problem: null }) }));
 // The tray and the dialogs are not under test: the dialog starts the upload as soon as it shows.
 vi.mock("@/components/documents/UploadArea", async (importOriginal) => ({
@@ -269,6 +270,25 @@ describe("the shell's folder list asks again as soon as new folders exist (#536)
     await mountShell();
     await act(async () => void (await vi.advanceTimersByTimeAsync(60_000)));
     expect(api.listFolders).toHaveBeenCalledTimes(1);
+  });
+
+  // PRD 9 F-01 (D1, Q2): the top bar's Upload has no picker, so it sends no folder and no
+  // department, even with a department last used in this browser: the file waits, Not sorted.
+  it("sends the top bar's files with no folder and no department", async () => {
+    vi.stubGlobal("localStorage", { getItem: () => "tax", setItem: () => undefined, removeItem: () => undefined });
+    api.listFolders.mockResolvedValue({ items: [{ id: "tax", name: "Tax", parent_id: null, kind: "department", created_at: "" }] });
+    api.uploadDocument.mockResolvedValueOnce({ document: document("d1"), duplicate: false, in_trash: false });
+    api.getBatch.mockResolvedValue(batchOf([document("d1")]));
+    const container = await mountShell();
+    await flush();
+    const input = container.all().find((element) => element.getAttribute("id") === "upload-input-shell")!;
+    (input as unknown as { files: File[] }).files = [new File(["abc"], "plot.pdf", { type: "application/pdf" })];
+    await act(async () => void fire(input, "change"));
+    await flush();
+    expect(api.uploadDocument).toHaveBeenCalledTimes(1);
+    const sent = api.uploadDocument.mock.calls[0]!;
+    expect(sent[3]).toBeUndefined(); // folder
+    expect(sent[7]).toBeUndefined(); // department
   });
 });
 

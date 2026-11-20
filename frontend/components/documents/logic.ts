@@ -297,6 +297,20 @@ export function formatProgressPercent(done: number, total: number): string {
 export const HIDDEN_COPY = "This file is already in Kaagaz, in a place you can't see. Ask your admin if you need it.";
 /** PRD 7 section 5 (#605, p2:91): a locked copy the uploader may open: this line and its link only. */
 export const LOCKED_COPY = "A copy already exists and is locked.";
+/** #697: a read copy of the upload in Trash: Restore from Trash, or (who may delete forever)
+ * Upload as new file after one question; everyone else is told to ask an admin. */
+export const TRASH_COPY = {
+  line: (name: string) => `This file is already in Trash as “${name}”.`,
+  restore: "Restore from Trash",
+  asNew: "Upload as new file",
+  askAdmin: "Ask an admin to upload it as a new file.",
+  confirmTitle: "Replace the copy in Trash?",
+  confirmBody: "The old copy's fixed words and history are deleted. This can't be undone.",
+  restoredInto: (folder: string) => `Restored into “${folder}”.`,
+  restoredInPlace: "Restored to where it was.",
+};
+/** #697: a restored copy that could not be moved into the upload's folder, when the server gave no words. */
+export const NOT_MOVED = "It couldn't be moved into the folder you chose. Move it from its menu.";
 
 // PRD 5 U10: sending (bytes sent), saving (from the last byte to the server's reply),
 // reading (the stored document, followed through GET /api/batches/{id} until it is
@@ -316,7 +330,10 @@ export type UploadState =
   // PRD 7 (#605): already in Kaagaz, locked, and this person may open it: its link only.
   | { kind: "locked"; documentId: string }
   | { kind: "restoring"; documentId: string; existingName: string }
-  | { kind: "restored"; documentId: string; existingName: string }
+  // #697: into, the folder the upload was going to, where Restore moved it; notMoved, why it stayed where it was.
+  | { kind: "restored"; documentId: string; existingName: string; into?: string; notMoved?: string }
+  // #713: sent, then cancelled from the tray: moved to Trash (Upload again, or restore it from Trash).
+  | { kind: "cancelled"; documentId: string }
   // retry: it was not sent (the connection or the server), and this tab still has the file.
   | { kind: "error"; message: string; retry?: boolean };
 
@@ -348,7 +365,7 @@ export function uploadStateText(state: UploadState): string {
     case "done": {
       const { document } = state;
       if (!document) return "Uploaded";
-      if (document.status !== "ready") return document.failure_code === "customer_disabled" ? "Stopped" : "Not read";
+      if (document.status !== "ready") return ["customer_disabled", "stopped"].includes(document.failure_code ?? "") ? "Stopped" : "Not read"; // #713
       return document.first_unreadable ? `Page ${document.first_unreadable.page_no} to check` : "Ready";
     }
     case "duplicate":
@@ -361,6 +378,8 @@ export function uploadStateText(state: UploadState): string {
       return "Restoring";
     case "restored":
       return "Restored from Trash";
+    case "cancelled":
+      return "Cancelled"; // #713
     case "error":
       return state.retry ? "Not sent" : "Not uploaded";
   }

@@ -6,8 +6,9 @@
 // a taken name, a move into itself, more than 100 levels or a folder that is not
 // empty come back as 409 and are shown as it words them. The screen gives this
 // a new key for each folder, so an open form never outlives its folder.
-// UI audit D12 (16 Oct 2026): the folder column header's "+" is the one New folder (Tushar, 16 Oct
-// 2026: no second button here); it opens the New folder form here (`askNew` counts its presses).
+// UI audit D12 (16 Oct 2026): the folder column header's "+" opens the New folder form here
+// (`askNew` counts its presses). PRD 9 F-18: in a department or folder, a "New folder" button
+// beside Rename and Move opens the same form (testers found no way to make a folder).
 // Suggested names (Tushar, 16 Oct 2026): under the New folder name, up to 4 one-press names from
 // the kinds of documents listed that have no folder yet (folderNameSuggestions, library.ts).
 // #537 (Tushar, 7 Nov 2026): Delete first asks what the folder holds. Empty: the confirm above.
@@ -16,13 +17,15 @@
 // PRD 7 PR 11b (#604, PR 10c): Move says first who would lose and gain what the folder holds (its
 // move preview; nothing when the person may not make such a move, or the same people see it), and a
 // move that opens it to the admin asks their password first, or on 403 password_required.
+// #730: Copy path copies the folder's place (only folders this person sees), to paste in Search.
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import { includesMe } from "@/components/access/passwordStep";
 import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
-import { WHO_CAN_SEE, moveEffectText, quoted } from "@/components/access/words";
+import { MAKE_PRIVATE, MAKE_PRIVATE_HELP, WHO_CAN_SEE, moveEffectText, quoted } from "@/components/access/words";
 import { Icon } from "@/components/ui/Icon";
+import { folderPathText } from "@/components/chat/scope";
 import { createFolder, deleteFolder, folderMovePreview, folderSummary, updateFolder } from "@/lib/api";
 import type { FolderSummary, MovePreview } from "@/lib/types";
 import { BusyLabel } from "./BusyLabel";
@@ -31,6 +34,7 @@ import { isEmpty, notEmptyText } from "./folderDelete";
 import { MAX_FOLDER_DEPTH, canAddSubfolder, pathLabel, validMoveTargets } from "./folderTree";
 import type { FolderNode, FolderTree } from "./folderTree";
 import { FolderPicker } from "./FolderPicker";
+import { FOLDER_PATH_COPIED, copyFailed, copyText } from "./copyPath";
 import { folderNameProblem, libraryErrorText } from "./library";
 import styles from "./Library.module.css";
 
@@ -49,6 +53,8 @@ export interface FolderActionsProps {
   suggestions?: readonly string[];
   /** PRD 7 (#604): "Who can see this" opens the Audience panel; left out for who may not use it. */
   onAudience?(): void;
+  /** #700: that button reads Make private (it opens the panel at that step: privateFirst). */
+  makePrivate?: boolean;
   /** PRD 7 (#604): the signed-in person, for the password step of a move that opens a folder to them. */
   myId?: string;
 }
@@ -86,12 +92,16 @@ export function FolderActions({
   suggestions = [],
   admin = false,
   onAudience,
+  makePrivate = false,
   myId = "",
 }: FolderActionsProps) {
   const [mode, setMode] = useState<Mode | null>(null);
   const [preview, setPreview] = useState<MovePreview | null>(null); // PR 10c: what a move changes
   const passwordStep = usePasswordStep();
   const [summary, setSummary] = useState<FolderSummary | null>(null); // #537: what Delete would take
+  const [copied, setCopied] = useState<{ ok: boolean; line: string } | null>(null); // #730: Copy path's line
+  const copyFolderPath = (text: string) =>
+    copyText(text).then((done) => setCopied(done ? { ok: true, line: FOLDER_PATH_COPIED } : { ok: false, line: copyFailed(text) }));
   const [heardNew, setHeardNew] = useState(askNew);
   const [name, setName] = useState("");
   const [target, setTarget] = useState(""); // "" is the top level
@@ -305,10 +315,24 @@ export function FolderActions({
       {current && (
         <div className={styles.folderButtons}>
           {onAudience && (
-            <button type="button" className="btn btn-quiet" aria-haspopup="dialog" onClick={onAudience}>
-              {WHO_CAN_SEE}
+            <button
+              type="button"
+              className="btn btn-quiet"
+              aria-haspopup="dialog"
+              onClick={onAudience}
+              title={makePrivate ? MAKE_PRIVATE_HELP : undefined}
+            >
+              {makePrivate ? MAKE_PRIVATE : WHO_CAN_SEE}
             </button>
           )}
+          <button
+            type="button"
+            className="btn btn-quiet"
+            aria-expanded={mode === "new"}
+            onClick={(event) => open("new", event)}
+          >
+            New folder<span className="visually-hidden"> here</span>
+          </button>
           <button
             type="button"
             className="btn btn-quiet"
@@ -325,6 +349,16 @@ export function FolderActions({
           >
             Move<span className="visually-hidden"> this folder</span>
           </button>
+          {/* #730: the folder's place, to paste in Search; the line says so, or that it could not. */}
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() =>
+              void copyFolderPath(folderPathText(tree, current.folder.id))
+            }
+          >
+            Copy path<span className="visually-hidden"> of this folder</span>
+          </button>
           <button
             type="button"
             className={`btn btn-quiet ${styles.danger}`}
@@ -335,6 +369,11 @@ export function FolderActions({
             Delete<span className="visually-hidden"> this folder</span>
           </button>
         </div>
+      )}
+      {copied && (
+        <p className={copied.ok ? "muted" : "error-text"} role="status">
+          {copied.line}
+        </p>
       )}
 
       {choosing && current && (

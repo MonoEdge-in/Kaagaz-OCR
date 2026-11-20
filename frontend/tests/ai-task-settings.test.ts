@@ -149,6 +149,13 @@ describe("the admin's AI settings tab", () => {
     expect(html).toContain("Max: Not available for your organisation.");
   });
 
+  it("makes a level that can't be chosen look it: faded, as the chat menu's (#693)", () => {
+    const css = read("components/review/Review.module.css");
+    // Its disabled ink was the usable one's within a shade, so High and Max looked choosable.
+    expect(css).toMatch(/\.segment:has\(input:disabled\) \{\s*opacity: 0\.55;\s*\}/);
+    expect(read("components/chat/Chat.module.css")).toMatch(/\.menuOption:has\(input:disabled\) \{\s*opacity: 0\.55;/);
+  });
+
   it("gives each task a Members can change this checkbox, checked when not locked", () => {
     const html = form("organisation");
     const boxes = [...html.matchAll(/<input type="checkbox"( checked="")?\/>Members can change this/g)];

@@ -141,14 +141,16 @@ def grade(
     * unreadable: no text on a page that is not blank (no_text); the reader refused it, or
       read it only locally after a 400 (reader_refused); or the model said poor and more
       than UNREADABLE_ILLEGIBLE_SHARE of its words are ``[?]``.
-    * uncertain: any unsure or illegible word, an unpinned line, a disputed value,
-      low_resolution, or any other issue (an issue always says why a page is not good).
-    * good: none of these. O(issues)."""
+    * uncertain: any unsure or illegible word, a disputed value, low_resolution, or any
+      other issue (an issue always says why a page is not good).
+    * good: none of these. Unpinned lines alone leave a page good (PRD 9 F-11, D5: an
+      unconfirmed spot is no review item, so not on Needs attention); ``unpinned`` stays in
+      its issues, and a value on such a line still waits (word_review._apply). O(issues)."""
     if NO_TEXT in issues or READER_REFUSED in issues:
         return "unreadable"
     if model_quality == "poor" and illegible_words > UNREADABLE_ILLEGIBLE_SHARE * words:
         return "unreadable"
-    if issues or unsure_words or illegible_words:
+    if any(issue != UNPINNED for issue in issues) or unsure_words or illegible_words:
         return "uncertain"
     return "good"
 

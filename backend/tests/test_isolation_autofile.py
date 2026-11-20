@@ -76,8 +76,9 @@ def test_one_customers_invoices_and_party_folders_never_count_for_another(db: Da
 
 
 def test_filing_named_with_the_wrong_customer_changes_nothing(db: Database) -> None:
-    a, a_admin = organisation(db)
-    b, _ = organisation(db)
+    # Changed on purpose (PRD 9 F-02, D2): no department in either, so neither has a folder.
+    a, a_admin = organisation(db, accounts=False)
+    b, _ = organisation(db, accounts=False)
     a_doc = upload(db, a, a_admin)
     with db.customer(a) as conn:
         conn.execute(

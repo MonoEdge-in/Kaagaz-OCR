@@ -66,7 +66,7 @@ describe("files not sent before a reload: counted on their own, with what to do"
       createElement(BatchTray, {
         entries: [row("ready", { kind: "done", documentId: "d", document: readyDoc })],
         views: {},
-        stored: [{ id: ID, at: 0, already: 0, notSent: 3 }],
+        stored: [{ id: ID, at: 0, already: 0, notSent: 3, cleared: [] }], // Changed on purpose (#688): a drop's cleared ids
         onClearFinished: () => undefined,
         onRestore: () => undefined,
         onRetry: () => undefined,
@@ -79,7 +79,7 @@ describe("files not sent before a reload: counted on their own, with what to do"
   });
 
   it("remembers a reloaded drop's counts as they were, since its rows never hold these two", () => {
-    const batch = { id: ID, at: 0, already: 1, notSent: 3 };
+    const batch = { id: ID, at: 0, already: 1, notSent: 3, cleared: [] }; // Changed on purpose (#688): its cleared ids
     const rows = [row("ready", { kind: "done", documentId: "d", document: readyDoc })];
     expect(keptCounts(batch, rows, true)).toEqual(batch);
     expect(keptCounts(batch, [], false)).toEqual(batch);

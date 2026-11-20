@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OneTimeCardView, cardDismissed, dismissCard, showCard } from "@/components/access/OneTimeCard";
+import { OneTimeCardView, cardDismissed, dismissCard, headsNamed, showCard } from "@/components/access/OneTimeCard";
 import type { Me, Role } from "@/lib/types";
 
 const me = (id: string, role: Role = "admin", scope: "app" | "admin" = "admin") =>
@@ -62,6 +62,22 @@ describe("the one-time card", () => {
     expect(html).toMatch(/<a class="k-btn k-btn--primary" href="\/admin\?tab=departments">Set up access<\/a>/);
     expect(html.indexOf("Set up access")).toBeLessThan(html.indexOf(">Not now</button>"));
     expect(html).not.toMatch(/lock/i);
+  });
+
+  it("says every file is still open once heads are named and nothing is kept (#701)", () => {
+    const html = renderToStaticMarkup(createElement(OneTimeCardView, { onNotNow: () => undefined, headsNamed: true }));
+    expect(html).toContain(
+      "Heads are named, but every file is still open to everyone. Make a department Department only, or a folder private, to keep files to some people.",
+    );
+    expect(html).not.toContain("Name a head for each department.");
+    expect(html).toMatch(/<a class="k-btn k-btn--primary" href="\/admin\?tab=departments">/);
+  });
+
+  it("knows heads are named from the departments' own heads (#701)", () => {
+    const department = { id: "d1", name: "Finance", department_only: false, members: 1, warnings: [] };
+    expect(headsNamed([{ ...department, heads: [] }])).toBe(false);
+    expect(headsNamed([{ ...department, heads: [] }, { ...department, id: "d2", heads: [{ id: "u1", name: "Asha" }] }])).toBe(true);
+    expect(headsNamed([])).toBe(false);
   });
 
   it("sits on Home above the upload actions", () => {

@@ -5,18 +5,21 @@
 // status line, after a pick or when a conversation loads), which opens a small
 // panel (ComposerMenu.tsx) with one labelled group of choices: all documents, one
 // folder (with or without its subfolders), or the documents chat was opened
-// for. A choice applies to the next question; until then a follow-up keeps
+// for. #720, #725: one find box finds a department, folder or file by name (ScopeFind.tsx), and
+// the chip has a remove button naming what is chosen. A choice applies to the next question; until then a follow-up keeps
 // the conversation's scope (scope.ts). Folders load only when needed. Folder
 // and document names are plain text.
 
 import { useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import { buildTree, inTreeOrder, pathLabel } from "@/components/documents/folderTree";
+import { IconButton } from "@/components/ui/IconButton";
 import { loadDocument } from "@/components/viewer/documentCache";
 import { listFolders } from "@/lib/api";
 import type { Folder } from "@/lib/types";
 import { ComposerMenu } from "./ComposerMenu";
-import { EVERY_DOCUMENT, scopeAnnouncement, scopeText } from "./scope";
+import { ScopeFind } from "./ScopeFind";
+import { EVERY_DOCUMENT, removeScopeLabel, scopeAnnouncement, scopeText } from "./scope";
 import type { ChosenScope, ScopeState } from "./scope";
 import styles from "./Chat.module.css";
 
@@ -94,6 +97,7 @@ export function ScopePicker({
   const name = named !== null && named.id === oneDocument ? named.name : null;
   const ordered = tree ? inTreeOrder(tree) : [];
   const firstFolder = ordered[0]?.folder.id;
+  const removeLabel = removeScopeLabel(scope, tree, name);
   const kind = `${id}-kind`;
   const text = scopeText(scope, tree, name);
   const namesLoading =
@@ -106,7 +110,7 @@ export function ScopePicker({
       <p className="visually-hidden" role="status" aria-atomic="true">
         {scopeAnnouncement(state, text, namesLoading)}
       </p>
-      <ComposerMenu label={text} name="Asking about" title="Which documents to ask about" onToggle={setOpen}>
+      <ComposerMenu label={text} name="Where to ask" title="Which documents to ask about" onToggle={setOpen}>
         <fieldset
           className={styles.menuGroup}
           disabled={locked !== null}
@@ -121,11 +125,13 @@ export function ScopePicker({
             checked={scope.kind === "folder"}
             disabled={firstFolder === undefined}
             onChange={() => {
-              if (firstFolder) onChoose({ kind: "folder", folderId: firstFolder, subfolders: false });
+              // #725: with its subfolders, as the find box and "Ask in this folder" choose it.
+              if (firstFolder) onChoose({ kind: "folder", folderId: firstFolder, subfolders: true });
             }}
           >
             One folder
           </Choice>
+          {tree ? <ScopeFind id={id} tree={tree} scope={scope} onChoose={onChoose} /> : null}
           {scope.kind === "folder" && tree ? (
             <div className={styles.scopeFolder}>
               <div className="field">
@@ -183,6 +189,15 @@ export function ScopePicker({
           </p>
         </fieldset>
       </ComposerMenu>
+      {removeLabel ? (
+        <IconButton
+          icon="close"
+          label={removeLabel}
+          className={`btn-quiet ${styles.removeScope}`}
+          disabled={locked !== null}
+          onClick={() => onChoose(EVERY_DOCUMENT)}
+        />
+      ) : null}
     </>
   );
 }

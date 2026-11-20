@@ -506,7 +506,8 @@ describe("where a folder upload starts", () => {
   it("offers Let Kaagaz sort files only when auto-filing would sort them, for loose files with no folder", () => {
     const view = read("components/documents/DocumentsView.tsx");
     expect(view).toMatch(/\{uploads\.limits\.sort_available && \(\s*<button[\s\S]*?Let Kaagaz sort files/);
-    expect(view).toMatch(/function onChooseToSort[\s\S]*?void uploads\.addFiles\(files\);\n {2}\}/);
+    // Changed on purpose (PRD 9 F-02): into the department being viewed (or picked), not no folder.
+    expect(view).toMatch(/function onChooseToSort[\s\S]*?void uploads\.addFiles\(files, undefined, sortInto\(tree, library\.folderId, department\) \?\? undefined\);\n {2}\}/);
   });
 
   it("picks a whole folder in the shell, so it keeps going between screens", () => {

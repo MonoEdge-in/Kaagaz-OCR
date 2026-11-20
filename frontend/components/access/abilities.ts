@@ -3,6 +3,7 @@
 
 import { adminGate } from "@/components/admin/logic";
 import type { Me } from "@/lib/types";
+import type { FolderPlace } from "./places";
 
 export interface AccessAbilities {
   audience: boolean; // "Who can see this"
@@ -23,3 +24,9 @@ export function accessAbilities(me: Me, place: { departmentId: string | null }):
   const head = place.departmentId !== null && (me.access?.heads ?? []).includes(place.departmentId);
   return head ? { ...NONE, audience: true, editNamed: true } : NONE;
 }
+
+/** #700: the folder's "Who can see this" reads Make private, and opens the panel at that step, for
+ * who may make it private on a folder that can be made private now (not private yet, nothing
+ * refusing it, places.ts privateRefusal); else it stays "Who can see this". */
+export const privateFirst = (abilities: AccessAbilities, place: FolderPlace | null) =>
+  abilities.makePrivate && place !== null && !place.isPrivate && place.refusal === null;

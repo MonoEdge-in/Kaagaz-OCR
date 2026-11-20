@@ -26,6 +26,8 @@ describe("a document's menu", () => {
       "Move to folder",
       "Tags",
       "Upload new version",
+      "Copy path", // changed on purpose (#730): Copy path and Copy link
+      "Copy link",
       "Download original",
       "Give access",
       "Who can see this",
@@ -36,6 +38,8 @@ describe("a document's menu", () => {
       "Rename",
       "Move to folder",
       "Tags",
+      "Copy path", // changed on purpose (#730)
+      "Copy link",
       "Give access",
       "Who can see this",
       "Move to Trash",

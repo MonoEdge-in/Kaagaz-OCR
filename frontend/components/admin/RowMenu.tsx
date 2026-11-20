@@ -34,30 +34,35 @@ export function menuKeyTarget(key: string, at: number, count: number): number | 
   return null;
 }
 
-function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
+/** The key's action takes focus and is kept in view, the menu scrolling only as far as it needs (#711). */
+export function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
   const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
   const next = menuKeyTarget(event.key, items.indexOf(event.target as HTMLButtonElement), items.length);
   if (next === null) return;
   event.preventDefault();
-  items[next]?.focus();
+  items[next]?.focus({ preventScroll: true });
+  items[next]?.scrollIntoView({ block: "nearest" });
 }
 
 /**
  * `name` says whose actions they are ("Ravi Sharma"), for screen readers. `compact`: an
  * icon-only ⋯ button instead of "More" (a narrow list, Ask screen polish, 17 Oct 2026).
  * `status`: the compact button's own name, tooltip and class when it also carries a state
- * (a summary card value not checked yet, #453).
+ * (a summary card value not checked yet, #453). `label`: the button's words in place of "More"
+ * (PRD 9 F-17: Review's "Filter: Any reason"), or the compact button's name (issue 692: "More tabs").
  */
 export function RowMenu({
   name,
   items,
   compact = false,
   status,
+  label,
 }: {
   name: string;
   items: RowMenuItem[];
   compact?: boolean;
   status?: { label: string; tip: string; className: string };
+  label?: string;
 }) {
   const id = useId();
   const anchor = `--row-menu-${id.replace(/[^\w-]/g, "")}`;
@@ -67,7 +72,7 @@ export function RowMenu({
       {compact ? (
         <IconButton
           icon="more"
-          label={status?.label ?? `More actions for ${name}`}
+          label={status?.label ?? label ?? `More actions for ${name}`}
           title={status?.tip}
           className={status ? `btn-quiet ${status.className}` : "btn-quiet"}
           popoverTarget={id}
@@ -82,8 +87,8 @@ export function RowMenu({
           aria-haspopup="menu"
           style={{ anchorName: anchor }}
         >
-          More
-          <span className="visually-hidden"> actions for {name}</span>
+          {label ?? "More"}
+          {label ? null : <span className="visually-hidden"> actions for {name}</span>}
           <Icon name="chevron-right" size={14} className={styles.rowMenuCaret} />
         </button>
       )}
@@ -101,7 +106,8 @@ export function RowMenu({
       >
         {items.map((item, index) => {
           // The line under the label: why it can't be used yet, else what it does. The label
-          // names the item; the line is read as its description.
+          // names the item; the line is read as its description, cut to one line on screen
+          // with its full text as the tooltip (#711).
           const hint = item.disabledReason || item.description;
           const hintId = `${id}-hint-${index}`;
           return (
@@ -112,6 +118,7 @@ export function RowMenu({
               className={item.destructive ? `${styles.rowMenuItem} ${styles.rowMenuDanger}` : styles.rowMenuItem}
               aria-label={hint ? item.label : undefined}
               aria-describedby={hint ? hintId : undefined}
+              title={hint || undefined}
               aria-disabled={item.disabledReason ? true : undefined}
               onClick={(event) => {
                 if (item.disabledReason) return;

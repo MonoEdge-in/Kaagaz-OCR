@@ -64,8 +64,10 @@ SUMMARY_KEYS = {
     "department",
     "pending_suggestion",
     "stuck",  # changed on purpose (issue 407): may be read again while still in progress
+    "read_before",  # Changed on purpose (#713): read again after a finished reading, so never stopped
     "locked",  # changed on purpose (PRD 7, #605): a locked file, opened only as page pictures
     "shared_with_you",  # changed on purpose (PRD 7, #601): in a folder the person can't see
+    "suggested_department",  # Changed on purpose (PRD 9 F-01): the department its type maps to
 }
 # Changed on purpose (#239, 27 Oct 2026): V5's version suggestions (PRD 1 stage 2, d82ada4).
 BATCH_KEYS = {

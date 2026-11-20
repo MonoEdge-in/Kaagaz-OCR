@@ -11,8 +11,7 @@ import * as panels from "@/app/(app)/documents/[id]/DocumentPanels";
 import { AttentionPanel, attentionCount } from "@/app/(app)/documents/[id]/DocumentPanels";
 import { documentMoreItems, textFileName } from "@/app/(app)/documents/[id]/WordReview";
 import { dataText } from "@/components/viewer/clearCopy";
-import { withFixes } from "@/components/viewer/scanned";
-import type { PageSummary, ReadLine, ReviewStatus, WordFlag } from "@/lib/types";
+import type { PageSummary, ReadLine, ReviewStatus } from "@/lib/types";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
@@ -22,8 +21,9 @@ const VIEW_CSS = "app/(app)/documents/[id]/DocumentView.module.css";
 
 const box = (x0: number, y0: number, x1: number, y1: number) => ({ kind: "box" as const, page: 1, box: [x0, y0, x1, y1] as [number, number, number, number] });
 
-describe("1. the ⋯ menu: Export as Data and Download original above Move to Trash", () => {
-  it("draws the document's own actions, then the review's (Export as Data, Download original), then Move to Trash", () => {
+// Changed on purpose (issue 692): Download original left the menu; the Download button sits beside it.
+describe("1. the ⋯ menu: Export as Data above Move to Trash", () => {
+  it("draws the document's own actions, then the review's (Export as Data), then Move to Trash", () => {
     const menu = read("components/documents/DocumentActions.tsx");
     const own = menu.indexOf("{entries.filter((entry) => !isDanger(entry)).map(entryItem)}");
     const more = menu.indexOf("{more.map((extra, index) => (");
@@ -35,10 +35,10 @@ describe("1. the ⋯ menu: Export as Data and Download original above Move to Tr
 
   it("names it Export as Data and says in plain words what it saves", () => {
     const status = { status: "ready", ensemble: { allowed: false, reason: null, run: null } } as unknown as ReviewStatus;
-    const items = documentMoreItems(status, { onEnsemble: () => undefined, onExport: () => undefined, download: "/f" });
+    const items = documentMoreItems(status, { onEnsemble: () => undefined, onExport: () => undefined });
+    // Changed on purpose (issue 692): no Download original in the menu; the Download button sits beside it.
     expect(items.map((item) => [item.label, item.hint])).toEqual([
       ["Export as Data", "Saves the text as read, page by page, and the values found, as a plain text file (.txt)."],
-      ["Download original", "Save the file exactly as it was uploaded."],
     ]);
   });
 
@@ -76,25 +76,10 @@ describe("4. no Invoice section and no line cards on the document page", () => {
 });
 
 describe("5. Fix text: replace a [?] in the Text view", () => {
-  const flag = (as_read: string, text: string, region = box(0.3, 0.02, 0.4, 0.08)) =>
-    ({ as_read, text, region }) as Pick<WordFlag, "as_read" | "text" | "region">;
-  const line = { text: "spitting out [?] text. I was", region: box(0, 0, 1, 0.1) };
-
-  it("shows the word a person typed in place of the [?] in its line, and nothing else", () => {
-    expect(withFixes(line, [flag("[?]", "garbled")])).toBe("spitting out garbled text. I was");
-    expect(withFixes(line, [flag("[?]", "[?]")])).toBe(line.text); // not fixed yet
-    expect(withFixes(line, [flag("[?]", "x", box(0.3, 0.5, 0.4, 0.6))])).toBe(line.text); // another line's
-    expect(withFixes(line, [flag("[?]", "$& $1")])).toBe("spitting out $& $1 text. I was"); // typed as is
-  });
-
-  it("puts each fix in its own [?] when a line has two, whichever is fixed and in any order", () => {
-    const two = { text: "[?] there any [?] tools", region: box(0, 0, 1, 0.1) };
-    const first = (text: string) => flag("[?]", text, box(0, 0.02, 0.05, 0.08));
-    const second = (text: string) => flag("[?]", text, box(0.5, 0.02, 0.6, 0.08));
-    expect(withFixes(two, [second("Foss"), first("[?]")])).toBe("[?] there any Foss tools");
-    expect(withFixes(two, [second("Foss"), first("Are")])).toBe("Are there any Foss tools");
-    expect(withFixes(two, [first("Are")])).toBe("Are there any [?] tools");
-  });
+  // Changed on purpose (PRD 9 F-12): the word a person typed is shown in its line by the server now,
+  // as in the clean copy (backend/tests/test_api_text_fixes.py); the browser's withFixes is gone.
+  // A word whose text is in its line twice (two [?]) is written where it is there once only, as the
+  // search pieces and the clean copy have it (word_review.line_text).
 
   // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #417): Fix text opens a box under its line to
   // type the word there, saved as the review's Edit, not the review panel (uat-2-document-page.test.ts).
@@ -108,8 +93,9 @@ describe("5. Fix text: replace a [?] in the Text view", () => {
     expect(panel).toMatch(/onClick=\{\(\) => openFix\(toFix, ask\.draft, index\)\}\s*>\s*Fix text/);
     const view = read(VIEW);
     expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
-    // Review fix (25 Oct 2026): only a person's edit shows as fixed; an Ensemble proposal keeps the text as read.
-    expect(view).toContain('.map((flag) => (flag.change?.action === "edit" ? flag : { ...flag, text: flag.as_read }))}');
+    // Changed on purpose (PRD 9 F-12): the fixes come with the lines from the server (the changes in
+    // force: a person's, never an Ensemble proposal no person took), so nothing is laid over them here.
+    expect(view).not.toContain("fixed={review.flags");
   });
 
   it("names the .txt after the document without its uploaded extension, and says it is preparing", () => {
@@ -151,7 +137,7 @@ describe("6. Needs attention counts what is marked, in a filled circle", () => {
     expect(attentionCount([page], [])).toBe(1);
     expect(attentionCount([page], [{ page_no: 1 }, { page_no: 1 }])).toBe(3);
     const html = renderToStaticMarkup(
-      createElement(AttentionPanel, { status: "ready", pages: [page], open: [{ page_no: 1, text: "Rs 4,850", reason_text: "smudged print" }], current: null, marks: [], onPage: () => undefined, onMark: () => undefined, onCheck: () => undefined }),
+      createElement(AttentionPanel, { status: "ready", pages: [page], open: [{ page_no: 1, text: "Rs 4,850", reason_text: "smudged print", region: box(0, 0, 1, 0.1), as_read: "Rs 4,850" }], current: null, marks: [], onPage: () => undefined, onMark: () => undefined, onCheck: () => undefined }),
     );
     expect(html).toContain("2 to check");
     expect(html).toContain("2 reading problems on page 1.");

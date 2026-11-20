@@ -344,7 +344,9 @@ class WiringTest(unittest.TestCase):
         socket = build_reader_socket(make_settings(), FakeOcr())
         for kind in ("txt", "md", "json", "html"):
             with self.subTest(kind):
-                self.assertEqual(socket.reader_id(kind), (f"text-{kind}", "1"))
+                # Changed on purpose (PRD 9 F-10): version 2, as a JSON's reading changed (stored for
+                # tracing only: a JSON read before changes on Read again or a new upload).
+                self.assertEqual(socket.reader_id(kind), (f"text-{kind}", "2"))
         for kind in ("docx", "dotx", "doc", "pptx", "ppt", "xls", "zip"):
             with self.subTest(kind), self.assertRaises(NoReader):
                 socket.read(kind, b"")
@@ -398,6 +400,10 @@ class NoDirectReaderCallsTest(unittest.TestCase):
         "route",
         "page_quality",
         "rapid_pool",
+        # Changed on purpose (#709): the page-turn check reads no document text and makes no
+        # values; like page_quality it only judges a stored page picture (which way is up), so
+        # the API's POST /documents/{id}/straighten may import it. Readers stay behind the socket.
+        "orientation",
     }
     # Changed on purpose (#473, 2 Nov 2026): the operator's settings and the scan's Reading name
     # Mistral's readers and models, and the worker its wait names, so these constants of the

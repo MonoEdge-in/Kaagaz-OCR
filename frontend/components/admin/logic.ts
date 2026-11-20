@@ -704,10 +704,12 @@ const ACTION_WORDS: Record<string, string> = {
   "document.delete": "Deleted a document",
   "document.trash": "Moved a document to Trash",
   "document.restore": "Restored a document from Trash",
+  "document.replace_from_trash": "Replaced a document in Trash with a new upload", // #697
   "document.move": "Moved a document",
   "document.rename": "Renamed a document",
   "document.tags": "Changed a document's tags",
   "document.reprocess": "Asked to read a document again",
+  "document.stop": "Stopped reading a document", // #713
   "document.read_upgrade": "Read a document again after an upgrade",
   "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",

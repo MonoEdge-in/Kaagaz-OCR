@@ -73,7 +73,9 @@ transaction that inserts the new document, which is scanned afresh; one ``docume
 audit row names the new one (``replaced_by``). The refused copy's family lock decides two such
 uploads at once: the second waits, finds it gone, and is a duplicate of the first. A refused
 version of a family with others stays a duplicate (Kaagaz deletes whole families only), and a
-new version (``add_version``) replaces nothing.
+new version (``add_version``) replaces nothing. PRD 9 F-03 (D3, #680): so is a copy in Trash that
+failed or was never read, alone in its family, that the person uploading sees; one read (or locked)
+is still "already in Kaagaz, in Trash".
 """
 
 import dataclasses
@@ -87,7 +89,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
-from kaagaz.db import audit, autofile, customers, folders, storage_limits, versions
+from kaagaz.db import audit, autofile, customers, folders, storage_limits, trash, versions
 from kaagaz.db.engine import Database, unavailable, user_or_customer
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, INSUFFICIENT_PRIVILEGE, retry_on_deadlock, sqlstate
@@ -123,8 +125,19 @@ _DUPLICATE = text(
 )
 
 # #554 (module notes): document ``d`` was refused by its scan and is its family's only version.
+# PRD 9 F-03 (D3, #680): or it is in Trash, never read (no ready run, no page: a read that failed
+# again after a good one keeps its pages), not locked, and the person uploading sees it: kaagaz_duplicate
+# (0102, the same rule, the view read as the owner) says it is not in. This module
+# reads no view (the worker reaches it, #595); with no person (a zip's files) it is a duplicate as before.
 REFUSED_ALONE = (
-    "d.status = 'rejected' AND NOT EXISTS (SELECT 1 FROM documents v"
+    "(d.status = 'rejected' OR (d.deleted_at IS NOT NULL AND d.locked_at IS NULL"
+    " AND d.status IN ('failed', 'received', 'clean', 'needs_reader')"
+    " AND NOT EXISTS (SELECT 1 FROM processing_runs r WHERE r.customer_id = d.customer_id"
+    " AND r.document_id = d.id AND r.status = 'ready')"
+    " AND NOT EXISTS (SELECT 1 FROM pages p WHERE p.customer_id = d.customer_id AND p.document_id = d.id)"
+    " AND CASE WHEN NULLIF(current_setting('kaagaz.user_id', true), '') IS NULL THEN false"
+    " ELSE (SELECT f.answer FROM kaagaz_duplicate(ARRAY[d.sha256]) f) = 'none' END))"
+    " AND NOT EXISTS (SELECT 1 FROM documents v"
     " WHERE v.customer_id = d.customer_id AND v.family_id = d.family_id AND v.id <> d.id)"
 )
 _REFUSED_COPY = (
@@ -666,6 +679,32 @@ def fail_stuck(
     close_running(conn, customer_id, document_id, status="failed", error_code=STUCK_NO_JOB, now=now)
     conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
     return True
+
+
+# --- Stop (#713) ---------------------------------------------------------------------
+
+
+class NotStoppable(Exception):
+    """Stop refused: not waiting, checked or read (or gone, in Trash or locked); ``read_before``
+    when it is being read again after a reading that finished (Tushar, 20 Nov 2026: that goes on)."""
+
+    def __init__(self, document_id: str, *, read_before: bool = False) -> None:
+        super().__init__(document_id)
+        self.read_before = read_before
+
+
+def stop_reading(conn: Connection, customer_id: str, document_id: str, *, now: datetime) -> None:
+    """Stop the document (``trash.stop_reading``, its rule and effects), under the family lock, so
+    a move to Trash or a lock under way is waited for. Raises NotStoppable, and nothing changes,
+    when it can't be. ``conn`` comes from ``Database.user``; the caller checked the file through
+    the view and audits it. 2 to 5 statements."""
+    family_id = lock_family(conn, customer_id, document_id)
+    if family_id is None:
+        raise NotStoppable(document_id)
+    if conn.execute(text(_READ_BEFORE), {"c": customer_id, "d": document_id, "fence": None}).scalar_one():
+        raise NotStoppable(document_id, read_before=True)
+    if not trash.stop_reading(conn, customer_id, family_id, now=now, document_id=document_id):
+        raise NotStoppable(document_id)
 
 
 # --- read one page again, and Keep as is (PRD 5 F5) ----------------------------

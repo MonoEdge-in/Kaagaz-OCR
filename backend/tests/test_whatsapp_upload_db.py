@@ -701,9 +701,9 @@ def test_a_copy_in_trash_is_named_and_a_locked_copy_never_is(world: World) -> No
     world.folder(person, "Bills")
     trashed = _browser_copy(world, person, pdf("trash"), "trashed.pdf")
     locked = _browser_copy(world, person, pdf("locked"), "secret.pdf")
-    _owner(
+    _owner(  # Changed on purpose (PRD 9 F-03): read, as a copy in Trash never read is replaced
         world.db,
-        "UPDATE documents SET deleted_at = now(), deleted_by = uploaded_by WHERE id = :d",
+        "UPDATE documents SET status = 'ready', deleted_at = now(), deleted_by = uploaded_by WHERE id = :d",
         {"d": trashed},
     )
     _owner(

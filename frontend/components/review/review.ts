@@ -5,7 +5,9 @@
 import { REASON_FILTER_TEXT, fieldText, labelText } from "@/components/viewer/labels";
 import { checkReasonText } from "@/components/viewer/panels";
 import { ApiError, resolveReview } from "@/lib/api";
+import { withFrom } from "@/lib/backLink";
 import type {
+  DocumentSummary,
   LabelReason,
   ReviewChoice,
   ReviewItem,
@@ -180,17 +182,6 @@ export const REASON_FILTERS: readonly { value: ReviewReason; text: string }[] = 
   { value: "amount_outlier", text: REASON_FILTER_TEXT.amount_outlier },
 ];
 
-/** "Group by document" (U6): the items shown, by document, in the order each first appears. */
-export function groupByDocument(items: readonly ReviewItem[]): { id: string; name: string; items: ReviewItem[] }[] {
-  const groups = new Map<string, { id: string; name: string; items: ReviewItem[] }>();
-  for (const item of items) {
-    const group = groups.get(item.document_id);
-    if (group) group.items.push(item);
-    else groups.set(item.document_id, { id: item.document_id, name: item.document_name, items: [item] });
-  }
-  return [...groups.values()];
-}
-
 /** The filter's choice from the select; "" (any reason) or anything else is no filter. */
 export function parseReason(value: string): ReviewReason | null {
   return REASON_FILTERS.find((choice) => choice.value === value)?.value ?? null;
@@ -253,10 +244,11 @@ export function reasonTag(reason: LabelReason): string {
 /** R6: how the queue is shown. "focus" (R3) is one value at a time. */
 export type QueueView = "focus" | "all" | "document";
 
+// PRD 9 F-17: By document first, the view Review opens on.
 export const QUEUE_VIEWS: readonly { value: QueueView; text: string }[] = [
+  { value: "document", text: "By document" },
   { value: "focus", text: "One at a time" },
   { value: "all", text: "All items" },
-  { value: "document", text: "By document" },
 ];
 
 /** R3: "3 of 15", counting the values already settled in this visit. */
@@ -304,4 +296,48 @@ export function focusIndexAfter(list: ReviewList, index: number): number | "more
   if (index < list.items.length) return index;
   if (list.items.length < list.total) return "more";
   return list.items.length > 0 ? 0 : null;
+}
+
+// --- PRD 9 F-17: By document ---------------------------------------------------------------
+
+/** The Filter menu's words for the reason shown. */
+export function reasonText(reason: ReviewReason | null): string {
+  return REASON_FILTERS.find((choice) => choice.value === reason)?.text ?? "Any reason";
+}
+
+/**
+ * GET /documents's parameters for By document: the file list's Needs attention documents (a page
+ * unreadable or uncertain not kept as is, or a value waiting), newest first. Read from the pages'
+ * columns, never every document's words; the exact words to check are counted when one is opened.
+ */
+export const REVIEW_DOCUMENTS = { attention: true, limit: 50 } as const;
+
+/** "2 pages to check · 3 values to review"; "Lines to check" when it is listed only for lines an
+ * Ensemble run read differently (counted when the document is opened). */
+export function toCheckText(document: Pick<DocumentSummary, "pages_unreadable" | "pages_uncertain" | "values_to_review">): string {
+  const pages = document.pages_unreadable + document.pages_uncertain;
+  const values = document.values_to_review;
+  const parts = [
+    pages > 0 ? `${pages} page${pages === 1 ? "" : "s"} to check` : "",
+    values > 0 ? `${values} value${values === 1 ? "" : "s"} to review` : "",
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : "Lines to check";
+}
+
+const DOCUMENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The document at `at` of the list, on its Needs attention tab; ?next= carries the ones after it
+ * (Next document), and ?from= the way back to Review. */
+export function openDocumentHref(ids: readonly string[], at: number): string {
+  const params = new URLSearchParams({ tab: "attention" });
+  const rest = ids.slice(at + 1);
+  if (rest.length > 0) params.set("next", rest.join(","));
+  return withFrom(`/documents/${encodeURIComponent(ids[at] ?? "")}?${params.toString()}`, "/review");
+}
+
+/** Next document, from the address's ?next=: the first of them, carrying the rest; null at the last.
+ * Only document ids count; anything else in the address is dropped. */
+export function nextDocumentHref(next: string | null): string | null {
+  const ids = (next ?? "").split(",").filter((id) => DOCUMENT_ID.test(id));
+  return ids.length > 0 ? openDocumentHref(ids, 0) : null;
 }

@@ -48,7 +48,6 @@ export const ENSEMBLE_FLAGGED = "Run Ensemble on flagged words";
 export const ENSEMBLE_DOCUMENT = "Run Ensemble on full document";
 export const SEND_TO_ENSEMBLE = "Send to Ensemble";
 export const EXPORT_LABEL = "Export as Data"; // Vrushit UAT (25 Oct 2026): the read text as a .txt file
-export const DOWNLOAD_LABEL = "Download original";
 export const ENSEMBLE_INFO =
   "Ensemble reads the same text with several recognition models and compares their readings. When they agree, the word is resolved. When they don't, it stays flagged for you, with each reading shown.";
 export const ABOUT_ENSEMBLE = "About Ensemble";

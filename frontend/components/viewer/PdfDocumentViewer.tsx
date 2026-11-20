@@ -38,6 +38,7 @@ import { Button, buttonVariants } from "@/components/extend/ui/button";
 import { flagDomId, markLabel } from "@/components/review/wordReview";
 import { markerId } from "@/components/words/ViewerWords";
 import { markerRect, unturnedBox } from "@/components/words/spots";
+import { APPROXIMATE_SPOT } from "@/components/viewer/selection";
 import type { Marker } from "@/components/words/spots";
 import { fileUrl } from "@/lib/api";
 import { MOTION_MS, play } from "@/lib/motion";
@@ -47,14 +48,14 @@ import {
   focusFirstWord,
   isWordMark,
   markChecked,
-  markName,
+  pageMarkName,
   marksOnPage,
   showWordsByDefault,
   wordMarkView,
   wordsChipText,
 } from "./readingMarks";
 import styles from "./PageViewer.module.css";
-import { SaveForEveryone, usePageTurns } from "./SavePageTurns";
+import { SaveForEveryone, TurnWithAiStatus, usePageTurns, useTurnWithAi } from "./SavePageTurns";
 import { centredScroll, mostVisiblePage, panTo } from "./viewer";
 import { wordColour } from "./YourWords";
 
@@ -75,6 +76,8 @@ export interface PdfDocumentViewerProps {
   highlights: Region[];
   /** What the spot is, under the viewer ("Highlighted: Grand total"); else a plain line. */
   highlightNote?: string;
+  /** PRD 9 F-16: the spot was not confirmed: drawn dashed, labelled APPROXIMATE_SPOT. */
+  approximate?: boolean;
   /** The file's download address (downloadHref); none, no Download. */
   download?: string | null;
   marks?: Marker[];
@@ -147,6 +150,7 @@ export function PdfDocumentViewer({
   onPageChange,
   highlights,
   highlightNote,
+  approximate = false,
   download = null,
   marks = [],
   activeMark = null,
@@ -166,6 +170,8 @@ export function PdfDocumentViewer({
   const viewer = useRef<PDFViewerHandle>(null);
   const turns = usePageTurns(document.id, document.page_turns, userId);
   const [handedTurns, setHandedTurns] = useState(turns.opening);
+  // #709: the turn menu's choices with the orientation check; their turns are handed in as a save's.
+  const ai = useTurnWithAi(document.id, userId, turns, setHandedTurns, onTurnsSaved);
   const [showHighlights, setShowHighlights] = useState(true);
   const [showWords, setShowWords] = useState(() => showWordsByDefault(role));
   const [crowdedOpen, setCrowdedOpen] = useState<readonly number[]>([]); // pages whose chip was pressed
@@ -329,10 +335,12 @@ export function PdfDocumentViewer({
               <div
                 key={`spot-${index}`}
                 data-spot=""
-                className={styles.box}
+                className={approximate ? `${styles.box} ${styles.approximate}` : styles.box}
                 aria-hidden="true"
                 style={{ ...place(region.box), visibility: showHighlights ? undefined : "hidden" }}
-              />
+              >
+                {approximate ? <span className={styles.approximateLabel}>{APPROXIMATE_SPOT}</span> : null}
+              </div>
             ) : null,
           )}
           {showHighlights &&
@@ -386,7 +394,7 @@ export function PdfDocumentViewer({
             problems.map((mark, index) => {
               if (mark.region.kind !== "box" || (isWordMark(mark) && !words.drawn(mark.region))) return null;
               const checked = markChecked(mark, flags);
-              const name = markName(mark, index, problems.length, checked);
+              const name = pageMarkName(problems, index, flags); // PRD 9 F-14: as its chip
               return (
                 <button
                   key={`problem-${index}`}
@@ -408,7 +416,7 @@ export function PdfDocumentViewer({
         </>
       );
     },
-    [showHighlights, showWords, crowdedOpen, wordBoxes, wordHits, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, pageNo, hotMark, onHotMark, onMark],
+    [showHighlights, showWords, crowdedOpen, wordBoxes, wordHits, highlights, approximate, marks, activeMark, flags, activeFlag, onFlag, readingMarks, pageNo, hotMark, onHotMark, onMark],
   );
 
   return (
@@ -422,7 +430,17 @@ export function PdfDocumentViewer({
         showDownload={false}
         pageRotations={handedTurns}
         onPageRotationsChange={turns.show}
-        turnMenuDisabled={turns.saving}
+        turnMenuDisabled={ai.busy}
+        turnWithAi={{
+          onPick: (choice, pages) => void ai.run(choice, pages),
+          status: (
+            <TurnWithAiStatus
+              ai={ai}
+              className="flex max-w-72 flex-wrap items-center gap-1 px-2 text-sm"
+              buttonClassName={buttonVariants({ variant: "ghost", size: "sm" })}
+            />
+          ),
+        }}
         renderPageOverlay={overlay}
         onActivePageChange={pageChanged}
         onDocumentLoadSuccess={() => setOpen(true)}

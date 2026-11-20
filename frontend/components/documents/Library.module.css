@@ -703,13 +703,17 @@
 }
 
 /* Fixed in the window (menuPlace, library.ts), so <main> and the table never cut it; the
-   1px edge is its only elevation (no shadows). */
+   1px edge is its only elevation (no shadows). Never taller than the window (menuPlace
+   also gives it the room on its side): a long menu scrolls inside, issue 711. */
 .menuList {
   position: fixed;
   z-index: var(--z-dropdown);
   min-width: 13rem;
-  /* of the window: a fixed box's containing block; 22rem keeps each item's line short */
-  max-width: min(22rem, calc(100% - 16px));
+  /* of the window: a fixed box's containing block; 18rem keeps the menu small */
+  max-width: min(18rem, calc(100% - 16px));
+  max-height: calc(100dvh - 2 * var(--space-2));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   margin: 0;
   padding: var(--space-1);
   list-style: none;
@@ -725,8 +729,8 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: var(--control-h);
-  padding: var(--space-2) var(--space-3);
+  min-height: var(--control-min);
+  padding: var(--space-1) var(--space-2);
   border: 0;
   border-radius: var(--k-r-3);
   background: transparent;
@@ -747,6 +751,9 @@
 }
 
 .menuHint {
+  white-space: nowrap; /* one line, its full text the item's tooltip */
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   font-weight: 400;
@@ -813,4 +820,11 @@ li:has(> .menuItem.danger) {
 /* issue 484: the folder picker's search, above its tree, past 200 folders. */
 .pickerFind {
   padding-block-end: var(--space-2);
+}
+
+/* Issue 725: "Ask in this folder", under the place's hints; a full 44px target. */
+.askHere {
+  align-self: flex-start;
+  min-height: var(--h-lg);
+  margin-top: var(--space-2);
 }

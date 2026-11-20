@@ -16,6 +16,8 @@
 // cite. "Most relevant" on a row puts it on top at once, and it is kept for this answer
 // (pinSource; the server's newest pick comes back in message.pin). One model answers
 // in Ask (Tushar, 16 Oct 2026): no line on who answered or whether models agreed.
+// #718, #719 (20 Nov 2026; FileSources.tsx): a new answer lists its cited sources by file, each
+// with its folder path and best pages, then "Searched N files"; answers saved before, as above.
 // "Also mentions “Jalna”" (Tushar, 17 Oct 2026; MentionsSection): last in the bar, every
 // other document holding the question's key terms, and "Mentioned in N more documents".
 // UI audit A4 (16 Oct 2026): "not found" ends with calm next steps, never a dead end:
@@ -56,10 +58,12 @@ import {
   rankedSources,
   readingNote,
   sentenceCitations,
+  sourceFiles,
   sourcesCount,
   UNCHECKED_TEXT,
 } from "./answer";
 import { FeedbackControls } from "./FeedbackControls";
+import { FileSources, SearchedFiles } from "./FileSources";
 import { DocumentRow, MentionsSection, RelatedRow, SourceCard } from "./SourceCard";
 import styles from "./Chat.module.css";
 
@@ -276,6 +280,9 @@ export const AnswerView = memo(function AnswerView({
   const closestInBar = v2 ? [] : answer.closest_documents;
   const mentions = mentionsOf(answer);
   const mentioned = mentions ? <MentionsSection mentions={mentions} /> : null;
+  // #719: "Searched N files", under the sources; none on an answer saved before.
+  const searchedFiles = answer.searched_files ?? [];
+  const searched = searchedFiles.length > 0 ? <SearchedFiles files={searchedFiles} terms={terms} /> : null;
   const note = readingNote(answer);
   const noteText = note ? <p className={styles.plain}>{note.text}</p> : null;
   const pageCount = note ? note.pages.length + note.more : 0;
@@ -389,6 +396,7 @@ export const AnswerView = memo(function AnswerView({
           </p>
         </div>
         {v2 ? <DocumentList answer={answer} terms={terms} shown={CLOSEST_SHOWN} /> : null}
+        {searched}
         {noteText}
         {understood}
         {notePages || closestInBar.length > 0 || mentions ? (
@@ -454,7 +462,11 @@ export const AnswerView = memo(function AnswerView({
   }
 
   const cards = citationMap(answer);
-  const sources = rankedSources(answer.citations, pin);
+  // #718: a new answer lists its sources by file (FileSources); one saved before, one by one.
+  const files = sourceFiles(answer);
+  // A cited file past the 10 listed (listedDocuments) keeps its sources in the bar.
+  const byFile = new Set(files.map((file) => file.document_id));
+  const sources = rankedSources(answer.citations.filter((c) => !byFile.has(c.document_id)), pin);
   // The source put on top is the first, when it is one of them (rankedSources).
   const pinnedFirst = sources[0] && isPinned(pin, sources[0].document_id, sources[0].page_no, sources[0].ref_id);
   const related = rankedRelated(answer.related_documents ?? [], pin);
@@ -505,6 +517,8 @@ export const AnswerView = memo(function AnswerView({
       {listed}
       {assumed}
       {noteText}
+      {files.length > 0 ? <FileSources files={files} terms={terms} /> : null}
+      {searched}
       {sources.length > 0 || related.length > 0 || notePages || mentions ? (
         <SourcesBar count={sourcesCount(sources.length, related.length, pageCount, mentions?.total ?? 0)}>
           {sources.length > 0 ? (

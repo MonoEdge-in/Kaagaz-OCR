@@ -286,7 +286,8 @@ describe("the Attention panel (PRD 5 U5)", () => {
       createElement(AttentionPanel, {
         status: "ready",
         pages,
-        open: open.map((word) => ({ ...word, text: "", reason_text: "" })),
+        // Changed on purpose (PRD 9 F-14): the open words carry their spot and text as read (openMarks).
+        open: open.map((word) => ({ ...word, text: "", reason_text: "", as_read: "", region: { kind: "box" as const, page: word.page_no, box: [0, 0, 1, 0.1] as [number, number, number, number] } })),
         current: null,
         marks: [],
         onPage: () => undefined,

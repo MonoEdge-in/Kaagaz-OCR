@@ -2,8 +2,8 @@
 
 // The documents screen: the page header (the app header's Upload is the one upload action,
 // 16 Oct 2026; an empty list's empty state has "Upload files"); the folder tree (beside the
-// list from 1024 px, stacked above it below that), its "+" the one New folder; where you
-// are, with Rename, Move and Delete, and "Read with" at the list's right edge (it sets how
+// list from 1024 px, stacked above it below that), its "+" a New folder; where you
+// are, with New folder (PRD 9 F-18), Rename, Move and Delete, and "Read with" at the list's right edge (it sets how
 // the next uploads are read, from either Upload button or a drop); search inside the
 // documents and the filter chips; the list and its pages. UI audit (16 Oct 2026): "Read
 // with" has its room kept from the first paint, a skeleton until the limits come (D1); with documents listed, the whole
@@ -29,8 +29,9 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
-import { accessAbilities } from "@/components/access/abilities";
+import { accessAbilities, privateFirst } from "@/components/access/abilities";
 import { ASK_FOR_ACCESS, asksForAccess } from "@/components/access/askForAccess";
+import { askInFolderHref } from "@/components/chat/logic";
 import { AudiencePanel } from "@/components/access/AudiencePanel";
 import { KeptFromMe } from "@/components/access/KeptFromMe";
 import type { AudienceTarget } from "@/components/access/AudiencePanel";
@@ -38,7 +39,7 @@ import { PlaceBadge } from "@/components/access/PlaceBadge";
 import { folderPlace, placeHint, placeKind } from "@/components/access/places";
 import { NOT_FOUND_FOLDER, NOT_FOUND_TEXT, SHARED, hiddenMovedText } from "@/components/access/words";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
-import { chosenDepartment, departmentsOf, rememberDepartment } from "@/components/files/departments";
+import { chosenDepartment, departmentsOf, isDepartment, sortInto } from "@/components/files/departments";
 import { DocumentsGrid } from "@/components/files/DocumentsGrid";
 import { FolderTiles } from "@/components/files/FolderTiles";
 import { readViewMode, saveViewMode } from "@/components/files/viewMode";
@@ -183,7 +184,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [tags, setTags] = useState<Tag[] | null>(null);
   const [tagsError, setTagsError] = useState<string | null>(null);
   const [tagsVersion, setTagsVersion] = useState(0);
-  const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+", the one New folder
+  const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+" (PRD 9 F-18: and New folder beside Rename)
   const [dropError, setDropError] = useState<string | null>(null);
   // undone: the words once Undo worked ("Moved back.", "Restored from Trash."). No undo: a note only (#537).
   const [toast, setToast] = useState<{ message: string; undo?: () => Promise<void>; undone?: string } | null>(null);
@@ -207,7 +208,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [departmentChoice, setDepartmentChoice] = useState<string | null | undefined>(undefined);
   const [versionFile, setVersionFile] = useState<{ file: File; of: DocumentSummary } | null>(null);
   // PRD 7 (#604): the folder whose Audience panel is open.
-  const [audienceOf, setAudienceOf] = useState<AudienceTarget | null>(null);
+  const [audienceOf, setAudienceOf] = useState<(AudienceTarget & { start?: "private" }) | null>(null);
 
   // #648: who may link versions, the link dialog open, and the groups of possible versions.
   const canLink = mayLinkVersions(me);
@@ -389,21 +390,22 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const folderGone = folders !== null && library.folderId !== null && current === null;
   // The folder in the address, even before the folder list has loaded.
   const uploadInto = library.folderId ?? undefined;
-  // F2: outside any folder, the files go into the department picked (the last one used).
+  // F2: outside any folder, the files go into the department picked (PRD 9 F-01: only a pick).
   const departments = useMemo(() => departmentsOf(folders ?? []), [folders]);
   const department = chosenDepartment(departmentChoice, departments);
 
   const openPicker = () => inputRef.current?.click();
   // #484: a whole folder (picked or dropped) keeps its structure, inside the folder shown at first.
   const dropFolders = (entries: FileSystemDirectoryEntry[]) => folderPicking.drop(entries, library.folderId);
-  // Option 2, "Let Kaagaz sort them": loose files only, with no folder and no department, so
-  // auto-filing reads each one and files it, making the folders it needs.
+  // Option 2, "Let Kaagaz sort them": loose files, so auto-filing reads each one and files it,
+  // making the folders it needs. PRD 9 F-02: into the department being viewed (or picked at All
+  // documents), where it files them; with none, by type into an existing department.
   function onChooseToSort(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
     if (files.length === 0) return;
     setTrayOpen(true);
-    void uploads.addFiles(files);
+    void uploads.addFiles(files, undefined, sortInto(tree, library.folderId, department) ?? undefined);
   }
   const addFiles = (files: File[]) => {
     setTrayOpen(true);
@@ -412,7 +414,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
 
   function pickDepartment(id: string | null) {
     setDepartmentChoice(id);
-    rememberDepartment(id);
   }
 
   function chooseView(mode: ViewMode) {
@@ -599,6 +600,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const place = current ? folderPlace(tree, current.folder.id) : null;
   const abilities = accessAbilities(me, { departmentId: place?.department?.id ?? null });
   const audiencePlace = audienceOf ? folderPlace(tree, audienceOf.id) : null;
+  // #700: the folder's "Who can see this" reads Make private and opens at that step, for who may use it here.
+  const opensPrivate = current !== null && abilities.audience && privateFirst(abilities, place);
 
   // Only an empty list shows this button, in its empty state; the page header never does
   // (Tushar, 16 Oct 2026: two upload buttons): the app header's Upload is the screen's one
@@ -724,6 +727,12 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
               {current && (
                 <p className={libraryStyles.placeHint}>Files you upload here go into this folder.</p>
               )}
+              {/* #725: Ask limited to this folder (or department) and its subfolders. */}
+              {current && (
+                <Link className={`btn ${libraryStyles.askHere}`} href={askInFolderHref(current.folder.id)}>
+                  {isDepartment(current.folder) ? "Ask in this department" : "Ask in this folder"}
+                </Link>
+              )}
               {/* PRD 7 (#604): who sees this folder's files, with the people icon's words. */}
               {accessHint && (
                 <p className={libraryStyles.placeHint}>
@@ -801,9 +810,16 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 suggestions={nameSuggestions}
                 onAudience={
                   current && abilities.audience
-                    ? () => setAudienceOf({ kind: "folder", id: current.folder.id, name: current.folder.name })
+                    ? () =>
+                        setAudienceOf({
+                          kind: "folder",
+                          id: current.folder.id,
+                          name: current.folder.name,
+                          start: opensPrivate ? "private" : undefined,
+                        })
                     : undefined
                 }
+                makePrivate={opensPrivate}
               />
             )}
           </div>
@@ -1099,6 +1115,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                       onFolderCreated={foldersEdited}
                       onRemoved={afterRemoved}
                       onSaved={afterSave}
+                      onCopied={(message) => setToast({ message })} // #730: no new list: nothing changed
                       onFocusList={() => headingRef.current?.focus()}
                       onTagCreated={() => setTagsVersion((n) => n + 1)}
                       onUploadVersion={chooseVersion}
@@ -1154,6 +1171,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
       {audienceOf && (
         <AudiencePanel
           target={audienceOf}
+          start={audienceOf.start}
           myId={me.user.id}
           abilities={accessAbilities(me, { departmentId: audiencePlace?.department?.id ?? null })}
           place={audiencePlace}

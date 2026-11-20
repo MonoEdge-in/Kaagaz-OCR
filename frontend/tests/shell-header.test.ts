@@ -117,10 +117,10 @@ describe("G5: the header's search, Upload and account menu", () => {
     const upload = end.indexOf("className={`btn btn-primary ${styles.upload}`}");
     expect(upload).toBeGreaterThan(end.indexOf('role="search"'));
     expect(end.indexOf("<AccountMenu")).toBeGreaterThan(upload);
-    // Changed on purpose (UI rebuild, 21 Oct 2026): it searches inside documents first, names too.
-    expect(end).toMatch(/<label htmlFor="app-search" className="visually-hidden">\s*Search your documents/);
-    expect(end).toContain('placeholder="Search inside documents, or a name"');
-    expect(end).toContain('title="Search your documents (Ctrl+K, or Cmd+K on a Mac)"');
+    // Changed on purpose (#730): one search, a file by name or path; inside documents is the Documents screen's.
+    expect(end).toMatch(/<label htmlFor="app-search" className="visually-hidden">\s*Find a file by name or path/);
+    expect(end).toContain('placeholder="Find a file by name or path"');
+    expect(end).toContain('title="Find a file by name or path (Ctrl+K, or Cmd+K on a Mac)"');
     expect(end).toContain('aria-keyshortcuts="Control+K Meta+K"');
     // Upload goes to the documents screen, and opens its picker when already there.
     expect(end).toMatch(/<Link href="\/documents" className=\{`btn btn-primary \$\{styles\.upload\}`\} onClick=\{upload\}>/);

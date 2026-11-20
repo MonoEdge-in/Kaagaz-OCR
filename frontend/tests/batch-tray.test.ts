@@ -87,6 +87,7 @@ const TRAY = {
   onClearFinished: () => undefined,
   onRestore: () => undefined,
   onRetry: () => undefined,
+  onRemove: () => undefined, // PRD 9 F-04: a row not uploaded can be removed
   tree: buildTree([]),
   onUndone: () => undefined,
   canReread: true,
@@ -166,6 +167,14 @@ describe("each file's place in the tray", () => {
     expect(tray(false)).not.toContain(CANT_CHECK_TEXT);
   });
 
+  it("offers Remove on each row not uploaded, failed or refused, and on no other (PRD 9 F-04)", () => {
+    const tray = (entries: UploadEntry[]) => renderToStaticMarkup(createElement(BatchTray, { ...TRAY, entries }));
+    const refused = row("macro", { kind: "error", message: "Kaagaz can’t read .docm files." });
+    const lost = row("lost", { kind: "error", message: "Not sent.", retry: true });
+    expect(tray([refused, lost]).match(/>Remove<span class="visually-hidden"> (macro|lost)\.pdf</g)).toHaveLength(2);
+    expect(tray([row("ready", done(doc("r")))])).not.toContain(">Remove<");
+  });
+
   it("offers Retry all not sent on a drop with two or more files not sent, and not with one", () => {
     const notSent = (key: string) => row(key, { kind: "error", message: "The server was restarting. Retry.", retry: true });
     const tray = (entries: UploadEntry[]) => renderToStaticMarkup(createElement(BatchTray, { ...TRAY, entries }));
@@ -187,11 +196,13 @@ describe("each file's place in the tray", () => {
       attention: 1,
       failed: 2,
       stopped: 0,
+      cancelled: 0, // Changed on purpose (#713): files cancelled from the tray, counted on their own
       already: 1,
       notSent: 0,
     });
+    // Changed on purpose (#693): the already-uploaded file is said next to the total it is part of.
     expect(summaryText(counts)).toBe(
-      "Batch of 9 files · 1 ready · 2 sending · 1 reading · 1 waiting · 1 needs attention · 2 failed · 1 already uploaded",
+      "Batch of 9 files (1 already uploaded) · 1 ready · 2 sending · 1 reading · 1 waiting · 1 needs attention · 2 failed",
     );
   });
 
@@ -205,11 +216,13 @@ describe("each file's place in the tray", () => {
       attention: 2,
       failed: 0,
       stopped: 0,
+      cancelled: 0, // Changed on purpose (#713): the new count
       already: 1,
       notSent: 0, // Changed on purpose (#468): the new count
     };
+    // Changed on purpose (#693): the already-uploaded file is said next to the total it is part of.
     expect(summaryText(counts)).toBe(
-      "Batch of 50 files · 31 ready · 12 reading · 4 waiting · 2 need attention · 1 already uploaded",
+      "Batch of 50 files (1 already uploaded) · 31 ready · 12 reading · 4 waiting · 2 need attention",
     );
     expect(summaryText(trayCounts([row("one", done(doc("o")))]))).toBe("Batch of 1 file · 1 ready");
   });
@@ -422,13 +435,24 @@ describe("a batch id per drop", () => {
 });
 
 describe("remembered in this browser", () => {
-  const batch: StoredBatch = { id: ID, at: NOW - 1000, already: 1, notSent: 0 };
+  // Changed on purpose (#688): a drop also remembers the documents Clear finished took out (ids only).
+  const batch: StoredBatch = { id: ID, at: NOW - 1000, already: 1, notSent: 0, cleared: [] };
 
   it("keeps only ids and counts, never a file name, and reads them back", () => {
     const store = new MemoryStore();
     writeStored(store, [batch], NOW);
     expect(JSON.parse(store.getItem(STORE_KEY) ?? "")).toEqual([batch]);
-    expect(Object.keys(batch).sort()).toEqual(["already", "at", "id", "notSent"]);
+    expect(Object.keys(batch).sort()).toEqual(["already", "at", "cleared", "id", "notSent"]);
+    expect(readStored(store, NOW)).toEqual([batch]);
+  });
+
+  it("remembers the documents Clear finished took out, ids only; a drop kept before this has none (#688)", () => {
+    const store = new MemoryStore();
+    const gone = "7a1c2d3e-4a5b-4c6d-8e7f-901a2b3c4d5e";
+    const { cleared: _none, ...older } = batch;
+    store.setItem(STORE_KEY, JSON.stringify([{ ...batch, cleared: [gone.toUpperCase(), "secret.pdf", 7] }]));
+    expect(readStored(store, NOW)).toEqual([{ ...batch, cleared: [gone] }]);
+    store.setItem(STORE_KEY, JSON.stringify([older]));
     expect(readStored(store, NOW)).toEqual([batch]);
   });
 

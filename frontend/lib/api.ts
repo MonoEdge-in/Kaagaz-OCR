@@ -17,6 +17,7 @@ import type {
   AdminChange,
   AdminDepartment,
   DepartmentMember,
+  MyAccess,
   PersonAccess,
   PlacePreview,
   HiddenMove,
@@ -453,6 +454,9 @@ export const restoreDocument = (id: string) =>
  */
 export const reprocessDocument = (id: string, reading?: UploadReading) =>
   request<DocumentSummary>("POST", `/documents/${id}/reprocess`, reading);
+/** #713: stop reading a file still waiting, being checked or read (a reviewer or an admin; 409
+ * not_stoppable, in_trash or locked otherwise). The reply: failed with ``stopped``; Read again starts it again. */
+export const stopDocument = (id: string) => request<DocumentSummary>("POST", `/documents/${id}/stop`);
 /**
  * An admin session with two-step sign-in, or a granted user who just confirmed
  * their password (403 otherwise), and only from Trash (409 not_in_trash
@@ -610,6 +614,11 @@ export const savePageTurnsForEveryone = (
     user_id: userId,
   });
 
+/** Which way up each page's writing is (#709): the turn each page needs on top of the file's own
+ * (pages already upright left out) and the pages it couldn't tell. Saves nothing. */
+export const straightenPages = (id: string) =>
+  request<{ pages: PageTurnSaved[]; unsure: number[] }>("POST", `/documents/${encodeURIComponent(id)}/straighten`);
+
 /**
  * Upload one file with progress (fetch cannot report upload progress, XHR can),
  * into a folder when one is given, else at the top level. userId is who was
@@ -630,10 +639,12 @@ export function uploadDocument(
   onSent?: () => void,
   departmentId?: string, // F2: used by the server when no folder is named
   onWaiting?: UploadWaiting,
+  replaceTrash?: boolean, // #697: Upload as new file: its copy in Trash is deleted forever first
 ): Promise<UploadResult> {
   return resumableUpload(file, {
     file_name: file.name, file_size: file.size, user_id: userId, folder_id: folderId,
     department_id: folderId ? undefined : departmentId, batch_id: batchId, ...readingBody(reading),
+    replace_trash: replaceTrash || undefined,
   }, onProgress, onSent, onWaiting);
 }
 
@@ -662,6 +673,7 @@ type ResumableStart = {
   file_name: string; file_size: number; fingerprint: string; user_id: string; folder_id?: string; department_id?: string;
   batch_id?: string; read_mode?: string; read_model?: string; version_document_id?: string; version_note?: string;
   folder_upload_item_id?: string; // #484: the server takes the folder and batch from the item
+  replace_trash?: boolean; // #697
 };
 const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
 
@@ -1478,6 +1490,8 @@ export const adminDisconnectWhatsApp = (userId: string) =>
 
 /** A path part: an id typed into the address bar may hold "/" or "?". */
 const segment = (part: string) => encodeURIComponent(part);
+/** #707: My access, the signed-in person's own. */
+export const getMyAccess = () => request<MyAccess>("GET", "/me/access");
 export const getPersonAccess = (userId: string) => request<PersonAccess>("GET", `/admin/users/${segment(userId)}/access`);
 export const setManagement = (userId: string, on: boolean, password?: string) =>
   request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, {

@@ -53,6 +53,7 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   "document.autofile": (entry) => `filed it in ${place(entry) ?? "a folder"}`,
   "document.autofile_undo": () => "undid the automatic filing",
   "document.reprocess": () => "asked to read it again",
+  "document.stop": () => "stopped reading it", // #713
   // #600: pages is how many pages the save changed, turned how many are left turned after it.
   "document.page_turns": ({ details: { pages, turned } }) => {
     if (turned === 0) return "put the pages back as scanned";
@@ -115,9 +116,10 @@ export function activitySentence(entry: Entry): string {
   return `${activityWho(entry)} ${activityWords(entry)}`;
 }
 
-/** The document a row is about; null when it is not about one; a deleted one says so. */
+/** The document a row is about; null when it is not about one, or for a delete, whose words
+ * already say "deleted a document" (#693); a deleted one says so. */
 export function activityDocument(entry: Entry): string | null {
-  if (!entry.document) return null;
+  if (!entry.document || entry.action === "document.delete") return null;
   return entry.document.deleted || entry.document.name === null ? "a deleted document" : entry.document.name;
 }
 

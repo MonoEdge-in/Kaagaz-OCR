@@ -193,6 +193,8 @@ def status_message(
     if status == "failed" and failure_code == "customer_disabled":
         # The worker came to it while the organisation was turned off (0014): nothing was read.
         return "This file was not read because your organisation was turned off. Read it again."
+    if status == "failed" and failure_code == "stopped":
+        return "Reading was stopped. Read it again to start it again."  # #713: Stop
     if status == "failed" and failure_code in FILE_FAILURES:
         return FILE_FAILURES[failure_code]  # #522: a read again can't help; another copy can
     if status == "failed":
@@ -344,6 +346,7 @@ def document_summary(
         ),
         "progress": in_progress(row["status"], row["progress"]),
         "stuck": bool(row["stuck"]),  # issue 407: may be read again (db/documents.py STUCK)
+        "read_before": bool(row["read_before"]),  # #713: read again after a finished reading: no Stop
         "locked": bool(row["locked"]),  # PRD 7 (#605): opened only as page pictures, never read
         "time_left": document_time_left(row, now=now),
         "understanding": understanding(row, now=now),  # ready, its card and map still coming
@@ -379,6 +382,7 @@ def document_summary(
         "updated_at": None if row["last_updated_at"] is None else iso(row["last_updated_at"]),
         "updated_by": row["last_updated_by_name"],
         "department": row["department"],
+        "suggested_department": row["suggested_department"],  # PRD 9 F-01: {id, name} or null
         "pending_suggestion": row["pending_suggestion"],
     }
     if row["detected_type"] == "zip":
@@ -829,13 +833,18 @@ def document_link(row: RowMapping) -> dict[str, Any]:
 
 
 def page_readings(
-    page_no: int, rows: Sequence[RowMapping], marks: Sequence[RowMapping] = ()
+    page_no: int,
+    rows: Sequence[RowMapping],
+    marks: Sequence[RowMapping] = (),
+    live: Sequence[RowMapping] = (),
 ) -> dict[str, Any]:
     """``PageReadings``: each reader's lines on one page, the first reader first, and
     the page's reading marks (PRD 5 U3, ``listing.page_marks``).
-    ``text`` is the stored ``raw``, exactly as read. A reader keeps its lines while
-    they fit MAX_READING_LINES and MAX_READING_TEXT; past either, or after a line cut
-    in SQL, it stops and says ``truncated``. Never logged: it is document content."""
+    ``text`` is the stored ``raw``, exactly as read; a first reader's line is as ``clear_line``
+    shows it with ``live`` (PRD 9 F-12: the Text tab shows the fixes as the clean copy does).
+    A reader keeps its lines while they fit MAX_READING_LINES and MAX_READING_TEXT; past
+    either, or after a line cut in SQL, it stops and says ``truncated``.
+    Never logged: it is document content."""
     readers: list[dict[str, Any]] = []
     used = 0
     for row in rows:
@@ -858,8 +867,10 @@ def page_readings(
             reader["truncated"] = True
             continue
         used += len(line)
-        reader["lines"].append(_line(row))
+        reader["lines"].append({**_line(row), "box_source": row["box_source"]})  # PRD 9 F-16
         reader["truncated"] = bool(row["cut"])
+        if row["role"] == "first":
+            reader["lines"][-1] |= clear_line(row, live)
     shown = [{"quality": mark["quality"], "region": mark["region"], "text": mark["text"]} for mark in marks]
     return {"page_no": page_no, "readers": readers, "marks": shown}
 
@@ -896,8 +907,8 @@ def clear_line(row: RowMapping, live: Sequence[RowMapping]) -> dict[str, Any]:
     """A clean copy's ``ReadLine`` (#527): with its ``key`` and the ``correction`` in force (who
     and when, and ``before_text``, the line as first shown); ``text`` is the line's text now
     when a change in force touches it (``word_review.line_text``). O(changes)."""
-    change = word_review.line_correction(row, live)
-    text_now = word_review.line_text(row, live)
+    text_now, word = word_review.line_now(row, live)
+    change = word_review.line_correction(row, live, word)
     line = {**_line(row), "key": word_review.line_key(row), "correction": None}
     if text_now is not None:
         line["text"] = text_now
@@ -1034,6 +1045,16 @@ def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
     return ids
 
 
+def shown_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
+    """``cited_document_ids`` and the files the answer searched (#719): the documents whose states
+    a saved answer is shown with. A file searched but not cited never replaces the answer whole;
+    it only leaves the list (``answer_with_source_states``)."""
+    searched = (answer or {}).get("searched_files") or []
+    return cited_document_ids(answer) + [
+        str(each["document_id"]) for each in searched if each.get("document_id")
+    ]
+
+
 def _choices(answer: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     clarify = answer.get("clarify")
     return list(clarify.get("choices", [])) if isinstance(clarify, Mapping) else []
@@ -1161,6 +1182,14 @@ def answer_with_source_states(
         shown["related_documents"] = related
     if "documents" in answer:
         shown["documents"] = [each for each in answer.get("documents") or [] if kept(each.get("document_id"))]
+    # #719: only the files searched that are still live or an older version; none, no list.
+    searched = [
+        each
+        for each in shown.pop("searched_files", None) or []
+        if states.get(str(each.get("document_id"))) in ("live", "older_version")
+    ]
+    if searched:
+        shown["searched_files"] = searched
     if answer.get("clarify"):  # PRD 6 B1: a choice whose every document is gone is no choice
         alive = {document for document, state in states.items() if state != "in_trash"}
         documents = [set(map(str, c.get("document_ids", []))) for c in _choices(answer)]

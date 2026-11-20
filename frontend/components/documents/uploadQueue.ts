@@ -11,6 +11,7 @@ import { beingRead } from "@/components/viewer/reprocess";
 import { ApiError } from "@/lib/api";
 import { POLL_STEPS_MS } from "@/lib/poll";
 import type { BatchView, DocumentSummary, UploadReading } from "@/lib/types";
+import type { TrayAction } from "./batchTray";
 import type { UploadState } from "./logic";
 import type { StageTimes } from "./uploadStages";
 
@@ -27,6 +28,9 @@ export interface UploadEntry {
   batchId?: string; // the drop it came in (PRD 5 Q1); a new version has its own
   times?: StageTimes; // when it started sending, sent its last byte, and was replied to (U10)
   state: UploadState;
+  asNew?: boolean; // #697: this tab holds the file, so it may be sent again as a new file (not after a reload)
+  byYou?: boolean; // #713: stopped from this tab, by who pressed Stop here ("Stopped by you")
+  asked?: TrayAction; // #713: asked to stop or cancel while still being sent: done once it is stored
 }
 
 export interface UploadCounts {
@@ -41,9 +45,10 @@ export interface UploadQueue {
   finished: UploadCounts | null; // the batch that settled last, until the next starts or Clear
   settled: number; // how many batches have settled
   filed: number; // #536: files seen filed by Kaagaz (feature 28), which may have made a folder for them
+  cleared: string[]; // #688: the documents Clear finished took out; a batch's answer never adds them back
 }
 
-export const EMPTY_QUEUE: UploadQueue = { entries: [], batch: [], finished: null, settled: 0, filed: 0 };
+export const EMPTY_QUEUE: UploadQueue = { entries: [], batch: [], finished: null, settled: 0, filed: 0, cleared: [] };
 
 export type QueueEvent =
   | { type: "add"; entries: UploadEntry[] }
@@ -51,7 +56,11 @@ export type QueueEvent =
   // A batch's documents as GET /api/batches/{id} gave them: each file's own row follows
   // its document; with add (a drop from before a reload), the others get rows too.
   | { type: "batch"; batchId: string; documents: DocumentSummary[]; add: boolean }
-  | { type: "clear" };
+  | { type: "clear" }
+  // PRD 9 F-04: one failed or refused row taken out (its Remove button); any other row stays.
+  | { type: "remove"; key: string }
+  // #699: files still waiting taken out (Cancel, Cancel all waiting); never sent, no part of their drop.
+  | { type: "cancel"; keys: string[] };
 
 export const isBusy = (entry: UploadEntry) =>
   entry.state.kind === "waiting" ||
@@ -60,6 +69,13 @@ export const isBusy = (entry: UploadEntry) =>
   entry.state.kind === "saving" ||
   entry.state.kind === "reading" ||
   entry.state.kind === "restoring";
+
+/** PRD 9 F-04: the files a pick left out (folderPick's isSkipped), said once in the status line; "" for none. */
+export function skippedText(names: readonly string[]): string {
+  if (names.length === 0) return "";
+  const files = names.length === 1 ? "hidden or system file" : "hidden or system files";
+  return `Skipped ${names.length} ${files} (${names.slice(0, 3).join(", ")}${names.length > 3 ? ", …" : ""}).`;
+}
 
 /** #468: a file still in this tab only (waiting or sending): leaving the page now would lose it. */
 export const uploadsAtRisk = (entries: readonly Pick<UploadEntry, "state">[]) =>
@@ -72,8 +88,9 @@ export function followed(document: DocumentSummary): UploadState {
     : { kind: "done", documentId: document.id, document };
 }
 
-const documentOf = (state: UploadState) =>
-  state.kind === "reading" || state.kind === "done" ? state.documentId : null;
+// #713: a cancelled file too: once the batch lists it again (restored from Trash), its row follows it.
+export const documentOf = (state: UploadState) =>
+  state.kind === "reading" || state.kind === "done" || state.kind === "cancelled" ? state.documentId : null;
 
 /** Feature 28: read, then filed by Kaagaz, maybe into a folder it made just then. */
 const isFiled = (state: UploadState) => state.kind === "done" && state.document?.autofile === "filed";
@@ -109,13 +126,15 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
         const document = id === null ? undefined : byId.get(id);
         if (!document) return entry;
         seen.add(document.id);
+        // #713: a poll read before the Cancel committed: in Trash now, so later polls never list it.
+        if (entry.state.kind === "cancelled" && beingRead(document.status)) return entry;
         const state = followed(document);
         if (isFiled(state) && !isFiled(entry.state)) filed += 1;
         return { ...entry, state };
       });
       const added = event.add
         ? event.documents
-            .filter((document) => !seen.has(document.id))
+            .filter((document) => !seen.has(document.id) && !queue.cleared.includes(document.id))
             .map((document) => ({
               key: `document-${document.id}`,
               name: document.display_name,
@@ -127,8 +146,26 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
         : [];
       return settle({ ...queue, entries: [...entries, ...added], filed: queue.filed + filed });
     }
-    case "clear":
-      return { ...queue, entries: queue.entries.filter(isBusy), finished: null };
+    case "clear": {
+      const gone = queue.entries.filter((entry) => !isBusy(entry)).map((entry) => documentOf(entry.state));
+      const cleared = [...queue.cleared, ...gone.filter((id): id is string => id !== null)];
+      return { ...queue, entries: queue.entries.filter(isBusy), finished: null, cleared };
+    }
+    case "remove":
+      return {
+        ...queue,
+        entries: queue.entries.filter((entry) => entry.key !== event.key || entry.state.kind !== "error"),
+      };
+    case "cancel": {
+      const gone = new Set(
+        queue.entries.filter((entry) => event.keys.includes(entry.key) && entry.state.kind === "waiting").map((entry) => entry.key),
+      );
+      return settle({
+        ...queue,
+        entries: queue.entries.filter((entry) => !gone.has(entry.key)),
+        batch: queue.batch.filter((key) => !gone.has(key)),
+      });
+    }
   }
 }
 
@@ -200,7 +237,7 @@ function settle(queue: UploadQueue): UploadQueue {
   if (queue.batch.length === 0 || queue.entries.some(isBusy)) return queue;
   const counts: UploadCounts = { uploaded: 0, already: 0, failed: 0 };
   for (const entry of queue.entries) {
-    if (!queue.batch.includes(entry.key)) continue;
+    if (!queue.batch.includes(entry.key) || entry.state.kind === "cancelled") continue; // #713: in Trash, not uploaded
     if (entry.state.kind === "done") counts.uploaded += 1;
     else if (entry.state.kind === "error") counts.failed += 1;
     else counts.already += 1;

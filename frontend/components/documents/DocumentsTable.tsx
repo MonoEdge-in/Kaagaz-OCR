@@ -80,6 +80,7 @@ import { DOCUMENT_DRAG } from "./FolderNav";
 import { pathLabel, shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
+import { copyFor, filePath } from "./copyPath";
 import { movableItems } from "./library";
 import type { EditAction, RowAction } from "./library";
 import type { SortKey, SortOrder } from "./libraryQuery";
@@ -147,6 +148,8 @@ export interface RowEvents {
   onUploadVersion(document: DocumentSummary): void;
   /** PRD 7 (#604): files given to people: the toast's words. */
   onShared?(message: string): void;
+  /** #730: Copy path or Copy link worked: the toast's words; nothing changed, so no new list. */
+  onCopied?(message: string): void;
   /** #648 (V13): the link dialog, from a row ("pick") or the selection ("order"); left out for
    * anyone who may not link. */
   onLinkVersions?(documents: DocumentSummary[], start: "pick" | "order"): void;
@@ -338,6 +341,7 @@ export function DocumentsTable({
     () => ({
       onRemoved: (message, undo) => latestEvents.current.onRemoved(message, undo),
       onSaved: (message, undo, moved) => latestEvents.current.onSaved(message, undo, moved),
+      onCopied: (message) => latestEvents.current.onCopied?.(message),
       onFocusList: () => latestEvents.current.onFocusList(),
       onTagCreated: () => latestEvents.current.onTagCreated(),
       onFolderCreated: () => latestEvents.current.onFolderCreated(),
@@ -896,7 +900,7 @@ const DocumentRow = memo(function DocumentRow({
   inTrash: boolean;
   deletable: boolean; // it gets a checkbox (selectable)
   readable: boolean; // it may be read again (canReprocess): its status cell may offer Retry
-  linkVersions: boolean; // #648: its menu offers Link to another version…
+  linkVersions: boolean; // #648: its menu offers Make it a version of… (PRD 9 F-09)
   canForever: boolean;
   askPassword: boolean;
   selected: boolean;
@@ -970,6 +974,13 @@ const DocumentRow = memo(function DocumentRow({
       return;
     }
     if (action === "read") return; // only the document screen's menu offers it
+    if (action === "copyPath" || action === "copyLink") {
+      // #730: the line says how to use it, or that the browser would not copy.
+      void copyFor(action, filePath(tree, document), document.id).then(({ copied, line }) =>
+        copied ? events.onCopied?.(line) : setError(line),
+      );
+      return;
+    }
     if (action === "give" || action === "audience") {
       setSharing(action);
       return;
@@ -1103,6 +1114,8 @@ const DocumentRow = memo(function DocumentRow({
   const folderPath = !inTrash && document.folder_id && tree.byId.has(document.folder_id) ? pathLabel(tree, document.folder_id) : null;
   // #484: deep down the row shows "A / … / Y / Z"; the whole path is in the row's title.
   const folderShort = folderPath && document.folder_id ? shortPathLabel(tree, document.folder_id) : null;
+  // PRD 9 F-01, F-02 (Q2): in no folder, or not filed by Kaagaz (its type unknown): "Not sorted".
+  const notSorted = !inTrash && !document.shared_with_you && (document.folder_id === null || document.autofile === "not_filed");
   // The facts line under the name, whole, for its title.
   const factsLine = [
     document.sensitivity && labelName(document.sensitivity),
@@ -1111,6 +1124,7 @@ const DocumentRow = memo(function DocumentRow({
     versionCell(document.version_no, newer),
     document.document_date && FILES_TEXT.dated(formatDate(document.document_date)),
     document.shared_with_you ? SHARED.row : folderPath && `In ${folderPath}`,
+    notSorted && "Not sorted",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -1229,6 +1243,7 @@ const DocumentRow = memo(function DocumentRow({
           ) : (
             folderShort && <span className={styles.inFolder}>In {folderShort}</span>
           )}
+          {notSorted && <span className={styles.inFolder}>Not sorted</span>}
         </span>
         {tagList(styles.factTags)}
         {document.newer_version && (
@@ -1428,7 +1443,8 @@ export function StatusCell({
 }) {
   const retry = onRetry && !inTrash && (document.status === "failed" || document.stuck === true) && (
     <button type="button" className={styles.statusAction} onClick={onRetry} disabled={busy}>
-      Retry<span className="visually-hidden">{` ${document.display_name}`}</span>
+      {document.failure_code === "stopped" ? "Read again" : "Retry"}
+      <span className="visually-hidden">{` ${document.display_name}`}</span>
     </button>
   );
   if (beingRead(document.status) && document.deleted_at === null) {
@@ -1484,7 +1500,7 @@ export function StatusCell({
   return (
     <span className={styles.statusContent}>
       <span className={styles.statusLine}>
-        <StatusChip status={document.status} detectedType={document.detected_type} />
+        <StatusChip status={document.status} detectedType={document.detected_type} failureCode={document.failure_code} />
       </span>
       <span className={styles.statusLine}>
         <span className={styles.statusText} title={document.status_message}>

@@ -309,8 +309,10 @@ describe("the new-version banner (V6, V7)", () => {
     );
     expect(byName).toContain("This looks like a new version of &quot;7/12 Survey 44 Wakad.pdf&quot; (same name and same survey number).");
     // Changed on purpose (#521, Tushar's council): the two buttons and See the differences.
-    expect(ask).toContain(">Upload as a new version<");
-    expect(ask).toContain(">Upload as a new file<");
+    // Changed on purpose (#690): one wording everywhere; the file is already uploaded, so "Save as".
+    expect(ask).toContain(">Save as new version<");
+    expect(ask).toContain(">Keep both<");
+    expect(ask).toContain("Versions keep one file with its history. Search and Ask use the Current version."); // #690
     expect(ask).toContain(">See the differences<");
     expect(ask).toContain('href="/documents/d3/compare?with=d1"');
     expect(ask).toContain("Note for this version (optional)");
@@ -389,10 +391,12 @@ describe("the Versions tab (V9, V10, V12)", () => {
   });
 
   it("offers Make current for a ready version that is not current, out of Trash", () => {
-    expect(canMakeCurrent({ status: "ready", is_current: false }, false)).toBe(true);
-    expect(canMakeCurrent({ status: "ready", is_current: true }, false)).toBe(false);
-    expect(canMakeCurrent({ status: "failed", is_current: false }, false)).toBe(false);
-    expect(canMakeCurrent({ status: "ready", is_current: false }, true)).toBe(false);
+    // Changed on purpose (PRD 9 F-07): a third argument, whether a version the person sees is current.
+    expect(canMakeCurrent({ status: "ready", is_current: false }, false, true)).toBe(true);
+    expect(canMakeCurrent({ status: "ready", is_current: true }, false, true)).toBe(false);
+    expect(canMakeCurrent({ status: "failed", is_current: false }, false, true)).toBe(false);
+    expect(canMakeCurrent({ status: "ready", is_current: false }, true, true)).toBe(false);
+    expect(canMakeCurrent({ status: "ready", is_current: false }, false, false)).toBe(false);
     expect(joinedText("auto")).toBe("Linked on its own");
     expect(joinedText(undefined)).toBe("Uploaded");
   });
@@ -456,7 +460,8 @@ describe("Compare (V11)", () => {
   it("renders two columns, removed struck and added underlined, as plain text, with Next change", () => {
     const html = render(
       createElement(CompareBody, {
-        data: { left_id: "d1", right_id: "d3", pages, summary: "2 changes on page 2" },
+        // Changed on purpose (PRD 9 F-08): the reply names each side's pages with a picture.
+        data: { left_id: "d1", right_id: "d3", pages, summary: "2 changes on page 2", image_pages: { left: [], right: [] } },
       }),
     );
     expect(html).toContain("2 changes on page 2");
@@ -974,6 +979,14 @@ describe("the activity screens (A5, A6)", () => {
     const gone = render(createElement(TimelineRow, { entry: entry("document.view", about("old.pdf", 1, true)), showDocument: true }));
     expect(gone).toContain("a deleted document");
     expect(gone).not.toContain("href=");
+  });
+
+  it("says a delete once: Priya deleted a document (#693)", () => {
+    const deleted = entry("document.delete", about("a deleted document", 1, true));
+    const row = render(createElement(TimelineRow, { entry: deleted, showDocument: true })).replace(/<[^>]*>/g, " ");
+    expect(row).toContain("Priya deleted a document");
+    expect(row).not.toContain("a deleted document");
+    expect(activityDocument(deleted)).toBeNull();
   });
 
   it("renders the admin table's columns and the filter chips, with Export to Excel", () => {

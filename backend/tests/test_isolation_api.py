@@ -72,6 +72,25 @@ def test_b_gets_404_on_every_document_route_of_a(world: _World) -> None:
     assert (world.a.customer_id, doc, 1) in world.api.storage.page_images
 
 
+def test_b_cannot_straighten_a_document_of_a_and_its_pages_are_never_read(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#709: Straighten pages reads the stored page pictures; B's ask reads none of A's."""
+    read: list[tuple[str, str, int]] = []
+    storage = world.api.storage
+    real = storage.get_page_image
+
+    def get_page_image(customer_id: str, document_id: str, page_no: int) -> bytes:
+        read.append((customer_id, document_id, page_no))
+        return real(customer_id, document_id, page_no)
+
+    monkeypatch.setattr(storage, "get_page_image", get_page_image)
+    reply = world.b.client.post(f"/api/documents/{world.document}/straighten", headers=CSRF)
+    _assert_not_found(reply.status_code, reply.json())
+    assert "sharma" not in reply.text
+    assert read == []
+
+
 def test_b_cannot_open_a_conversation_or_rate_its_answer(world: _World) -> None:
     b = world.b.client
     opened = b.get(f"/api/conversations/{world.conversation}")

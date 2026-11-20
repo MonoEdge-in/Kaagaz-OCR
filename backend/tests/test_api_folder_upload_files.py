@@ -382,6 +382,16 @@ def test_upload_limits_say_the_folder_limits_and_whether_kaagaz_can_sort(db: Dat
     assert api.settings.folder_upload_files_at_once == 8
     assert limits["sort_available"] is False
     _owner(db, _GRANT, {"c": signed.customer_id})
+    # Changed on purpose (PRD 9 F-02, D2): Kaagaz makes no department, so with none there is
+    # nothing to sort into and "Let Kaagaz sort files" is not offered; once one exists it is.
+    assert signed.client.get("/api/upload-limits").json()["sort_available"] is False
+    other = api.new_signed()  # another organisation's department never counts
+    _owner(db, _GRANT, {"c": other.customer_id})
+    theirs = api.add_folder(other.customer_id, other.user_id, "Accounts")
+    _owner(db, "UPDATE folders SET kind = 'department' WHERE id = :f", {"f": theirs})
+    assert signed.client.get("/api/upload-limits").json()["sort_available"] is False
+    mine = api.add_folder(signed.customer_id, signed.user_id, "Accounts")
+    _owner(db, "UPDATE folders SET kind = 'department' WHERE id = :f", {"f": mine})
     assert signed.client.get("/api/upload-limits").json()["sort_available"] is True
     # "Let Kaagaz sort them": loose files go in with no folder, marked for auto-filing, which
     # makes the department and the folders it needs once each is read (db/autofile.py).

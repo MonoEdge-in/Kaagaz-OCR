@@ -245,6 +245,58 @@ def test_521_monthly_bills_name_and_identifier_need_half_the_text_when_both_have
     assert outcome(None, 0.6, True) == versions.SUGGESTED  # no fingerprint: the rule as before
 
 
+# --- PRD 9 F-06: a short text, word by word ----------------------------------------------------
+
+# plot data.json from Round 1 (VER-01): 11 words; then two values edited.
+PLOT = '{"layout": "Daregaon", "survey": [72, 73], "plots_total": 52, "contact": "Layout office"}'
+PLOT_EDITED = '{"layout": "Daregaon", "survey": [72, 74], "plots_total": 54, "contact": "Layout office"}'
+
+
+def test_prd9_f06_a_short_file_edited_in_two_values_has_82_percent_of_its_words_in_common() -> None:
+    """Under MIN_WORDS there is no fingerprint and no exact overlap, so no text signal at all; word
+    by word, 9 of its 11 words are the same on each side. Only for short texts (SHORT_WORDS)."""
+    assert versions.exact_overlap({1: PLOT}, {1: PLOT_EDITED}) is None
+    assert versions.word_share({1: PLOT}, {1: PLOT_EDITED}) == pytest.approx(9 / 11)
+    assert versions.word_share({2: PLOT_EDITED.upper()}, {1: PLOT_EDITED}) == 1.0  # words() and pages
+    reordered = " ".join(reversed(versions.words(PLOT)))
+    assert versions.word_share({1: reordered}, {1: PLOT}) == 0.99  # the same words, another order: never 100%
+    long = " ".join(_text(5, versions.SHORT_WORDS + 1))
+    assert versions.word_share({1: long}, {1: long}) is None
+    assert versions.word_share({1: ""}, {1: PLOT}) is None
+
+
+def test_prd9_f06_outcome_with_a_short_text_needs_the_name_or_an_identifier_too() -> None:
+    """Same name and 80% of the words in common suggest, with no identifier; the short text's share
+    alone never does (one template's short forms share their words), nor does it stand for the floor
+    of name and identifier (short monthly bills, review of #678)."""
+    share = versions.word_share({1: PLOT}, {1: PLOT_EDITED})
+    outcome = versions.outcome
+    assert outcome(share, 1.0, False, short=True) == versions.SUGGESTED
+    assert outcome(share, None, False, short=True) is None
+    assert outcome(1.0, 0.59, False, short=True) is None
+    assert outcome(share, None, True, short=True) == versions.SUGGESTED  # the text and an identifier
+    assert outcome(0.79, 1.0, False, short=True) is None
+    assert outcome(0.49, 1.0, True, short=True) is None  # monthly bills: under half the text
+    assert outcome(0.7, 1.0, True, short=True) is None  # name and identifier, but under 80% word by word
+    assert versions.reasons(share, 1.0, None) == "81% the same text"
+
+
+def test_prd9_f06_a_50_word_file_with_four_edits_fails_on_5_word_runs_but_not_word_by_word() -> None:
+    """The correction to PRD 9: each edit breaks 5 runs of 5 words, so 20 to 60 words fall under
+    even TEXT_FLOOR after a few edits; word by word they are 92% the same."""
+    words = _text(6, 50)
+    edited = list(words)
+    for n, place in enumerate((5, 17, 29, 41)):
+        edited[place] = f"edit{n}"
+    first, second = " ".join(words), " ".join(edited)
+    runs = _exact(first, second)
+    assert runs is not None and runs < versions.TEXT_FLOOR
+    assert versions.outcome(runs, 1.0, False) is None
+    share = versions.word_share({1: first}, {1: second})
+    assert share == pytest.approx(0.92)
+    assert versions.outcome(share, 1.0, False, short=True) == versions.SUGGESTED
+
+
 # --- #521: the exact overlap -----------------------------------------------------------------
 
 

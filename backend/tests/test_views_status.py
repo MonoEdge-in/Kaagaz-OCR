@@ -130,6 +130,7 @@ def _row(
         "autofile": None,
         "batch_ahead": counts.get("ahead", 0),
         "stuck": False,  # issue 407: listing._COLUMNS
+        "read_before": False,  # Changed on purpose (#713): listing._COLUMNS
         "locked": False,  # Changed on purpose (PRD 7, #605): listing._COLUMNS
         "waiting_code": None,
         "family_uploaders": [USER.user_id],
@@ -146,6 +147,7 @@ def _row(
         "last_updated_at": NOW,
         "last_updated_by_name": "Member",
         "department": None,
+        "suggested_department": None,  # Changed on purpose (PRD 9 F-01)
         "pending_suggestion": None,
     }
     return cast(RowMapping, row)

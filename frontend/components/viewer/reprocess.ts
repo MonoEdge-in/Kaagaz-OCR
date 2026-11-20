@@ -8,7 +8,7 @@ import { NOT_FOUND_DOCUMENT, NOT_FOUND_TEXT } from "@/components/access/words";
 import { canReview } from "@/components/review/review";
 import { ApiError } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
-import type { DocumentStatus, DocumentSummary, Label, Role } from "@/lib/types";
+import type { DocumentStatus, DocumentSummary, Label, PageReadings, Role } from "@/lib/types";
 
 const REPROCESSABLE: readonly DocumentStatus[] = ["ready", "failed", "needs_reader"];
 
@@ -111,9 +111,10 @@ export function beingRead(status: DocumentStatus): boolean {
 
 /** Said once when reading ends while the viewer is open; again: after Read again. */
 export function settledText(
-  document: { status: DocumentStatus; status_message: string; values: readonly { label: Label }[] },
+  document: { status: DocumentStatus; status_message: string; values: readonly { label: Label }[]; failure_code?: string | null },
   again: boolean,
 ): string {
+  if (document.failure_code === "stopped") return document.status_message; // #713: stopped on purpose
   if (document.status !== "ready") return `Reading failed. ${document.status_message}`;
   const found = document.values.length;
   const review = document.values.filter((value) => value.label === "needs_review").length;
@@ -121,4 +122,30 @@ export function settledText(
     `${again ? "Read again" : "Reading finished"}. ` +
     `${found} ${found === 1 ? "value" : "values"} found, ${review} ready to verify.`
   );
+}
+
+/** PRD 9 F-15: the main reader's lines on a page, each its spot's source and its text, and the
+ * page's word marks (unsure, [?], unpinned), to compare. */
+export const readLines = (readings: PageReadings): string[] => [
+  ...(readings.readers.find((reader) => reader.role === "first")?.lines ?? []).map((line) => `${line.box_source ?? ""}|${line.text}`),
+  ...(readings.marks ?? []).map((mark) => `mark:${mark.quality}|${mark.text}`),
+];
+
+/**
+ * PRD 9 F-15: what Read this page again changed, from the page's lines (readLines) before and after
+ * it: "3 lines changed" (a line's text or whether its spot was confirmed), else "Read again: same
+ * result". A line gone and one added count as one change. O(lines).
+ */
+export function readAgainText(before: readonly string[], after: readonly string[]): string {
+  const left = new Map<string, number>();
+  for (const line of before) left.set(line, (left.get(line) ?? 0) + 1);
+  let added = 0;
+  for (const line of after) {
+    const count = left.get(line) ?? 0;
+    if (count > 0) left.set(line, count - 1);
+    else added += 1;
+  }
+  const changed = Math.max(added, [...left.values()].reduce((sum, count) => sum + count, 0));
+  if (changed === 0) return "Read again: same result";
+  return `${changed.toLocaleString("en-IN")} ${changed === 1 ? "line" : "lines"} changed`;
 }

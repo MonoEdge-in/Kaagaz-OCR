@@ -357,6 +357,9 @@ const CONFIRM_BUTTON: Record<Confirming, string> = {
   stopManagement: "Stop Management",
 };
 
+/** #693: picking a role asks first, so a misclick never changes it. */
+export const roleQuestion = (name: string, role: Role) => `Change ${name}'s role to ${roleName(role)}?`;
+
 /** What each item in a user's menu does, in one plain line under it (plain words, 25 Oct 2026). */
 export const USER_MENU_HELP = {
   unlock: "Lets them try to sign in again now, without waiting for the lock to end.",
@@ -428,6 +431,7 @@ function UserRow({
   const sessionMe = useOptionalSession()?.me ?? null;
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<Confirming | null>(null);
+  const [newRole, setNewRole] = useState<Role | null>(null); // #693: the role picked, until Change role
   const router = useRouter();
   const passwordStep = usePasswordStep();
 
@@ -462,10 +466,11 @@ function UserRow({
     } finally {
       setBusy(false);
       setConfirming(null);
+      setNewRole(null);
     }
   }
 
-  const change = (changes: { role?: Role; disabled?: boolean }, done: string) =>
+  const change =(changes: { role?: Role; disabled?: boolean }, done: string) =>
     act(() => updateUser(user.id, changes), done);
 
   const confirmed = (kind: Confirming) => {
@@ -590,7 +595,7 @@ function UserRow({
           disabled={busy || isSelf}
           onChange={(event) => {
             const role = ROLES.find((option) => option === event.target.value);
-            if (role) void change({ role }, `role changed to ${roleName(role)}.`);
+            if (role && role !== user.role) setNewRole(role);
           }}
         >
           {ROLES.map((role) => (
@@ -662,6 +667,26 @@ function UserRow({
               >
                 {busy && <span className="spinner" aria-hidden="true" />}
                 {CONFIRM_BUTTON[confirming]}
+              </button>
+            </div>
+          </ActionDialog>
+        )}
+        {newRole && (
+          <ActionDialog title={user.display_name} onClose={() => setNewRole(null)} canClose={() => !busy}>
+            <p>{roleQuestion(user.display_name, newRole)}</p>
+            <div className="actions">
+              <button type="button" className="btn" data-autofocus disabled={busy} onClick={() => setNewRole(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={`btn btn-primary ${busy ? styles.busy : ""}`}
+                disabled={busy}
+                aria-busy={busy || undefined}
+                onClick={() => void change({ role: newRole }, `role changed to ${roleName(newRole)}.`)}
+              >
+                {busy && <span className="spinner" aria-hidden="true" />}
+                Change role
               </button>
             </div>
           </ActionDialog>

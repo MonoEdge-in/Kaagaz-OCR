@@ -14,7 +14,7 @@ always wins, and nothing is moved twice.
 ``file_document`` runs after ``mark_ready``, in its own transaction
 (``PgDocuments.file_document``). It takes the tree lock, then the family lock: the order
 of folder create, move and delete, so it queues behind them instead of deadlocking. Under
-the locks it reuses a matching department or creates the mapped one, then reuses the type
+the locks it reuses a matching department (never makes one, PRD 9 F-02), then reuses the type
 folder wherever it now is, adopts an unkeyed same-name child, or creates it under the
 department. Nothing is inserted to be caught: the unique index folders_autofile_key is only
 the backstop. No model is called: department and type come from the document card's
@@ -39,7 +39,8 @@ inside one; the folder it leaves goes when that leaves it empty (``folders.prune
 The department template (File management F3, 0041): a file is routed to a department from
 its recognized type (finance documents to Accounts and HR, land records and contracts to
 Land & Legal, forms and registers to Operations, letters to Correspondence). A mapped
-department is created when absent. An upload already placed in a department keeps that
+department is used only when it exists (PRD 9 F-02, D2: admins make departments, Kaagaz never
+does); with none, the file stays where it is, Not sorted. An upload already placed in a department keeps that
 choice. The file is filed inside it: Category (the type folder,
 key ``type:<type>:<department id>``), then Property for land records and deeds with a
 survey number (``property:<village>:<number>``, "Survey 44, Wakad"; the village is a key
@@ -127,9 +128,6 @@ _STATE = (
 )
 _SET_STATE = "UPDATE documents SET autofile = :state WHERE customer_id = :c AND id = :f"
 _BY_KEY = "SELECT id FROM folders WHERE customer_id = :c AND autofile_key = :k"
-# At most one: the unique index folders_sibling_name.
-_BY_NAME = """SELECT id FROM folders
-WHERE customer_id = :c AND parent_id IS NULL AND lower(name) = lower(:name)"""
 _ADOPT = "UPDATE folders SET autofile_key = :k WHERE customer_id = :c AND id = :f"
 _CREATE = (
     "INSERT INTO folders (customer_id, parent_id, name, created_by, autofile_key, kind)"
@@ -143,9 +141,13 @@ APPLIES = (
     " WHERE s.customer_id = :c AND s.task = 'autofile' AND s.level = 'on'"
     " AND (s.user_id IS NULL OR s.user_id = :by))))"
 )
+# PRD 9 F-02 (D2): ``departments``, whether there is a department to sort into (Kaagaz makes none)
+# that the person sees (visible_folders: only the API asks this, never the worker).
 _APPLIES = (
     "SELECT " + APPLIES + " AS pending,"  # noqa: S608 - a fixed fragment, APPLIES
-    " autofile_on, autofile_granted, CAST(:by AS uuid) AS uploaded_by FROM customers WHERE id = :c"
+    " autofile_on, autofile_granted, CAST(:by AS uuid) AS uploaded_by,"
+    " EXISTS (SELECT 1 FROM visible_folders f WHERE f.customer_id = :c AND f.parent_id IS NULL"
+    " AND f.kind = 'department') AS departments FROM customers WHERE id = :c"
 )
 _DEPARTMENTS = (
     "SELECT id, name FROM folders"
@@ -249,7 +251,7 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
         department = (
             str(state["folder_id"])
             if state["folder_kind"] == "department"
-            else _department(conn, customer_id, state["doc_type"], state["uploaded_by"])
+            else _department(conn, customer_id, state["doc_type"])
         )
         if department is None:
             _set(conn, customer_id, family, SKIPPED)
@@ -276,9 +278,10 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
 
 def applies(conn: Connection, customer_id: str, user_id: str) -> bool:
     """Would this user's upload with no folder be filed by its type ("Let Kaagaz sort them",
-    #484)? The insert's rule marks it pending and ``_filing_on`` files it. Three statements."""
+    #484)? The insert's rule marks it pending and ``_filing_on`` files it. PRD 9 F-02: never while
+    the organisation has no department, as Kaagaz makes none. Three statements."""
     row = conn.execute(text(_APPLIES), {"c": customer_id, "by": user_id}).mappings().one()
-    return bool(row["pending"]) and _filing_on(conn, customer_id, row)
+    return bool(row["pending"]) and bool(row["departments"]) and _filing_on(conn, customer_id, row)
 
 
 def _filing_on(conn: Connection, customer_id: str, state: RowMapping) -> bool:
@@ -295,22 +298,16 @@ _SURVEY = re.compile(r"[0-9]+(?:/[0-9]+)*")
 VILLAGE_MAX = 40
 
 
-def _department(conn: Connection, customer_id: str, doc_type: str, owner: object) -> str | None:
-    """Find or create the department mapped to this recognized type; the caller holds the
-    tree lock. Unknown types and missing owners never produce guessed departments."""
+def _department(conn: Connection, customer_id: str, doc_type: str) -> str | None:
+    """The existing department mapped to this recognized type, else None; the caller holds the
+    tree lock. PRD 9 F-02 (D2): Kaagaz never makes a department."""
     name = DEPARTMENTS.get(doc_type)
     if name is None:
         return None
     aliases = {alias.casefold() for alias in DEPARTMENT_ALIASES[name]}
     rows = conn.execute(text(_DEPARTMENTS), {"c": customer_id}).all()
     matching = next((row for row in rows if row[1].casefold() in aliases), None)
-    if matching is not None:
-        return str(matching[0])
-    if owner is None:
-        return None
-    if conn.execute(text(_BY_NAME), {"c": customer_id, "name": name}).first() is not None:
-        return None
-    return _create(conn, customer_id, None, name, owner, None, "department")
+    return None if matching is None else str(matching[0])
 
 
 def survey_digits(value: str) -> str | None:

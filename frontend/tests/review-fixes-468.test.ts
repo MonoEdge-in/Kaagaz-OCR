@@ -92,7 +92,8 @@ describe("SEC1: ?next= never carries one person's words to the next", () => {
     expect(readDraft(B, SEARCH_DRAFT)).toBeNull();
     const screen = read("components/search/SearchScreen.tsx");
     expect(screen).toContain("readDraft(userId, SEARCH_DRAFT)");
-    expect(screen).toMatch(/if \(q === "" && typeof kept === "string" && kept\.trim\(\)\) router\.replace\(searchHref\(kept, mode\)\)/);
+    // Changed on purpose (#730): one search, no "in".
+    expect(screen).toMatch(/if \(q === "" && typeof kept === "string" && kept\.trim\(\)\) router\.replace\(searchHref\(kept\)\)/);
   });
 
   it("Ask's ?q= words live in the user-keyed Ask draft, which another person never reads", () => {
@@ -426,7 +427,7 @@ describe("UX6: the session warning never shows a count that goes stale", () => {
 describe("UX7: Search's slow notice starts over for a new search (structural)", () => {
   it("is keyed on the words and the tab", () => {
     expect(read("components/search/SearchScreen.tsx")).toContain(
-      "<StillLoading key={`${q}|${mode}`} onRetry={() => setAttempt((n) => n + 1)} />",
+      "<StillLoading key={q} onRetry={() => setAttempt((n) => n + 1)} />", // #730: one search, keyed on its words
     );
   });
 });

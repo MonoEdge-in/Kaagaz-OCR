@@ -34,21 +34,27 @@
 // only (module variables: a reload starts at the organisation's default again).
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useId, useMemo, useReducer, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { InStatusBar } from "@/components/shell/StatusBar";
 import { VersionChoice } from "@/components/versions/VersionChoice";
 import type { Chosen } from "@/components/versions/VersionChoice";
 import { VERSION_TEXT, suggestionsText } from "@/components/versions/words";
+import { VersionPopup } from "@/components/versions/VersionPopup";
 import { Icon } from "@/components/ui/Icon";
-import { beingRead } from "@/components/viewer/reprocess";
+import { IconButton } from "@/components/ui/IconButton";
+import { beingRead, reprocessErrorText } from "@/components/viewer/reprocess";
 import { storyHref, storyTarget } from "@/components/viewer/story";
 import {
   ApiError,
+  deleteDocument,
   getBatch,
   getUploadLimits,
   isStorageFull,
+  moveDocument,
+  reprocessDocument,
   restoreDocument,
+  stopDocument,
   undoAutofile,
   uploadDocument,
   uploadVersion,
@@ -71,11 +77,16 @@ import type {
 } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import {
+  CANCEL_TEXT,
   NOT_FILED_TEXT,
+  STOP_TEXT,
   UNDONE_TEXT,
   batchFraction,
   batchStore,
+  canCancel,
+  canStop,
   filedText,
+  inFlight,
   inBatches,
   keptCounts,
   leftText,
@@ -84,23 +95,32 @@ import {
   readStored,
   rowKind,
   statusBarText,
+  stoppedByYou,
+  stoppedRow,
   summaryText,
+  trayActionKeys,
   trayCounts,
+  trayQuestion,
+  trayResultText,
   undoErrorText,
   unreadableWords,
   verifiedWords,
   writeStored,
 } from "./batchTray";
-import type { StoredBatch } from "./batchTray";
+import type { StoredBatch, TrayAction } from "./batchTray";
+import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
-import { droppedItems } from "./folderPick";
-import { shortPathLabel } from "./folderTree";
+import { MoveDialog } from "./DocumentActions";
+import { droppedItems, isSkipped } from "./folderPick";
+import { pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
   FALLBACK_UPLOAD_LIMITS,
   HIDDEN_COPY,
   LOCKED_COPY,
+  NOT_MOVED,
+  TRASH_COPY,
   canSendAgain,
   copyState,
   estimateIngestSeconds,
@@ -118,7 +138,7 @@ import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
 import { capReaders, effectiveOf, startReader, useAiSettings } from "@/lib/aiSettings";
 import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readingToSend } from "./readers";
-import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer, uploadsAtRisk } from "./uploadQueue";
+import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, documentOf, followed, isBusy, queueReducer, skippedText, uploadsAtRisk } from "./uploadQueue";
 import type { Followed, UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction, nextShown, stageOf, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
@@ -126,6 +146,7 @@ import { WrapName } from "./WrapName";
 import { ZipUnpackNote } from "./ZipUnpackNote";
 import { zipNote } from "./zipUnpack";
 import styles from "./Documents.module.css";
+import library from "./Library.module.css";
 
 type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: UploadWaiting) => Promise<UploadResult>;
 /** One drop of files: the API's words once one of them was refused for storage (#516). */
@@ -146,7 +167,13 @@ export function useUploads(onUploaded: () => void) {
   const nextKey = useRef(0);
   // The server's words once another account has signed in here; then nothing more is sent.
   const stopped = useRef<string | null>(null);
-  const [queue, dispatch] = useReducer(queueReducer, EMPTY_QUEUE);
+  // The drops of the last 24 hours (batchTray.ts), and the batch API's latest view of each.
+  const [stored, setStored] = useState<StoredBatch[]>(() => readStored(batchStore(), Date.now()));
+  // #688: what Clear finished took out before a reload stays out.
+  const [queue, dispatch] = useReducer(queueReducer, stored, (batches) => ({
+    ...EMPTY_QUEUE,
+    cleared: batches.flatMap((batch) => batch.cleared),
+  }));
   const [loadedLimits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
   const [limitsLoaded, setLimitsLoaded] = useState(false); // D1: "Read with" holds its room until then
   const [reader, setReader] = useState<string | null>(sessionReader);
@@ -159,10 +186,15 @@ export function useUploads(onUploaded: () => void) {
   );
   // The files this tab still holds, so a file not sent can be sent again (Retry).
   const kept = useRef(new Map<string, Start>());
-  // The drops of the last 24 hours (batchTray.ts), and the batch API's latest view of each.
-  const [stored, setStored] = useState<StoredBatch[]>(() => readStored(batchStore(), Date.now()));
+  // #697: a drop's file, sent again as a new file in place of its copy in Trash, and the folder
+  // it was going to (where Restore moves that copy). Gone after a reload: then only Restore.
+  const asNew = useRef(new Map<string, { start: Start; into?: string }>());
+  // #713: files asked to stop or cancel while still being sent, each ask in order (a second never
+  // drops the first): done once stored (send).
+  const askedToStop = useRef(new Map<string, { action: TrayAction; done: (why: string | null) => void }[]>());
   // Drops from before a reload: every file the batch API lists gets a row.
   const [restored] = useState(() => new Set(stored.map((batch) => batch.id)));
+  const [skipped, setSkipped] = useState(""); // PRD 9 F-04: the last pick's system files, in words
   const [views, setViews] = useState<Record<string, BatchView>>({});
   const [slots] = useState(() => createSlots(UPLOADS_AT_ONCE)); // Q2: 3 files at a time in all
 
@@ -301,21 +333,31 @@ export function useUploads(onUploaded: () => void) {
         : follow
           ? followed(result.document)
           : { kind: "done", documentId: result.document.id };
-      dispatch({ type: "change", key, change: { state, times: { ...times } } });
+      dispatch({ type: "change", key, change: { state, times: { ...times }, asked: undefined } });
       onUploaded();
+      // #713: asked to stop or cancel while it was being sent: done now it is stored, each ask in order.
+      const wanted = askedToStop.current.get(key) ?? [];
+      askedToStop.current.delete(key);
+      for (const ask of wanted) {
+        ask.done(state.kind === "reading" ? await act(ask.action, key, state.documentId) : STOP_TEXT.notApplied);
+      }
     } catch (caught) {
+      for (const ask of askedToStop.current.get(key) ?? []) ask.done(null); // never stored: nothing to stop
+      askedToStop.current.delete(key);
       stopped.current ??= sessionChangedMessage(caught);
       const retry = stopped.current === null && canSendAgain(caught) && kept.current.has(key);
       const message = uploadErrorText(caught, navigator.onLine, retry);
       if (drop && isStorageFull(caught)) drop.full ??= message;
-      update(key, { kind: "error", message, retry });
+      // #713: an ask of it is gone (answered above): a Retry promises no Stop it won't do.
+      dispatch({ type: "change", key, change: { state: { kind: "error", message, retry }, asked: undefined } });
     }
   }
 
   /** Count a PDF's or TIFF's pages (kept for the time estimate), then send it, unless it has too many. */
   async function checkThenSend(key: string, file: File, start: Start, follow: boolean, drop?: Drop) {
-    if (notSent(key) || dropFull(key, drop)) return;
+    if (!kept.current.has(key) || notSent(key) || dropFull(key, drop)) return; // #699: cancelled while waiting
     const { pages, problem } = await checkPages(file, limits.max_pages);
+    if (!kept.current.has(key)) return; // #699: cancelled while its pages were counted
     dispatch({ type: "change", key, change: { pages } });
     if (problem) update(key, { kind: "error", message: problem });
     else if (!notSent(key) && !dropFull(key, drop)) await send(key, start, follow, drop);
@@ -351,7 +393,9 @@ export function useUploads(onUploaded: () => void) {
   async function addFiles(files: File[], folderId?: string, departmentId?: string) {
     const userId = me.user.id;
     const reading = readingToSend(limits.readers, reader);
-    const batches = inBatches(files).map((group) => ({ batchId: newBatchId(), group }));
+    // PRD 9 F-04: system files (.DS_Store, Thumbs.db, desktop.ini) are left out, as from a folder pick; one line says so.
+    setSkipped(skippedText(files.filter((file) => isSkipped(file.name)).map((file) => file.name)));
+    const batches = inBatches(files.filter((file) => !isSkipped(file.name))).map((group) => ({ batchId: newBatchId(), group }));
     const added = batches.flatMap(({ batchId, group }) => group.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file, limits);
@@ -365,11 +409,14 @@ export function useUploads(onUploaded: () => void) {
       };
       const start: Start = (onProgress, onSent, onWaiting) =>
         uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent, departmentId, onWaiting);
-      return { entry, file, start };
+      const replace: Start = (onProgress, onSent, onWaiting) =>
+        uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent, departmentId, onWaiting, true);
+      asNew.current.set(entry.key, { start: replace, into: folderId ?? departmentId });
+      return { entry: { ...entry, asNew: true }, file, start };
     }));
     dispatch({ type: "add", entries: added.map((item) => item.entry) });
     const at = Date.now();
-    setStored((before) => [...batches.map(({ batchId }) => ({ id: batchId, at, already: 0, notSent: 0 })), ...before]);
+    setStored((before) => [...batches.map(({ batchId }) => ({ id: batchId, at, already: 0, notSent: 0, cleared: [] })), ...before]);
     const sending = added.filter((item) => item.entry.state.kind === "waiting");
     for (const { entry, start } of sending) kept.current.set(entry.key, start);
     const drop: Drop = { full: null };
@@ -406,12 +453,21 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
-  /** Bring back the copy in Trash that a duplicate upload matched. */
+  /** Bring back the copy in Trash that a duplicate upload matched; #697: into the folder the
+   *  upload was going to, or, when that move is refused, where it was, saying why. */
   async function restore(key: string, documentId: string, existingName: string) {
     update(key, { kind: "restoring", documentId, existingName });
     try {
-      await restoreDocument(documentId);
-      update(key, { kind: "restored", documentId, existingName });
+      const back = await restoreDocument(documentId);
+      const into = asNew.current.get(key)?.into;
+      let notMoved: string | undefined;
+      if (into && back.folder_id !== into) {
+        notMoved = await moveDocument(documentId, into).then(
+          () => undefined,
+          (caught: unknown) => (caught instanceof ApiError ? caught.message : NOT_MOVED),
+        );
+      }
+      update(key, { kind: "restored", documentId, existingName, into: notMoved === undefined ? into : undefined, notMoved });
       onUploaded();
     } catch (caught) {
       const restoreError =
@@ -422,11 +478,116 @@ export function useUploads(onUploaded: () => void) {
     }
   }
 
-  /** The finished rows go, and so do the drops with nothing left to follow. */
+  /** #697 Upload as new file (asked first): the file sent again, its copy in Trash deleted forever
+   *  by the server, and the row is a new upload like any other, Retry included. */
+  async function replace(key: string) {
+    const start = asNew.current.get(key)?.start;
+    if (!start || notSent(key)) return;
+    kept.current.set(key, start);
+    update(key, { kind: "waiting" });
+    await slots(() => send(key, start, true));
+  }
+
+  /** PRD 9 F-04: a row not uploaded (failed or refused) goes; the file this tab held for Retry too. */
+  function remove(key: string) {
+    kept.current.delete(key);
+    asNew.current.delete(key);
+    dispatch({ type: "remove", key });
+  }
+
+  /** #699: files still waiting go and are never sent (checkThenSend skips a file this tab no longer holds). */
+  function cancel(keys: string[]) {
+    const waiting = queue.entries.filter((entry) => keys.includes(entry.key) && entry.state.kind === "waiting");
+    for (const entry of waiting) kept.current.delete(entry.key);
+    dispatch({ type: "cancel", keys });
+    // A drop with nothing left is forgotten: the server never heard of it, and the tray shows no line for it.
+    const left = new Set(queue.entries.filter((entry) => !waiting.includes(entry)).map((entry) => entry.batchId));
+    const emptied = new Set(waiting.map((entry) => entry.batchId).filter((id) => id !== undefined && !left.has(id)));
+    if (emptied.size > 0) setStored((batches) => batches.filter((batch) => !emptied.has(batch.id)));
+  }
+
+  /** #713: Stop or Cancel (Move to Trash) one stored file; why the server refused, or null. */
+  async function act(action: TrayAction, key: string, documentId: string): Promise<string | null> {
+    try {
+      if (action === "stop") {
+        dispatch({ type: "change", key, change: { state: followed(await stopDocument(documentId)), byYou: true } });
+      } else {
+        await deleteDocument(documentId);
+        update(key, { kind: "cancelled", documentId });
+      }
+      return null;
+    } catch (caught) {
+      return caught instanceof ApiError ? caught.message : "Check your connection, then try again.";
+    }
+  }
+
+  /** #713: Stop or Cancel files already sent, one call a file as a selection's actions are
+   *  (components/documents/trash.ts); a file still being sent is asked to, and done once it is stored
+   *  (send). How many could not be, with the first one's words, once all are done. */
+  async function stopOrCancel(action: TrayAction, keys: string[]): Promise<{ count: number; why: string }> {
+    const refused = { count: 0, why: "" };
+    const note = (why: string | null) => {
+      if (why === null) return;
+      refused.count += 1;
+      refused.why ||= why;
+    };
+    const rows = queue.entries.filter((entry) => keys.includes(entry.key));
+    // First, with no wait, every file still being sent is noted (after any earlier ask of it), so
+    // one stored while the calls below run is never missed (send reads the note).
+    const later = rows.filter(inFlight).map(
+      (entry) =>
+        new Promise<void>((done) => {
+          const ask = {
+            action,
+            done: (why: string | null) => {
+              note(why);
+              done();
+            },
+          };
+          askedToStop.current.set(entry.key, [...(askedToStop.current.get(entry.key) ?? []), ask]);
+          dispatch({ type: "change", key: entry.key, change: { asked: action } }); // "Will stop once sent."
+        }),
+    );
+    for (const entry of rows) {
+      if (entry.state.kind === "reading") note(await act(action, entry.key, entry.state.documentId));
+    }
+    await Promise.all(later);
+    onUploaded();
+    return refused;
+  }
+
+  /** #713: Read again a file stopped in the tray; it is followed again while it is read. Why not, or
+   *  null; too soon after its last Read again (the cooldown, security A8), when it may be. */
+  async function readAgain(key: string, documentId: string): Promise<string | null> {
+    try {
+      dispatch({ type: "change", key, change: { state: followed(await reprocessDocument(documentId)), byYou: false } });
+      onUploaded();
+      return null;
+    } catch (caught) {
+      const reason = caught instanceof ApiError ? (caught.details as { reason?: string } | undefined)?.reason : undefined;
+      return reason === "cooldown" ? STOP_TEXT.cooldown : reprocessErrorText(caught);
+    }
+  }
+
+  /** The finished rows go, and so do the drops with nothing left to follow; a drop still going
+   *  remembers the documents taken out, so they never come back, after a reload either (#688). */
   function clearFinished() {
     const busy = new Set(queue.entries.filter(isBusy).map((entry) => entry.batchId));
+    const gone = queue.entries.filter((entry) => !isBusy(entry));
+    for (const entry of gone) asNew.current.delete(entry.key);
     dispatch({ type: "clear" });
-    setStored((batches) => batches.filter((batch) => busy.has(batch.id)));
+    setSkipped("");
+    setStored((batches) =>
+      batches
+        .filter((batch) => busy.has(batch.id))
+        .map((batch) => ({
+          ...batch,
+          cleared: [
+            ...batch.cleared,
+            ...gone.flatMap((entry) => (entry.batchId === batch.id ? (documentOf(entry.state) ?? []) : [])),
+          ],
+        })),
+    );
   }
 
   const { entries, finished, settled, filed } = queue;
@@ -446,7 +607,13 @@ export function useUploads(onUploaded: () => void) {
     addFiles,
     addVersion,
     restore,
+    replace,
     retry,
+    remove,
+    cancel,
+    stopOrCancel,
+    readAgain,
+    skipped,
     clearFinished,
   };
 }
@@ -518,6 +685,75 @@ export function AutofileNote({
         </span>
       )}
     </p>
+  );
+}
+
+/**
+ * PRD 9 F-01 (D1): a file in no folder whose type maps to a department the person can open (the
+ * server's ``suggested_department``): "Not sorted. Looks like Land & Legal · Move there · Pick
+ * another". Both open the Move dialog, Move there with the department chosen, so its who-can-see
+ * preview and its Undo apply as to any move.
+ */
+export function DepartmentSuggestion({ document, tree, onMoved }: { document: DocumentSummary; tree: FolderTree; onMoved(): void }) {
+  const [dialog, setDialog] = useState<{ to?: string } | null>(null);
+  const [moved, setMoved] = useState<{ words: string; undo?: () => Promise<void> } | null>(null);
+  const department = document.suggested_department;
+  if (moved !== null) {
+    const { undo } = moved;
+    return (
+      <p className={styles.small} role="status">
+        {moved.words}
+        {undo && (
+          <>
+            {" · "}
+            <button
+              type="button"
+              className={`btn btn-quiet ${styles.inlineAction}`}
+              onClick={() =>
+                void undo().then(
+                  () => {
+                    setMoved(null);
+                    onMoved();
+                  },
+                  (caught: unknown) => setMoved({ words: undoErrorText(caught) }),
+                )
+              }
+            >
+              Undo
+            </button>
+          </>
+        )}
+      </p>
+    );
+  }
+  if (!department) return null;
+  return (
+    <>
+      <p className={styles.small}>
+        {`Not sorted. Looks like ${department.name}`}
+        {" · "}
+        <button type="button" className={`btn btn-quiet ${styles.inlineAction}`} onClick={() => setDialog({ to: department.id })}>
+          Move there
+        </button>
+        {" · "}
+        <button type="button" className={`btn btn-quiet ${styles.inlineAction}`} onClick={() => setDialog({})}>
+          Pick another
+        </button>
+      </p>
+      {dialog && (
+        <MoveDialog
+          items={[document]}
+          tree={tree}
+          to={dialog.to}
+          onSaved={(words, _moved, undo) => {
+            setDialog(null);
+            setMoved({ words, undo });
+            onMoved();
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -657,7 +893,13 @@ export function BatchTray({
   stored,
   onClearFinished,
   onRestore,
+  onReplace,
   onRetry,
+  onRemove,
+  onCancel,
+  onStopOrCancel,
+  onReadAgain,
+  onUploadAgain,
   tree,
   onUndone,
   canReread,
@@ -670,7 +912,15 @@ export function BatchTray({
   stored: StoredBatch[];
   onClearFinished: () => void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
+  onReplace?: (key: string) => void; // #697: Upload as new file, for who may delete forever (canDeleteForever)
   onRetry: (key: string) => void;
+  onRemove?: (key: string) => void; // PRD 9 F-04: a row not uploaded, when given
+  onCancel?: (keys: string[]) => void; // #699: files still waiting, when given
+  // #713: Stop or Cancel files already sent (useUploads' stopOrCancel), Read again a stopped one, and
+  // Upload again (the file picker) after a Cancel; each when given.
+  onStopOrCancel?: (action: TrayAction, keys: string[]) => Promise<{ count: number; why: string }>;
+  onReadAgain?: (key: string, documentId: string) => Promise<string | null>;
+  onUploadAgain?: () => void;
   tree: FolderTree; // for "Filed into Invoices" (feature 28)
   onUndone: () => void;
   canReread: boolean; // a reviewer or an admin: may read a document again
@@ -681,6 +931,13 @@ export function BatchTray({
   // #521 review: what was decided on a row, by suggestion id, kept until Clear finished, so a
   // later poll that no longer asks it never takes the words and Undo away.
   const [decided, setDecided] = useState<ReadonlyMap<string, TrayDecided>>(() => new Map());
+  // #699, #713: Stop or Cancel, asked first; ``line`` is the drop's line, where focus goes after.
+  const [asking, setAsking] = useState<{ action: TrayAction; keys: string[]; line: string | null } | null>(null);
+  const confirmed = useRef(false); // the question was answered yes: focus goes to the drop's line
+  // #713: what the server refused at the last Stop or Cancel of a drop (by its line), and why a
+  // row's Read again did not start (by its key).
+  const [refused, setRefused] = useState<Record<string, { action: TrayAction; count: number; why: string }>>({});
+  const [readErrors, setReadErrors] = useState<Record<string, string>>({});
   if (entries.length === 0 && folderRows === null) return null;
   const settled = entries.some((entry) => !isBusy(entry));
   const keep = (suggestion: VersionSuggestion, chosen: Chosen, undone: boolean) =>
@@ -693,24 +950,72 @@ export function BatchTray({
     if (entry.batchId) batches.set(entry.batchId, [...(batches.get(entry.batchId) ?? []), entry]);
     else loose.push(entry);
   }
-  const row = (entry: UploadEntry, asks?: ReadonlyMap<string, TrayAsk>) => (
+  // #699: a file cancelled at once; focus goes to the next waiting file's Cancel in its drop, else
+  // the drop's line, else the tray's heading, so it is never lost to the page.
+  const cancelOne = (rows: UploadEntry[], key: string, line: string | null) => {
+    const waiting = rows.filter((entry) => entry.state.kind === "waiting");
+    const at = waiting.findIndex((entry) => entry.key === key);
+    const next = waiting[at + 1] ?? waiting[at - 1];
+    const to = next ? cancelId(next.key) : line !== null && rows.length > 1 ? line : "uploads-heading";
+    document.getElementById(to)?.focus();
+    onCancel?.([key]);
+  };
+  // #713: a yes to the question: the files still waiting go at once (#699), then each file sent is
+  // stopped or cancelled; what the server refused is said on the drop's line.
+  const answerYes = async () => {
+    if (!asking) return;
+    const { action, keys, line } = asking;
+    confirmed.current = true;
+    setAsking(null);
+    const waiting = entries.filter((entry) => keys.includes(entry.key) && entry.state.kind === "waiting");
+    if (waiting.length > 0) onCancel?.(waiting.map((entry) => entry.key));
+    if (waiting.length === keys.length || !onStopOrCancel) return;
+    const result = await onStopOrCancel(action, keys);
+    setRefused((before) => ({ ...before, [line ?? ""]: { action, ...result } }));
+  };
+  const readAgain = async (key: string, documentId: string) => {
+    const why = (await onReadAgain?.(key, documentId)) ?? null;
+    setReadErrors((before) => {
+      const after = { ...before };
+      if (why === null) delete after[key];
+      else after[key] = why;
+      return after;
+    });
+  };
+  const row = (entry: UploadEntry, rows: UploadEntry[], line: string | null, asks?: ReadonlyMap<string, TrayAsk>) => (
     <UploadRow
       key={entry.key}
       entry={entry}
       ask={asks?.get(rowDocument(entry) ?? "")}
       onDecided={keep}
       onRestore={onRestore}
+      onReplace={onReplace}
       onRetry={onRetry}
+      onRemove={onRemove}
+      onCancel={onCancel && (() => cancelOne(rows, entry.key, line))}
+      onStop={onStopOrCancel && canStop(entry, canReread) ? () => setAsking({ action: "stop", keys: [entry.key], line }) : undefined}
+      onCancelSent={onStopOrCancel && canCancel(entry) ? () => setAsking({ action: "cancel", keys: [entry.key], line }) : undefined}
+      onReadAgain={onReadAgain && canReread ? (documentId) => void readAgain(entry.key, documentId) : undefined}
+      readError={readErrors[entry.key]}
+      onUploadAgain={onUploadAgain}
       tree={tree}
       onUndone={onUndone}
       canReread={canReread}
     />
   );
+  const askedRows = asking ? entries.filter((entry) => asking.keys.includes(entry.key)) : [];
+  const question = asking
+    ? trayQuestion(
+        asking.action,
+        askedRows.filter((entry) => entry.state.kind !== "waiting").map((entry) => entry.name),
+        askedRows.filter((entry) => entry.state.kind === "waiting").length,
+      )
+    : null;
 
   return (
     <section className={styles.uploadsSection} aria-labelledby="uploads-heading">
       <div className={styles.uploadsHead}>
-        <h2 id="uploads-heading" className={styles.smallHeading}>
+        <h2 id="uploads-heading" className={styles.smallHeading} tabIndex={-1}>
           Uploads
         </h2>
         <span className={styles.uploadsActions}>
@@ -748,17 +1053,47 @@ export function BatchTray({
         const found = view?.version_suggestions?.[0];
         // A server restart fails a drop's files one by one: one button sends them all again.
         const notSentRows = rows.filter((entry) => entry.state.kind === "error" && entry.state.retry);
+        // #699, #713: Stop all and Cancel all; without onStopOrCancel, Cancel all for the waiting files only.
+        const stopAll = onStopOrCancel ? trayActionKeys(rows, "stop", canReread) : null;
+        const sendable = onStopOrCancel ? rows : rows.filter((entry) => entry.state.kind === "waiting");
+        const cancelAll = onCancel ? trayActionKeys(sendable, "cancel", canReread) : null;
+        const result = trayResultText(rows, refused[batchLineId(id)] ?? null);
         const first = found ? { document_id: found.document.id, display_name: found.document.name } : undefined;
         // #521: each file that looks like a new version gets the choice on its own row.
         const asked = trayChoices(view?.version_suggestions ?? [], decided);
         return (
           <div key={id} className={styles.batch}>
             <div className={styles.batchHead}>
-              <p className={styles.batchSummary}>
+              <p id={batchLineId(id)} className={styles.batchSummary} tabIndex={-1}>
                 {summaryText(counts)}
               </p>
               {left && <span className={`muted ${styles.small} ${styles.timeLeft}`}>{left}</span>}
             </div>
+            {(stopAll?.shown || cancelAll?.shown) && (
+              <div className={styles.uploadsActions}>
+                {stopAll?.shown && (
+                  <button type="button" className="btn" onClick={() => setAsking({ action: "stop", keys: stopAll.keys, line: batchLineId(id) })}>
+                    <Icon name="pause" />
+                    {STOP_TEXT.stopAll}
+                  </button>
+                )}
+                {cancelAll?.shown && (
+                  <button
+                    type="button"
+                    className={`btn ${styles.dangerButton}`}
+                    onClick={() => setAsking({ action: "cancel", keys: cancelAll.keys, line: batchLineId(id) })}
+                  >
+                    <Icon name="close" />
+                    {CANCEL_TEXT.all}
+                  </button>
+                )}
+              </div>
+            )}
+            {result && (
+              <p className={styles.small} role="status">
+                {result}
+              </p>
+            )}
             {notSent && (
               <p className={`error-text ${styles.small}`}>
                 <strong>{notSent}</strong>
@@ -782,14 +1117,46 @@ export function BatchTray({
                 </button>
               </div>
             )}
-            <ul className={styles.uploads}>{rows.map((entry) => row(entry, asked))}</ul>
+            <ul className={styles.uploads}>{rows.map((entry) => row(entry, rows, batchLineId(id), asked))}</ul>
           </div>
         );
       })}
-      {loose.length > 0 && <ul className={styles.uploads}>{loose.map((entry) => row(entry))}</ul>}
+      {loose.length > 0 && <ul className={styles.uploads}>{loose.map((entry) => row(entry, loose, null))}</ul>}
+      {asking && question && (
+        <ActionDialog
+          title={question.title}
+          onClose={() => setAsking(null)}
+          // After a yes the button that opened it is gone: the drop's line, or the tray's heading. After
+          // a no, focus goes back to that button (ActionDialog).
+          onClosed={() => {
+            if (!confirmed.current) return;
+            confirmed.current = false;
+            (document.getElementById(asking.line ?? "") ?? document.getElementById("uploads-heading"))?.focus();
+          }}
+        >
+          {question.note && <p className={`muted ${styles.small}`}>{question.note}</p>}
+          {question.notSent && <p className={styles.small}>{question.notSent}</p>}
+          {/* #713 (owner's mockup): the safe answer is the primary one and has the focus. */}
+          <div className={library.formButtons}>
+            <button
+              type="button"
+              className={`btn ${asking.action === "cancel" ? "btn-danger" : ""} ${library.apart}`}
+              onClick={() => void answerYes()}
+            >
+              {question.yes}
+            </button>
+            <button type="button" className="btn btn-primary" data-autofocus onClick={() => setAsking(null)}>
+              {question.no}
+            </button>
+          </div>
+        </ActionDialog>
+      )}
     </section>
   );
 }
+
+const cancelId = (key: string) => `cancel-${key}`; // #699: a waiting file's Cancel, for focus after a cancel
+const batchLineId = (id: string) => `batch-line-${id}`; // #699: a drop's line, for focus after a cancel
 
 /**
  * One drop's bar: its files' own fractions weighed by their pages, with the bytes of the
@@ -927,12 +1294,45 @@ export function LockedCopy({ documentId, name }: { documentId: string; name: str
   );
 }
 
+/** #697: what Restore did: into the upload's folder, or where it was (and why), or from Trash. */
+export function restoredText(state: Extract<UploadState, { kind: "restored" }>, tree: FolderTree): string {
+  if (state.notMoved !== undefined) return `${TRASH_COPY.restoredInPlace} ${state.notMoved}`;
+  if (state.into) return TRASH_COPY.restoredInto(pathLabel(tree, state.into));
+  return `Restored “${state.existingName}” from Trash.`;
+}
+
+/** #697: the one question before Upload as new file. [Cancel] [Replace]: Cancel has focus, so
+ *  Enter never deletes by accident; Escape, Close and the backdrop cancel. No password. */
+export function ReplaceDialog({ onCancel, onReplace }: { onCancel: () => void; onReplace: () => void }) {
+  return (
+    <ActionDialog title={TRASH_COPY.confirmTitle} onClose={onCancel}>
+      <p>{TRASH_COPY.confirmBody}</p>
+      <div className="actions">
+        <button type="button" className="btn" data-autofocus onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="button" className="btn btn-danger" onClick={onReplace}>
+          Replace
+        </button>
+      </div>
+    </ActionDialog>
+  );
+}
+
 function UploadRow({
   entry,
   ask,
   onDecided,
   onRestore,
+  onReplace,
   onRetry,
+  onRemove,
+  onCancel,
+  onStop,
+  onCancelSent,
+  onReadAgain,
+  readError,
+  onUploadAgain,
   tree,
   onUndone,
   canReread,
@@ -941,18 +1341,28 @@ function UploadRow({
   ask?: TrayAsk;
   onDecided(suggestion: VersionSuggestion, chosen: Chosen, undone: boolean): void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
+  onReplace?: (key: string) => void;
   onRetry: (key: string) => void;
+  onRemove?: (key: string) => void;
+  onCancel?: () => void;
+  onStop?: () => void; // #713: asks first (BatchTray)
+  onCancelSent?: () => void; // #713: asks first (BatchTray)
+  onReadAgain?: (documentId: string) => void; // #713: a file stopped by a person
+  readError?: string; // #713: why its Read again did not start
+  onUploadAgain?: () => void; // #713: the file picker, after a Cancel
   tree: FolderTree;
   onUndone: () => void;
   canReread: boolean;
 }) {
   const { state } = entry;
+  const [replacing, setReplacing] = useState(false); // #697: the confirm is open
   // After Restore, the Restore button gives way to "Open it": focus follows.
   const focusOnMount = useCallback((element: HTMLAnchorElement | null) => {
     element?.focus();
   }, []);
   const kind = rowKind(entry);
-  const failed = kind === "failed" || kind === "stopped";
+  const mine = stoppedRow(entry); // #713: stopped on purpose: no failure, Read again starts it
+  const failed = (kind === "failed" || kind === "stopped") && !mine;
   const stage = stageOf(state);
   const story = storyTarget(state); // a finished file offers its story section, never a dialog
   const document = state.kind === "done" ? state.document : undefined;
@@ -968,7 +1378,7 @@ function UploadRow({
   else if (document) icon = "check-seal";
 
   return (
-    <li className={styles.upload} data-state={failed ? "error" : state.kind}>
+    <li className={styles.upload} data-state={mine ? "stopped" : failed ? "error" : state.kind}>
       <div className={styles.uploadIconWrap}>
         <Icon name={icon} className={styles.uploadIcon} />
       </div>
@@ -986,7 +1396,31 @@ function UploadRow({
           <p className={`muted ${styles.small}`}>New version of “{entry.versionOf}”</p>
         )}
         {stage !== null && <RowBar entry={entry} stage={stage} />}
-        {state.kind === "reading" && !zip && <p className={`muted ${styles.small}`}>{scanPhrase(state.document)}</p>}
+        {state.kind === "reading" && (!zip || onStop || onCancelSent) && (
+          <div className={styles.rowLine}>
+            {!zip && <p className={`muted ${styles.small}`}>{scanPhrase(state.document)}</p>}
+            {/* #713: quiet Stop and Cancel on the right of the line, each named for its file. */}
+            {(onStop || onCancelSent) && (
+              <span className={styles.rowActions}>
+                {onStop && (
+                  <button type="button" className={`btn btn-quiet ${styles.inlineAction}`} aria-label={STOP_TEXT.stopOne(entry.name)} onClick={onStop}>
+                    {STOP_TEXT.stop}
+                  </button>
+                )}
+                {onCancelSent && (
+                  <button
+                    type="button"
+                    className={`btn btn-quiet ${styles.inlineAction} ${styles.dangerQuiet}`}
+                    aria-label={STOP_TEXT.cancelOne(entry.name)}
+                    onClick={onCancelSent}
+                  >
+                    {STOP_TEXT.cancel}
+                  </button>
+                )}
+              </span>
+            )}
+          </div>
+        )}
         {zip && <ZipUnpackNote note={zip} />}
         {unreadable?.detail && <p className={styles.small}>{unreadable.detail}</p>}
         {ready && <p className={styles.small}>{`Scan complete · ${flaggedText(ready)}`}</p>}
@@ -995,13 +1429,43 @@ function UploadRow({
           <AutofileNote
             document={ready}
             name={entry.name}
-            filed={ready.folder_id ? filedText(shortPathLabel(tree, ready.folder_id)) : ""}
+            filed={ready.folder_id ? filedText(pathLabel(tree, ready.folder_id)) : ""}
             folderHref={ready.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: ready.folder_id }) : null}
             onUndone={onUndone}
           />
         )}
-        {document && document.status !== "ready" && !zip && (
+        {ready && <DepartmentSuggestion document={ready} tree={tree} onMoved={onUndone} />}
+        {document && document.status !== "ready" && !zip && !mine && (
           <p className={`error-text ${styles.small}`}>{document.status_message}</p>
+        )}
+        {mine && (
+          <p className={styles.small}>
+            {stoppedByYou(entry) ? STOP_TEXT.stoppedLine : document?.status_message}{" "}
+            {onReadAgain && state.kind === "done" && (
+              <button type="button" className={`btn ${styles.inlineAction}`} onClick={() => onReadAgain(state.documentId)}>
+                <Icon name="refresh" />
+                {STOP_TEXT.readAgain}
+                <span className="visually-hidden">{` ${entry.name}`}</span>
+              </button>
+            )}
+          </p>
+        )}
+        {readError && (
+          <p className={`error-text ${styles.small}`} role="alert">
+            {readError}
+          </p>
+        )}
+        {state.kind === "cancelled" && (
+          <p className={styles.small}>
+            {STOP_TEXT.cancelledLine}{" "}
+            {onUploadAgain && (
+              <button type="button" className={`btn ${styles.inlineAction}`} onClick={onUploadAgain}>
+                <Icon name="upload" />
+                {STOP_TEXT.uploadAgain}
+                <span className="visually-hidden">{` ${entry.name}`}</span>
+              </button>
+            )}
+          </p>
         )}
         {state.kind === "done" && (
           <Link href={`/documents/${state.documentId}`} className={styles.inlineAction}>
@@ -1022,30 +1486,49 @@ function UploadRow({
         )}
         {(state.kind === "restoring" || (state.kind === "duplicate" && state.inTrash)) && (
           <>
-            <p className={styles.small}>
-              This file was uploaded before, as “{state.existingName}”, and that copy is in Trash.
-              Nothing new was stored.
-            </p>
+            <p className={styles.small}>{TRASH_COPY.line(state.existingName)}</p>
             <button
               type="button"
-              className={`btn ${styles.inlineAction}`}
+              className={`btn btn-primary ${styles.inlineAction}`}
               aria-disabled={state.kind === "restoring" ? true : undefined}
               onClick={() => {
                 if (state.kind === "duplicate") onRestore(entry.key, state.documentId, state.existingName);
               }}
             >
-              <BusyLabel busy={state.kind === "restoring"} idle="Restore it from Trash" working="Restoring…" />
+              <BusyLabel busy={state.kind === "restoring"} idle={TRASH_COPY.restore} working="Restoring…" />
             </button>
+            {/* #697: a drop's file this tab still holds (none after a reload, nor for a new version):
+                who may delete forever may send it as a new file; anyone else is told to ask an admin. */}
+            {onReplace && entry.asNew && (
+              <button
+                type="button"
+                className={`btn ${styles.inlineAction}`}
+                aria-disabled={state.kind === "restoring" ? true : undefined}
+                onClick={() => state.kind === "duplicate" && setReplacing(true)}
+              >
+                {TRASH_COPY.asNew}
+              </button>
+            )}
+            {!onReplace && entry.asNew && <p className={`muted ${styles.small}`}>{TRASH_COPY.askAdmin}</p>}
             {state.kind === "duplicate" && state.restoreError && (
               <p className={`error-text ${styles.small}`} role="alert">
                 {state.restoreError}
               </p>
             )}
+            {replacing && onReplace && (
+              <ReplaceDialog
+                onCancel={() => setReplacing(false)}
+                onReplace={() => {
+                  setReplacing(false);
+                  onReplace(entry.key);
+                }}
+              />
+            )}
           </>
         )}
         {state.kind === "restored" && (
           <p className={styles.small}>
-            Restored “{state.existingName}” from Trash.{" "}
+            {restoredText(state, tree)}{" "}
             <Link ref={focusOnMount} href={`/documents/${state.documentId}`}>
               Open it
             </Link>
@@ -1066,6 +1549,16 @@ function UploadRow({
             <Icon name="refresh" />
             Retry<span className="visually-hidden">{` ${entry.name}`}</span>
           </button>
+        )}
+        {state.kind === "error" && onRemove && (
+          <button type="button" className={`btn ${styles.inlineAction}`} onClick={() => onRemove(entry.key)}>
+            <Icon name="close" />
+            Remove<span className="visually-hidden">{` ${entry.name}`}</span>
+          </button>
+        )}
+        {entry.asked && inFlight(entry) && <p className={`muted ${styles.small}`}>{STOP_TEXT.onceSent[entry.asked]}</p>}
+        {state.kind === "waiting" && onCancel && (
+          <IconButton id={cancelId(entry.key)} icon="close" label={CANCEL_TEXT.one(entry.name)} className="btn-quiet" onClick={onCancel} />
         )}
         {story !== null && (
           <Link href={storyHref(story)} className={`${styles.inlineAction} ${styles.storyLink}`}>
@@ -1107,6 +1600,17 @@ export function UploadStatus({
     onOpenChange(false);
     toggle.current?.focus();
   }
+  // Issue 692: Escape closes the open tray wherever focus is (on the Uploads button, or nowhere
+  // after a click), not only inside it; an Escape in a dialog is that dialog's.
+  const onEscape = useEffectEvent((event: KeyboardEvent) => {
+    if (event.key === "Escape" && !(event.target as HTMLElement | null)?.closest?.("dialog")) hide();
+  });
+  useEffect(() => {
+    if (!open) return;
+    const listener = (event: KeyboardEvent) => onEscape(event);
+    document.addEventListener("keydown", listener);
+    return () => document.removeEventListener("keydown", listener);
+  }, [open]);
   return (
     <InStatusBar>
       <p className={styles.barLine} aria-live="polite">
@@ -1133,14 +1637,13 @@ export function UploadStatus({
           id={`${id}-uploads`}
           className={`motion-pop ${styles.trayPanel}`}
           hidden={!open}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") hide();
-          }}
         >
           {/* Drawn only while open: closed, nobody sees its rows redraw. */}
           {open && <BatchTray {...tray} onHide={hide} />}
         </div>
       )}
+      {/* PRD 9 F-06: a file just uploaded that looks like a new version is asked in a pop-up. */}
+      <VersionPopup suggestions={Object.values(tray.views).flatMap((view) => view.version_suggestions ?? [])} />
     </InStatusBar>
   );
 }

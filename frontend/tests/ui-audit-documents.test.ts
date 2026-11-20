@@ -72,13 +72,15 @@ describe("DD5: the split between the page and the panels", () => {
 describe("D5: a row's menu", () => {
   const view = { width: 1200, height: 800 };
   it("opens under its button, its end on the button's end", () => {
+    // Changed on purpose (#711): the place also says how tall the menu may be, the room on its side.
     const place = menuPlace({ top: 100, bottom: 136, right: 900 }, { width: 208, height: 200 }, view);
-    expect(place).toEqual({ top: 140, left: 692, up: false });
+    expect(place).toEqual({ top: 140, left: 692, up: false, maxHeight: 652 });
   });
 
   it("flips above near the window's bottom, and stays 8px inside the window", () => {
+    // Changed on purpose (#711): the place also says how tall the menu may be, the room on its side.
     const up = menuPlace({ top: 700, bottom: 736, right: 900 }, { width: 208, height: 200 }, view);
-    expect(up).toEqual({ top: 496, left: 692, up: true });
+    expect(up).toEqual({ top: 496, left: 692, up: true, maxHeight: 688 });
     expect(menuPlace({ top: 100, bottom: 136, right: 100 }, { width: 208, height: 50 }, view).left).toBe(8);
   });
 
@@ -111,6 +113,8 @@ describe("D5: a row's menu", () => {
       "Rename",
       "Move to folder",
       "Tags",
+      "Copy path", // changed on purpose (#730)
+      "Copy link",
       "Move to Trash",
     ]);
     expect(words(menuEntries(item, false, "document", false))[0]).toBe("Rename");
@@ -123,6 +127,8 @@ describe("D5: a row's menu", () => {
       "Move to folder",
       "Tags",
       "Upload new version",
+      "Copy path", // changed on purpose (#730): Copy path and Copy link
+      "Copy link",
       "Download original",
       "Move to Trash",
     ]);
@@ -251,7 +257,9 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     // tooltip too); the place's own "+ New folder" button is gone, and the column shows at every
     // width (stacked above the list below 1024px, no drawer), so the "+" is always there.
     const actions = read("components/documents/FolderActions.tsx");
-    expect(actions).not.toMatch(/>\s*New folder\s*</);
+    // Changed on purpose (PRD 9 F-18): testers found no way to make a folder, so the place's header
+    // has a "New folder" button beside Rename and Move again; the column's "+" stays.
+    expect(actions).toContain('New folder<span className="visually-hidden"> here</span>');
     expect(actions).not.toContain('<Icon name="plus" />');
     expect(view).not.toContain("<Drawer");
     expect(css("components/documents/Library.module.css")).toMatch(/^\.treePane \{\s*display: flex;/m);
@@ -344,7 +352,8 @@ describe("the document screen (DD6, DD7, DD9)", () => {
     expect(markChipText(mark("Fettari"))).toBe("Fettari");
     expect(markChipText(mark("  "))).toBe("Unsure word");
     const panels = read("app/(app)/documents/[id]/DocumentPanels.tsx");
-    expect(panels).toContain("{index + 1}/{shownMarks.length}");
+    // Changed on purpose (PRD 9 F-14): numbered over the open marks (`at`); `index` stays the page's.
+    expect(panels).toContain("{at + 1}/{shownMarks.length}");
     expect(panels).toContain("aria-label={name}");
     expect(read("components/viewer/PageViewer.tsx")).toContain('data-hot={hotMark === index ? "true" : undefined}');
   });

@@ -38,7 +38,9 @@ export type RowAction =
   | "forever"
   | "read"
   | "give"
-  | "audience";
+  | "audience"
+  | "copyPath" // #730
+  | "copyLink";
 
 /** What each action does, in one plain line under it in the menu (plain words, 25 Oct 2026). */
 export const ACTION_HELP: Record<RowAction | "download", string> = {
@@ -54,6 +56,8 @@ export const ACTION_HELP: Record<RowAction | "download", string> = {
   forever: "Deletes it for good. It can't be recovered.",
   give: GIVE_HELP, // PRD 7 (#604)
   audience: AUDIENCE_HELP,
+  copyPath: "Copy where it is, to paste in Search and find it again.", // #730
+  copyLink: "Copy its address, for someone who can open it.",
 };
 
 /** PRD 7 (#604): the access items a menu may offer (accessAbilities: Give access is an admin
@@ -76,8 +80,9 @@ export type MenuEntry =
  * Upload new version (the reading problems' Upload a better scan).
  * PRD 7 (#604): Give access and Who can see this (`access`) come before Move to Trash; a file in
  * Trash has neither (the server says 409 in_trash).
- * #648 (V13): Link to another version… after Upload new version, in the list, for whoever may link
- * (`linkVersions`: Admins and Management).
+ * #648 (V13): Make it a version of… (PRD 9 F-09; was Link to another version…) after Upload new
+ * version, in the list and on the document screen, for whoever may link (`linkVersions`: Admins and
+ * Management).
  */
 export function menuEntries(
   item: Pick<DocumentSummary, "id" | "status" | "deleted_at" | "can_delete" | "locked">,
@@ -106,7 +111,9 @@ export function menuEntries(
         act("move", "Move to folder"),
         act("tags", "Tags"),
         act("version", "Upload new version"),
-        ...(linkVersions && place === "list" ? [act("link", "Link to another version…")] : []),
+        ...(linkVersions ? [act("link", "Make it a version of…")] : []),
+        act("copyPath", "Copy path"), // #730
+        act("copyLink", "Copy link"),
       ];
   if (place === "document") {
     const kept = entries.filter((entry) => entry.kind === "action" && entry.action !== "version");
@@ -127,13 +134,14 @@ export function menuEntries(
 /**
  * Where an open menu goes (D5): under its button, or above it when there is not room
  * below and more above; its end edge lined up with the button's, kept 8px inside the
- * window. Fixed coordinates (the menu is in a portal, so <main> never cuts it).
+ * window. Fixed coordinates (the menu is in a portal, so <main> never cuts it). `maxHeight`: the room
+ * on that side, so a menu taller than it scrolls inside instead of running off the window (#711).
  */
 export function menuPlace(
   button: { top: number; bottom: number; right: number },
   menu: { width: number; height: number },
   view: { width: number; height: number },
-): { top: number; left: number; up: boolean } {
+): { top: number; left: number; up: boolean; maxHeight: number } {
   const gap = 4;
   const edge = 8;
   const below = view.height - button.bottom - gap - edge;
@@ -141,7 +149,7 @@ export function menuPlace(
   const up = menu.height > below && above > below;
   const top = up ? Math.max(edge, button.top - gap - menu.height) : button.bottom + gap;
   const left = Math.min(Math.max(edge, button.right - menu.width), Math.max(edge, view.width - menu.width - edge));
-  return { top, left, up };
+  return { top, left, up, maxHeight: up ? above : below };
 }
 
 /** The menu item focused after a key (Up/Down wrap, Home/End the ends); null for other keys. */

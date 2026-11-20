@@ -418,9 +418,10 @@ describe("Ensemble", () => {
     // document, Export and Download original are in the document's "⋯" menu, not a menu here.
     expect(none).not.toContain("Run Ensemble on full document");
     const status_ = status({ flagged: 0, reviewed: 0, remaining: 0, summary: "Scan complete · 14 pages · 2,431 words · Nothing flagged" });
-    const items = documentMoreItems(status_, { onEnsemble: () => undefined, onExport: () => undefined, download: "/f" });
+    const items = documentMoreItems(status_, { onEnsemble: () => undefined, onExport: () => undefined });
     // Changed on purpose (Vrushit UAT, 25 Oct 2026): Export is "Export as Data", the read text as a .txt.
-    expect(items.map((item) => item.label)).toEqual(["Run Ensemble on full document", "Export as Data", "Download original"]);
+    // Changed on purpose (issue 692): no Download original in the menu; the Download button sits beside it.
+    expect(items.map((item) => item.label)).toEqual(["Run Ensemble on full document", "Export as Data"]);
     expect(items.every((item) => item.hint.length > 0)).toBe(true);
   });
 
@@ -535,16 +536,20 @@ describe("a file not ready yet", () => {
     );
     expect(view).toMatch(/\{detail\.status !== "ready" && !barSaysStatus && <span className=\{styles\.meta\}>\{detail\.status_message\}<\/span>\}/);
     expect(view).toMatch(/scanningIcon=\{STATUS_ICONS\[chip\.tone\]\}/);
-    expect(view).toMatch(/const chip = statusChip\(detail\.status, detail\.detected_type\);/);
+    // Changed on purpose (#713): and its failure code, so a stopped file says "Stopped by you".
+    expect(view).toMatch(/const chip = statusChip\(detail\.status, detail\.detected_type, detail\.failure_code\);/);
     expect(words.statusLine(status({ status: "failed" }), "Why.").text).toBe("Why.");
     expect(words.statusLine(status({ status: "ready" }), "Why.").text).not.toBe("Why.");
   });
 
   it("passes the file's kind wherever a finished file's chip is drawn", () => {
+    // Changed on purpose (#713): and its failure code, so a stopped file says "Stopped by you".
     expect(css("components/documents/DocumentsTable.tsx")).toContain(
-      "<StatusChip status={document.status} detectedType={document.detected_type} />",
+      "<StatusChip status={document.status} detectedType={document.detected_type} failureCode={document.failure_code} />",
     );
-    expect(css("components/search/SearchScreen.tsx")).toContain("statusChip(document.status, document.detected_type)");
+    expect(css("components/search/SearchScreen.tsx")).toContain(
+      "statusChip(document.status, document.detected_type, document.failure_code)",
+    );
   });
 });
 

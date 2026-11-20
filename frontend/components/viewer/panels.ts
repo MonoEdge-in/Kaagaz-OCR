@@ -20,6 +20,7 @@ export interface Spot {
   name: string; // said when it is shown: "Showing {name} on page n."
   region: Region;
   label: Region | null;
+  approximate?: boolean; // PRD 9 F-16: a spot no found box confirmed, drawn dashed as APPROXIMATE_SPOT
 }
 
 export interface CardItem extends Spot {

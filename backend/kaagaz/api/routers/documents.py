@@ -40,6 +40,14 @@ Why some choices:
   and only a family in Trash (409 ``not_in_trash``
   otherwise); its files go inside the same transaction, so if storage cannot be
   reached every row stays and the admin can try again.
+* **Upload as new file** (#697, Tushar, 19 Nov 2026; NEEDS VRUSHIT'S REVIEW): a resumable start
+  may say ``replace_trash``. At its complete, who may delete forever (``_may_replace_from_trash``,
+  else 403 before anything is stored) but with no typed password: when the upload's own bytes find
+  a copy in Trash, unlocked and seen by the person, its family is deleted forever under its lock
+  (``document.replace_from_trash``), then the upload is stored as a new file where it was sent and
+  read (its ``document.upload`` row says ``replaces``). Anything else is answered as before. The
+  delete and the store are two transactions: if the store then fails, the copy stays deleted and
+  the upload can be sent again.
 * **Trash means deleted.** A family in Trash can't be renamed, moved, tagged
   or given a new version: 409 ``in_trash``, checked under the family lock.
 * **Read again** (PRD 2 X1) is for a reviewer or an admin: a ready, failed or
@@ -139,26 +147,37 @@ Why some choices:
 """
 
 import hashlib
+import io
 import logging
 import math
+import threading
 import uuid
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from os.path import splitext
+from time import monotonic
 from typing import Annotated, Any, Literal, cast
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import FormData, UploadFile
 
-from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User, deletes_forever_by_password
+from kaagaz.api.auth import (
+    CanDeleteForever,
+    CurrentUser,
+    Reviewer,
+    User,
+    deletes_forever_by_password,
+    require_admin_session,
+)
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.locked import refuse_locked, refuse_locked_id
@@ -170,7 +189,6 @@ from kaagaz.api.views import (
     LOCKED_NOTE,
     answer_with_source_states,
     can_delete,
-    cited_document_ids,
     document_folder,
     document_link,
     document_summary,
@@ -182,11 +200,12 @@ from kaagaz.api.views import (
     page_readings,
     page_summary,
     seen_items,
+    shown_document_ids,
     shown_folder,
     timeline,
 )
 from kaagaz.db import access as access_sql
-from kaagaz.db import audit, autofile, listing, page_turns, reading_days, storage_limits, trash
+from kaagaz.db import audit, autofile, listing, page_turns, reading_days, storage_limits, trash, word_review
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folder_upload_items as items_sql
 from kaagaz.db import folders as folders_sql
@@ -200,12 +219,14 @@ from kaagaz.db.documents import (
     EnsembleRunning,
     NotInTrash,
     NotReprocessable,
+    NotStoppable,
     PgDocuments,
     ReprocessLimited,
     accept_page,
     delete_family_forever,
     mark_for_reprocess,
     request_page_read_again,
+    stop_reading,
 )
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.folder_upload_items import ItemRow
@@ -229,8 +250,10 @@ from kaagaz.ingestion.ports import (
 )
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
+from kaagaz.reading import orientation
 from kaagaz.reading.ocr import GEMINI
 from kaagaz.reading.office import PDF_KINDS as OFFICE_PDF_KINDS
+from kaagaz.reading.rapid_pool import RapidOcrPool
 from kaagaz.search import page_words
 from kaagaz.settings import Settings
 
@@ -255,6 +278,7 @@ class ResumableUploadStart(BaseModel):
     resume_session_id: str | None = None
     folder_upload_id: str | None = None  # #484: optional, checked against the item's
     folder_upload_item_id: str | None = None  # #484: the item names folder, batch and name
+    replace_trash: bool = False  # #697: Upload as new file (module notes)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -687,6 +711,44 @@ def _department(context: AppContext, user: CurrentUser, department_id: str) -> s
     return department_id
 
 
+def _may_replace_from_trash(user: CurrentUser) -> None:
+    """#697: who may delete forever (``require_delete_forever``: an admin session, or a member or
+    reviewer an admin allowed), with no typed password: the upload's own bytes name the copy."""
+    if user.role == "admin":
+        require_admin_session(user)
+    elif not user.delete_forever_allowed:
+        raise ApiError(403, "forbidden")
+
+
+def _replace_from_trash(context: AppContext, user: CurrentUser, document_id: str) -> bool:
+    """#697: the family of ``document_id`` (the upload's duplicate) deleted forever and audited, under
+    its family lock, only while it is in Trash, unlocked and seen by the person; else False and
+    nothing changes (the upload is answered as before). One transaction."""
+    customer_id = user.customer_id
+    with context.db.user(customer_id, user.user_id) as conn:
+        trash.lock_family(conn, customer_id, document_id)
+        row = listing.get_document(conn, customer_id, document_id)  # PRD 7: through the view
+        if row is None or row["locked"]:
+            return False
+        try:
+            versions = delete_family_forever(conn, context.storage, customer_id, document_id)
+        except NotInTrash:  # every version must be in Trash, checked under the lock
+            return False
+        details: dict[str, audit.DetailValue] = {"versions": versions}
+        if user.role != "admin":
+            details["by_grant"] = True
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.replace_from_trash",
+            target_type="document",
+            target_id=document_id,
+            details=details,
+        )
+    return True
+
+
 def _accept(
     context: AppContext,
     user: CurrentUser,
@@ -697,11 +759,23 @@ def _accept(
     asked: _Asked,
     *,
     via: str | None = None,
+    replace_trash: bool = False,
 ) -> dict[str, Any]:
     """An upload's file stored (``_store``), and its reply. ``via``: the way it came when not the
-    browser (#603 W5: ``whatsapp``), in its audit row, with the uploader as its subject."""
+    browser (#603 W5: ``whatsapp``), in its audit row, with the uploader as its subject.
+    ``replace_trash`` (#697, module notes): its copy in Trash is deleted forever first, then it is
+    stored again as a new file."""
+    if replace_trash:
+        _may_replace_from_trash(user)  # before anything is stored
     result, reading = _store(context, user, upload, policy, folder_id, batch_id, asked)
+    replaces = None
+    if replace_trash and result.duplicate and _replace_from_trash(context, user, result.document_id):
+        replaces = result.document_id
+        upload.file.seek(0)
+        result, reading = _store(context, user, upload, policy, folder_id, batch_id, asked)
     details = {**reading.details(), **({"via": via} if via else {})}
+    if replaces:
+        details["replaces"] = replaces
     subject = user.user_id if via else None
     return _upload_reply(
         context, user, result, action="document.upload", details=details or None, subject_user_id=subject
@@ -1086,6 +1160,7 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
                 body.fingerprint,
                 batch_id=_form_uuid(body.batch_id),
                 item_id=_form_uuid(body.folder_upload_item_id),
+                replace=body.replace_trash,
             )
         }
 
@@ -1124,6 +1199,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
             or row["file_size"] != body.file_size
             or cast(dict[str, Any], row["metadata"]).get("filename") != display_name(body.file_name)
             or cast(dict[str, Any], row["metadata"]).get("fingerprint") != body.fingerprint
+            or bool(cast(dict[str, Any], row["metadata"]).get("replace_trash")) != body.replace_trash
         ):
             raise ApiError(404, "not_found")
         done = cast(dict[str, Any], row["metadata"]).get("completed")
@@ -1179,6 +1255,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
         "version_document_id": body.version_document_id,
         "version_note": clean_note(body.version_note),
         "folder_upload_item_id": None if item is None else item.id,
+        "replace_trash": body.replace_trash,
         "parts": {},
     }
     try:
@@ -1348,7 +1425,14 @@ def _store_completed(
                 )
             else:
                 result = _accept(
-                    context, user, upload, policy, metadata.get("folder_id"), metadata.get("batch_id"), asked
+                    context,
+                    user,
+                    upload,
+                    policy,
+                    metadata.get("folder_id"),
+                    metadata.get("batch_id"),
+                    asked,
+                    replace_trash=bool(metadata.get("replace_trash")),
                 )
         except ApiError as refused:
             if refused.status == 429:  # a send slot: the session is kept for the retry
@@ -1577,7 +1661,7 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
         rows = chat_sql.document_questions(conn, user.customer_id, user.user_id, family)
         # As the chat view: sources in Trash, replaced, hidden or deleted since
         # (views.answer_with_source_states: replaced whole for one hidden, PRD 7).
-        cited = [each for row in rows if row["answer"] for each in cited_document_ids(row["answer"])]
+        cited = [each for row in rows if row["answer"] for each in shown_document_ids(row["answer"])]
         states = chat_sql.document_states(conn, user.customer_id, cited)
         opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
     return {
@@ -1637,7 +1721,9 @@ def reprocess_document(
         except NotReprocessable:
             raise ApiError(409, "not_reprocessable") from None
         except ReprocessLimited as limited:
-            raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
+            # #713: which limit, so a stopped file's Read again can say when it may be read again.
+            words, reason = _REPROCESS_LIMITED[limited.reason], {"reason": limited.reason}
+            raise ApiError(429, "rate_limited", words, details=reason) from None
         _refuse_while_paused(conn, customer_id, previous, context.clock())
         if previous is None:  # deleted in the moment since
             raise ApiError(404, "not_found")
@@ -1680,6 +1766,51 @@ def _read_again_express(context: AppContext, row: RowMapping) -> bool:
     """Read again goes to the express lane by the page count its last read stored (PRD 5
     Q4); a document never counted goes to the main lane."""
     return goes_express(row["page_count"], context.settings.express_max_pages)
+
+
+# --- Stop (#713) ----------------------------------------------------------------------
+
+_NOT_STOPPABLE = "Only a file still waiting, being checked or being read can be stopped."
+# Tushar, 20 Nov 2026: a file read before is never stopped while it is read again.
+_ALREADY_READ = "This file was already read. Reading again will finish."
+
+
+@router.post("/documents/{document_id}/stop")
+def stop_document(document_id: uuid.UUID, user: Reviewer, context: Context) -> dict[str, Any]:
+    """Stop reading a file (#713) and return its summary, now ``failed`` with ``stopped``; Read
+    again starts it again. Who may read it again may stop it: a reviewer or an admin, on a file
+    the view shows them (else 404, as for one that never was). Only one waiting, being checked or
+    being read for the first time: in Trash 409 ``in_trash``, locked 409 ``locked``, one read
+    before 409 ``already_read``, anything else 409 ``not_stoppable``. One transaction: the
+    family lock, the change and its runs closed (``stop_reading``), the ``document.stop`` audit
+    row. A model call already in flight finishes; the worker stops before its next step. A
+    selection is stopped one call a file, as Move to Trash and Read again are
+    (components/documents/trash.ts)."""
+    customer_id, target = user.customer_id, str(document_id)
+    with context.db.user(customer_id, user.user_id) as conn:
+        row = _document_or_404(conn, user, document_id)
+        if row["deleted_at"] is not None:
+            raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
+        try:
+            stop_reading(conn, customer_id, target, now=context.clock())
+        except NotStoppable as refused:
+            if refused.read_before:
+                raise ApiError(409, "already_read", _ALREADY_READ) from None
+            raise ApiError(409, "not_stoppable", _NOT_STOPPABLE) from None
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="document.stop",
+            target_type="document",
+            target_id=target,
+            details={"status": row["status"]},
+        )
+        row = _document_or_404(conn, user, document_id)
+        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
+        return document_summary(
+            row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
+        )
 
 
 # --- one page: read it again, or keep it as is (PRD 5 F5) ----------------------------
@@ -2051,6 +2182,62 @@ def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Co
     )
 
 
+# Straighten pages (#709; NEEDS VRUSHIT'S REVIEW: RapidOCR now also runs in the API process, here
+# alone): at most one check at a time per process, on one RapidOCR slot whose models load on the
+# first check, of at most STRAIGHTEN_MAX_PAGES pages, for at most STRAIGHTEN_SECONDS.
+STRAIGHTEN_MAX_PAGES = 50
+STRAIGHTEN_SECONDS = 120.0
+_straightening = threading.Lock()
+_straighten_pool = RapidOcrPool(1)
+
+
+@router.post("/documents/{document_id}/straighten")
+def straighten_pages(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """The turn each page needs to put its writing upright (``orientation.upright_turn``): the
+    clockwise turn on top of the file's own (the page picture is drawn with it), as the viewer's
+    page turns and ``page_rotations`` count it. ``pages`` names only pages to turn; ``unsure``,
+    the pages it could not tell, has no picture for, or had no time left for. Read-only: the
+    viewer applies the turns. Who may ask is who may see the page image (above)."""
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        row = _readable_or_409(conn, user, document_id)
+    if row["status"] == "rejected":
+        raise ApiError(404, "not_found")
+    count = row["page_count"]
+    if count is None:
+        raise ApiError(409, "not_ready", "Kaagaz is still counting this file's pages. Try again in a minute.")
+    if count > STRAIGHTEN_MAX_PAGES:
+        message = f"Kaagaz can check up to {STRAIGHTEN_MAX_PAGES} pages at a time. This file has {count}."
+        raise ApiError(409, "too_many_pages", message)
+    if not _straightening.acquire(blocking=False):
+        message = "Kaagaz is checking another file's pages. Try again in a moment."
+        raise ApiError(429, "rate_limited", message, headers={"Retry-After": "10"})
+    pages: list[dict[str, int]] = []
+    unsure: list[int] = []
+    try:
+        deadline = monotonic() + STRAIGHTEN_SECONDS
+        for page_no in range(1, count + 1):
+            turn = None
+            if monotonic() < deadline:
+                try:
+                    stored = context.storage.get_page_image(user.customer_id, str(document_id), page_no)
+                except BlobNotFound:
+                    stored = None
+                if stored is not None:
+                    with Image.open(io.BytesIO(stored)) as picture:
+                        turn = orientation.upright_turn(_straighten_pool, picture)
+            if turn is None:
+                unsure.append(page_no)
+            elif turn:
+                pages.append({"page_no": page_no, "turn": turn})
+    finally:
+        _straightening.release()
+    logger.info(
+        "pages straightened",
+        extra={"document_id": str(document_id), "turned": len(pages), "unsure": len(unsure)},
+    )
+    return {"pages": pages, "unsure": unsure}
+
+
 @router.get("/documents/{document_id}/pages/{page_no}/readings")
 def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> dict[str, Any]:
     """Scanned text: every line each reader read on this page, as read. Who may see it
@@ -2065,8 +2252,11 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
             raise ApiError(404, "not_found")
         rows = listing.page_readings(conn, customer_id, target, page_no)
         marks = listing.page_marks(conn, customer_id, target, page_no)  # PRD 5 U3
+        # PRD 9 F-12: the fixes; this page's alone (a change touches a line on its own page only).
+        live = word_review.in_force(conn, customer_id, target)
+        live = [change for change in live if change["page_no"] == page_no]
         _viewed(conn, user, document_id, "readings")
-    return page_readings(page_no, rows, marks)
+    return page_readings(page_no, rows, marks, live)
 
 
 @router.get("/documents/{document_id}/words")

@@ -214,6 +214,8 @@ export interface DocumentSummary {
   understanding?: boolean; // Ready first (16 Oct 2026): ready and usable, its card and map still coming
   // Issue 407: still being read 6 hours after it was uploaded or last read again, so it may be read again (Retry).
   stuck?: boolean;
+  // #713: being read again after a reading that finished: it is never stopped (Tushar, 20 Nov 2026).
+  read_before?: boolean;
   // PRD 7 (#605): locked: found by its name only, never read, opened only as page pictures (PR 13).
   locked?: boolean;
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
@@ -243,6 +245,8 @@ export interface DocumentSummary {
   department?: { id: string; name: string } | null;
   // "new": this document may be a new version of another; "candidate": a newer one waits on this family.
   pending_suggestion?: { id: string; role: "new" | "candidate" } | null;
+  // PRD 9 F-01: in no folder, the existing department its type maps to that the person can open.
+  suggested_department?: { id: string; name: string } | null;
   // #522: a zip only: where it was unpacked, null until it is (or when it is kept as a file).
   // Its status_message already says "Unpacked: 120 files into folder "X", 3 skipped (...)".
   unpack?: ZipUnpack | null;
@@ -441,6 +445,7 @@ export interface DocumentCompare {
   overview?: string; // #521: "94% the same. 38 words changed on pages 2 and 5. Page 6 is new."
   left_pages?: number | null; // #521 review: each side's page count, for its page images
   right_pages?: number | null;
+  image_pages: { left: number[]; right: number[] }; // PRD 9 F-08: each side's pages with a picture
 }
 
 /** An active person of this company, for the owner picker and the filters. */
@@ -1032,6 +1037,7 @@ export interface ReadLine {
   table?: { id: string; row: number; col: number; header: boolean } | null; // a table cell's place
   key?: string; // #527: the clean copy's lines only, the line's stable key (a flag's word_key)
   correction?: LineCorrection | null; // #527: the clean copy's lines only; `text` is then the corrected text
+  box_source?: "found" | "model" | null; // PRD 9 F-16: the Text tab's lines only; "model": no found box confirmed its spot
 }
 
 /** #527: the correction in force for a clean copy line; `before_text` is the text it replaced. */
@@ -1134,6 +1140,28 @@ export interface ListedDocument {
   title: string;
   why: string;
   citations: number[];
+  // #718, missing on answers saved before: folder names, root first; [] at the top level; null in
+  // a folder this person can't see ("Shared with you").
+  path?: string[] | null;
+  pages?: FilePage[]; // at most 5: cited first, then pages that also matched
+}
+
+/** #718: a page of a listed or searched file: cited (the numbers citing it), or one that also
+ * matched the search (`citations` empty); `regions` are its spot on that page. */
+export interface FilePage {
+  page_no: number;
+  regions: Region[];
+  snippet: string; // plain text, never markup
+  citations: number[];
+}
+
+/** #719: one of the closest files the answer's search found, best first. */
+export interface SearchedFile {
+  document_id: string;
+  name: string;
+  used: boolean; // the answer cites it
+  path: string[] | null; // as ListedDocument's
+  pages: FilePage[];
 }
 
 export interface Answer {
@@ -1173,6 +1201,7 @@ export interface Answer {
   unreadable_page_count?: number;
   related_documents?: RelatedDocument[]; // "Also in"; missing before 16 Oct 2026
   mentions?: Mentions; // "Also mentions"; only when there is one (17 Oct 2026)
+  searched_files?: SearchedFile[]; // #719: only when there is one
   missing_words?: string[]; // #410: a not-found's words no document searched has; only when there is one
   // Features 25-27 (C7), only on an answer drafted with the asker's answer settings: the
   // names (and ids) of the models that replied, the one used first; how many were asked;
@@ -1457,6 +1486,15 @@ export interface PersonAccess {
   departments: { id: string; name: string; head: boolean; added_at: string; added_by: string }[];
   private_folders: { id: string; name: string; path: string | null }[];
   files: { id: string; name: string; path: string | null; given_at: string; given_by: string | null }[];
+}
+
+/** #707, GET /me/access: the signed-in person's own access; `walled`: some files are kept to some people. */
+export interface MyAccess {
+  management: boolean;
+  departments: { id: string; name: string; head: boolean; department_only: boolean }[];
+  private_folders: { id: string; name: string; path: string | null }[];
+  files: { id: string; name: string; path: string | null; given_at: string; given_by: string | null }[];
+  walled: boolean;
 }
 
 /** PRD 7 (#601), GET /admin/departments: one department with its access. */

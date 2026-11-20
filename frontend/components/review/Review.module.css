@@ -376,6 +376,11 @@
   cursor: not-allowed;
 }
 
+/* Issue 693: faded as the chat menu's, since the muted ink alone matched a usable segment's. */
+.segment:has(input:disabled) {
+  opacity: 0.55;
+}
+
 /* R3, focus mode: the keys, then Skip at the end of the row. */
 .focusBar {
   display: flex;
@@ -404,15 +409,20 @@
   color: var(--text-primary);
 }
 
-.group {
+/* PRD 9 F-17: By document, one document a row, its count beside it. */
+.documents {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.groupHeading {
-  margin: 0;
-  font-size: var(--fs-base);
+.documents li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
   overflow-wrap: anywhere;
 }
 

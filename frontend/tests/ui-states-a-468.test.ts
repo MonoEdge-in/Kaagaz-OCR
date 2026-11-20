@@ -140,7 +140,8 @@ describe("a slow load says so (components/shell/StillLoading.tsx)", () => {
     expect(chat).toMatch(/Loading the conversation…[\s\S]{0,80}<StillLoading onRetry=\{\(\) => void open\(activeId\)\} \/>/);
     const search = read("components/search/SearchScreen.tsx");
     // Changed on purpose (#468 review, UX7): keyed, so a new search starts the wait over.
-    expect(search).toContain('{q !== "" && current === null ? <StillLoading key={`${q}|${mode}`} onRetry={() => setAttempt((n) => n + 1)} /> : null}');
+    // Changed on purpose (#730): one search, keyed on its words, under its "Searching…" line.
+    expect(search).toMatch(/Searching…\s*<\/p>\s*<StillLoading key=\{q\} onRetry=\{\(\) => setAttempt\(\(n\) => n \+ 1\)\} \/>/);
     const queue = read("components/review/ReviewQueue.tsx");
     expect(queue).toMatch(/Loading the review queue…\s*<\/p>\s*<StillLoading onRetry=\{\(\) => setAttempt\(\(n\) => n \+ 1\)\} \/>/);
   });

@@ -7,8 +7,10 @@ import type { DocumentDetail, DocumentVersion, VersionSuggestion } from "@/lib/t
 
 export const VERSION_TEXT = {
   // V6, V7: the banner, the upload tray's row and the compare screen (#521: two buttons).
-  asVersion: "Upload as a new version",
-  asFile: "Upload as a new file",
+  // #690: one wording everywhere, the pop-up's too; the file is already uploaded, so "Save as".
+  asVersion: "Save as new version",
+  asFile: "Keep both",
+  help: "Versions keep one file with its history. Search and Ask use the Current version.",
   seeDifferences: "See the differences",
   undo: "Undo",
   noteLabel: "Note for this version (optional)",
@@ -22,6 +24,13 @@ export const VERSION_TEXT = {
   working: "Saving…",
   // V5: the upload tray.
   review: "Review",
+  // PRD 9 F-06 (D4): the pop-up once a file just uploaded looks like a new version.
+  popupTitle: "A new version?",
+  saveAsVersion: "Save it as a new version?",
+  yes: "Save as new version",
+  no: "Keep both",
+  yesToAll: "Save all as new versions",
+  close: "Close",
   // V12: the Versions tab.
   versions: "Versions",
   current: "Current",
@@ -178,9 +187,15 @@ export function joinedText(joined: DocumentVersion["joined"]): string {
   return VERSION_TEXT.joinedUploaded;
 }
 
-/** Make current (V10) is offered for a ready version that is not current, out of Trash. */
-export function canMakeCurrent(version: Pick<DocumentVersion, "status" | "is_current">, inTrash: boolean): boolean {
-  return !inTrash && !version.is_current && version.status === "ready";
+/** Make current (V10) is offered for a ready version that is not current, out of Trash, while a
+ * version the person sees is current (`currentSeen`, PRD 9 F-07: one out of their sight can't be
+ * made not current, so the server says 404). */
+export function canMakeCurrent(
+  version: Pick<DocumentVersion, "status" | "is_current">,
+  inTrash: boolean,
+  currentSeen: boolean,
+): boolean {
+  return !inTrash && currentSeen && !version.is_current && version.status === "ready";
 }
 
 /** A note as saved: spaces collapsed, null when empty; a problem when it is too long. */

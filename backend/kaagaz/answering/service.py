@@ -161,7 +161,7 @@ word and no unknown topic word, then either one fixed query or one search
 call (one per agent with Ensemble, at most three, in parallel; step 20's parts add at most
 ANSWER_PARTS_MAX, in parallel, before it); the rest is
 O(e * t) over e pieces of evidence of t characters. e is at most
-ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
+1.25 * ANSWER_MAX_EVIDENCE hits (#723, answering/slots.py) plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
 
 import copy
@@ -286,6 +286,8 @@ from kaagaz.answering.rewrite import MAX_QUESTION, Rewritten, Turn, rewrite_and_
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from kaagaz.answering.sanitize import clean_snippet, clean_text
+from kaagaz.answering.slots import POOL_PER_SLOT, evidence_slots, question_kind, spread
+from kaagaz.answering.sources import SEARCHED_PIECES, PgPaths, file_pages, searched_files, with_paths
 from kaagaz.answering.stream import Events, StreamingModel, draft_streamed
 from kaagaz.answering.totals import tell
 from kaagaz.answering.translate import target_scripts, translate
@@ -432,6 +434,10 @@ class Answer:
     # #535 (test-server log, 7 Nov 2026): "timeout" when the outage is a draft that took too long,
     # so the words say what to do instead of "ask again in a minute"; in to_json only then.
     outage_reason: str | None = None
+    # #719: the usable pieces of the search's fused list (its first SEARCHED_PIECES), never in
+    # to_json; and the closest files in it (sources.py), in to_json only when there is one.
+    searched: tuple[Evidence, ...] = ()
+    searched_files: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -479,6 +485,7 @@ class Answer:
             # KZ-006 (24 Oct 2026): the model was down, so this not found is no answer either way.
             **({"outage": True} if self.unavailable else {}),
             **({"outage_reason": self.outage_reason} if self.unavailable and self.outage_reason else {}),
+            **({"searched_files": self.searched_files} if self.searched_files else {}),
         }
 
 
@@ -615,6 +622,7 @@ class AnswerService:
         mentions: Mentions | None = None,
         vocabulary: Vocabulary | None = None,
         focus: PgFocus | None = None,
+        paths: PgPaths | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
@@ -652,6 +660,7 @@ class AnswerService:
         self._owners = PgOwners(db) if retriever is None else None
         self._vocabulary: Vocabulary | None = PgVocabulary(db) if retriever is None else vocabulary
         self._focus: PgFocus | None = PgFocus(db) if retriever is None else focus  # package K
+        self._paths: PgPaths | None = PgPaths(db) if retriever is None else paths  # #718
 
     @_timed
     def answer(
@@ -691,7 +700,7 @@ class AnswerService:
         if choice is not None and not choice.agents:
             keyless = copy.copy(self)  # shallow: the same ports, without the model clients
             keyless._model = keyless._translator = None
-            return keyless._respond(
+            answered = keyless._respond(
                 customer_id,
                 question,
                 scope,
@@ -705,20 +714,40 @@ class AnswerService:
                 cited,
                 last_cited,
             )
-        return self._respond(
-            customer_id,
-            question,
-            scope,
-            history,
-            user_id,
-            memory,
-            choice,
-            pins,
-            pending,
-            clarify,
-            cited,
-            last_cited,
-        )
+        else:
+            answered = self._respond(
+                customer_id,
+                question,
+                scope,
+                history,
+                user_id,
+                memory,
+                choice,
+                pins,
+                pending,
+                clarify,
+                cited,
+                last_cited,
+            )
+        return self._sourced(customer_id, user_id, answered)
+
+    def _sourced(self, customer_id: str, user_id: str | None, answer: Answer) -> Answer:
+        """#718, #719 (sources.py): each listed document's pages and the files searched, from the
+        answer's citations and its search's list, then every one's folder path as the asker sees
+        it, in one statement; none with nothing listed."""
+        files = searched_files(answer.citations, answer.searched)
+        # Only an answered card shows its files' pages and paths (FileSources.tsx).
+        shown = answer.documents if answer.status == "answered" else []
+        documents = [
+            {**d, "pages": file_pages(d["document_id"], answer.citations, answer.searched)} for d in shown
+        ]
+        ids = [str(row["document_id"]) for row in [*documents, *files]]
+        if not ids:
+            return replace(answer, searched=())
+        paths = self._paths.paths(customer_id, ids, user_id=user_id) if self._paths is not None else {}
+        listed = with_paths(documents, paths) if documents else answer.documents
+        # The search list is never kept: the ready cache holds the answer (review of #719).
+        return replace(answer, documents=listed, searched_files=with_paths(files, paths), searched=())
 
     def _respond(
         self,
@@ -1019,13 +1048,14 @@ class AnswerService:
             return answer
         if not kept:
             closest, used = answer.closest_documents, answer.model_used
-            return _not_found(
+            gone = _not_found(
                 answer.route,
                 answer.normalized_question,
                 closest,
                 model_used=used,
                 reason="notfound_final_check",
             )
+            return replace(gone, searched=answer.searched)
         # The sources still cited, numbered from 1 again in order, as every answer's are.
         cited = sorted({n for sentence in kept for n in sentence.citations if n in by_n})
         new = {old: index for index, old in enumerate(cited, start=1)}
@@ -1669,6 +1699,7 @@ class AnswerService:
         translated: Translated | None = None
         first: Gate | None = None  # how the question's own search passed the gate, when translated
         vector: list[float] | None = None
+        searched: tuple[Evidence, ...] = ()  # #719: none for a whole scope (CX5)
         if whole is not None:
             evidence = number_evidence([hit for hit in whole if hit.document_id != exclude])  # CX5, step 22
         else:
@@ -1713,14 +1744,26 @@ class AnswerService:
                 _timing().vectorless = True  # #535: no outage, but never reused for a repeat
             if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
                 _timing().degraded = False
+            # The hits the evidence is chosen from (``_evidence_limit``: the pool ``spread`` picks the
+            # slots from), as many as the search kept before it fetched more for the files searched
+            # (#719); step 19's search and the translated one search without ``exclude``.
+            most = self._evidence_limit(question, scope, exclude)
+            unexcluded = min(most, self._evidence_limit(question, scope))
+            if early is not None and not aspects:
+                most = unexcluded
+            # The script to translate into: from the first slots' hits, as before #722's larger search;
+            # from every hit read when they are kept one a document.
+            every = asks_documents(question) or exclude is not None
+            scripted = hits[:most] if every else hits[: self._slots(question)]
             translated = self._translated_search(
-                customer_id, user_id, question, query_text, vector, hits, scope, expansion, extra
+                customer_id, user_id, question, query_text, vector, scripted, scope, expansion, extra
             )
             if translated is not None:
-                own = number_evidence(self._documents_once(question, scope, hits, exclude))
+                own = number_evidence(self._documents_once(question, scope, hits[:most], exclude))
                 first = enough_evidence(own, normalised.keywords, min_score, numbers, expansion)
-                hits = translated.hits
-            evidence = number_evidence(self._documents_once(question, scope, hits, exclude))
+                hits, most = translated.hits, unexcluded
+            searched = tuple(number_evidence([hit for hit in hits if hit.document_id != exclude]))
+            evidence = number_evidence(self._documents_once(question, scope, hits[:most], exclude))
         hits_only = list(evidence)  # the search's own hits, before widening adds to the list
 
         # Only usable evidence counts as close: an instruction-like piece is not. A whole
@@ -1740,7 +1783,8 @@ class AnswerService:
             passed = gate is not None or scored
         _timing().lap("search")
         if not passed:
-            return _not_found("search", shown, closest(), model_used=False, reason="notfound_gate")
+            gone = _not_found("search", shown, closest(), model_used=False, reason="notfound_gate")
+            return replace(gone, searched=searched)
         if whole is None:
             # Most relevant picks (answering/pins.py): after the gate, so a pick never decides
             # whether there is an answer; only a hit that passes on its own moves up.
@@ -1795,7 +1839,8 @@ class AnswerService:
         kept = _kept(draft, texts)
         if not kept:
             why = why if draft.status != "answered" else "notfound_verify_dropped_all"
-            return _not_found("search", shown, closest(), model_used=model_used, reason=why)
+            gone = _not_found("search", shown, closest(), model_used=model_used, reason=why)
+            return replace(gone, searched=searched)
 
         by_n = {item.n: item for item in evidence}
         renumber, citations = _citations(kept, by_n, whole is not None)
@@ -1863,6 +1908,7 @@ class AnswerService:
                     hits_only, {c.document_id for c in citations}, normalised.keywords, min_score, numbers
                 )
             ),
+            searched=searched,
         )
 
     def _ranked(
@@ -1975,25 +2021,39 @@ class AnswerService:
         )
 
     def _search_limit(self, question: str, scope: Scope, exclude: str | None = None) -> int:
-        """How many hits a search of ``question`` keeps: ANSWER_MAX_EVIDENCE, or MAX_LIMIT when it
-        asks which documents (#617 item 5), or any document other than the focus (step 22,
-        ``exclude``), of a scope that names more than one, whose hits are then kept one a document
-        (``_documents_once``), so the evidence spans more documents."""
-        if (asks_documents(question) or exclude is not None) and not _one_document(scope):
+        """How many hits a search of ``question`` fetches: its ``_evidence_limit``, but at least
+        SEARCHED_PIECES of the fused list for the files searched (#719, sources.py)."""
+        return min(max(self._evidence_limit(question, scope, exclude), SEARCHED_PIECES), MAX_LIMIT)
+
+    def _evidence_limit(self, question: str, scope: Scope, exclude: str | None = None) -> int:
+        """How many of the search's hits the evidence is chosen from: POOL_PER_SLOT a slot
+        (``_slots``), for ``spread`` to choose from (#722); or MAX_LIMIT when it asks which documents
+        (#617 item 5), or any document other than the focus (step 22, ``exclude``), of a scope that
+        names more than one, whose hits are then kept one a document (``_documents_once``), so the
+        evidence spans more documents; ANSWER_MAX_EVIDENCE when such a scope names one."""
+        if not (asks_documents(question) or exclude is not None):
+            return min(MAX_LIMIT, POOL_PER_SLOT * self._slots(question))
+        if not _one_document(scope):
             return MAX_LIMIT
         return max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+
+    def _slots(self, question: str) -> int:
+        """How many hits the evidence of ``question`` keeps: ANSWER_MAX_EVIDENCE scaled by what it
+        asks (#723, ``evidence_slots``)."""
+        return evidence_slots(question_kind(question), self._settings.answer_max_evidence)
 
     def _documents_once(
         self, question: str, scope: Scope, hits: Sequence[Hit], exclude: str | None = None
     ) -> Sequence[Hit]:
         """#617 item 5: for a question that asks which documents, each document's best hit only
         (hits come best first); all of them when they are one document's or the scope names one.
-        At most ANSWER_MAX_EVIDENCE either way; any other question's hits as they are. Step 22:
-        ``exclude``'s hits never, and the rest as for a question that asks which documents. O(h)."""
+        At most ANSWER_MAX_EVIDENCE either way; any other question's best ``_slots`` spread over
+        pages and documents (#722, ``spread``). Step 22: ``exclude``'s hits never, and the rest as
+        for a question that asks which documents. O(h)."""
         if exclude is not None:
             hits = [hit for hit in hits if hit.document_id != exclude]
         elif not asks_documents(question):
-            return hits
+            return spread(hits, self._slots(question))
         most = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         if _one_document(scope) or len({hit.document_id for hit in hits}) <= 1:
             return list(hits)[:most]

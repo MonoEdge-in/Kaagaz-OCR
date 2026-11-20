@@ -19,11 +19,11 @@ import type { FolderSource } from "@/components/documents/folderUpload";
 import { FolderReadingDialog, FolderUploadDialog } from "@/components/documents/FolderUploadDialog";
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
 import { buildTree } from "@/components/documents/folderTree";
+import { canDeleteForever } from "@/components/documents/trash";
 import { useFolderUploads } from "@/components/documents/useFolderUploads";
 import { ACCEPT_ATTRIBUTE } from "@/components/documents/logic";
 import { UploadStatus, useUploads } from "@/components/documents/UploadArea";
 import { NOTIFY_MS } from "@/components/documents/uploadQueue";
-import { departmentsOf, lastDepartment } from "@/components/files/departments";
 import { canReview } from "@/components/review/review";
 import { getPreviousFolderUpload, listFolders } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -90,8 +90,8 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   // filing committing, it is never seen filed, and the list waits for the next change or a visit.
   const foldersChanged = uploads.settled + uploads.filed + folderUploadsChanged;
 
-  // The folders, for "Filed into Invoices" in the tray, "In Tax" in a folder upload's rows and
-  // the department a file goes into; asked again whenever new folders may exist.
+  // The folders, for "Filed into Invoices" in the tray and "In Tax" in a folder upload's rows;
+  // asked again whenever new folders may exist.
   useEffect(() => {
     let cancelled = false;
     listFolders().then(
@@ -200,7 +200,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
     event.target.value = "";
     if (files.length === 0) return;
     setTrayOpen(true);
-    void uploads.addFiles(files, undefined, lastDepartment(departmentsOf(folders)) ?? undefined);
+    void uploads.addFiles(files); // PRD 9 F-01 (D1, Q2): nothing picked here, so no folder: Not sorted
   }
 
   return (
@@ -253,7 +253,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         />
       )}
       <UploadStatus
-        folderText={folderUploads.views.map((view) => view.spoken).join(" · ")}
+        folderText={[...folderUploads.views.map((view) => view.spoken), uploads.skipped].filter(Boolean).join(" · ")}
         folderRows={
           folderUploads.views.length === 0
             ? null
@@ -288,7 +288,14 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         checkFailing={uploads.checkFailing}
         onClearFinished={uploads.clearFinished}
         onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
+        onReplace={canDeleteForever(me) ? (key) => void uploads.replace(key) : undefined}
         onRetry={(key) => void uploads.retry(key)}
+        onRemove={uploads.remove}
+        onCancel={uploads.cancel}
+        onStopOrCancel={uploads.stopOrCancel}
+        onReadAgain={uploads.readAgain}
+        // #713: Upload again opens the file picker, the screen's own first, as the top bar's Upload does.
+        onUploadAgain={() => (document.getElementById("upload-input") ?? document.getElementById(SHELL_UPLOAD_INPUT_ID))?.click()}
         tree={tree}
         onUndone={notify}
         canReread={canReview(me.user.role)}

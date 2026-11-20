@@ -10,7 +10,7 @@
 // Every list of links comes from the one navLinks. The whole frame is a .k-root, so
 // the handoff's base styles and the UI kit apply inside it.
 // The top bar's end: the search (Ctrl+K or Cmd+K focuses it; it opens /search?q=...,
-// inside documents first, docs/architecture.md, The screens), the Upload button and the account
+// a file by name, path or link, #730; docs/architecture.md, The screens), the Upload button and the account
 // menu (AccountMenu).
 // <main id="main"> has no padding; screens use .page (the chat fills it).
 // #457: while the person's email is not confirmed, EmailBanner sits at the top of <main>;
@@ -24,7 +24,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
-import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
+import { MAX_FIND_LENGTH } from "@/components/search/pathSearch";
 import { Drawer } from "@/components/ui/Drawer";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -141,7 +141,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <>
                 <Form action="/search" role="search" className={styles.search}>
                   <label htmlFor="app-search" className="visually-hidden">
-                    Search your documents
+                    Find a file by name or path
                   </label>
                   <Icon name="search" className={styles.searchIcon} />
                   <input
@@ -152,10 +152,10 @@ export function AppShell({ children }: { children: ReactNode }) {
                     type="search"
                     enterKeyHint="search"
                     autoComplete="off"
-                    maxLength={MAX_SEARCH_LENGTH}
-                    placeholder="Search inside documents, or a name"
+                    maxLength={MAX_FIND_LENGTH}
+                    placeholder="Find a file by name or path"
                     aria-keyshortcuts="Control+K Meta+K"
-                    title="Search your documents (Ctrl+K, or Cmd+K on a Mac)"
+                    title="Find a file by name or path (Ctrl+K, or Cmd+K on a Mac)"
                   />
                 </Form>
                 <Link href="/documents" className={`btn btn-primary ${styles.upload}`} onClick={upload}>
