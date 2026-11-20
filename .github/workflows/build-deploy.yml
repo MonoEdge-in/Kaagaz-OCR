@@ -78,7 +78,7 @@ jobs:
     # Native runners: an arm64 build under QEMU emulation would be several times slower.
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build arguments
         id: args
@@ -95,7 +95,7 @@ jobs:
             { echo 'list<<EOF'; echo "BACKEND_URL=http://api:8000"; echo "GA_ID=$GA_ID"; echo 'EOF'; } >>"$GITHUB_OUTPUT"
           fi
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -118,12 +118,12 @@ jobs:
           fi
 
       - if: steps.check.outputs.exists == 'false'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # The runner starts empty every time, so the build cache lives in ECR
       # (kaagaz-buildcache), one entry per service and architecture.
       - if: steps.check.outputs.exists == 'false'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./${{ matrix.service }}
           platforms: linux/${{ matrix.arch }}
@@ -141,7 +141,7 @@ jobs:
       matrix:
         service: ${{ fromJSON(needs.plan.outputs.services) }}
     steps:
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_BUILD_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -149,7 +149,7 @@ jobs:
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # One tag for both architectures: the server pulls <commit> and Docker picks
       # amd64 (today's m7i) or arm64 (Graviton) by itself.
