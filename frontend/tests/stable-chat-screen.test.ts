@@ -28,6 +28,7 @@ const api = vi.hoisted(() => ({
   listConversations: vi.fn(),
   getChatOptions: vi.fn(),
   listDocuments: vi.fn(),
+  listFolders: vi.fn(),
 }));
 vi.mock("@/lib/api", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/api")>()), ...api }));
 vi.mock("@/lib/aiSettings", async (importOriginal) => ({
@@ -52,7 +53,14 @@ vi.mock("@/components/chat/ConversationList", () => ({ ConversationList: () => n
 vi.mock("@/components/ui/Drawer", () => ({ Drawer: () => null }));
 vi.mock("@/components/admin/Toast", () => ({ Toast: () => null }));
 vi.mock("@/components/stories/StoryMatches", () => ({ StoryMatches: () => null }));
-vi.mock("@/components/chat/ScopePicker", () => ({ ScopePicker: () => null }));
+// #725: drawn as nothing, its state kept to read the scope the screen opened with.
+const picker = vi.hoisted(() => ({ state: null as unknown }));
+vi.mock("@/components/chat/ScopePicker", () => ({
+  ScopePicker: ({ state }: { state: unknown }) => {
+    picker.state = state;
+    return null;
+  },
+}));
 vi.mock("@/components/chat/ModeSwitch", () => ({ ModeSwitch: () => null }));
 vi.mock("@/components/chat/AnswerSettings", () => ({ AnswerSettings: () => null }));
 
@@ -129,6 +137,7 @@ beforeEach(() => {
   api.listConversations.mockResolvedValue({ items: [] });
   api.getChatOptions.mockResolvedValue({ agents: [], levels: [], default_level: "medium", ensemble: false, max_agents: 1 });
   api.listDocuments.mockResolvedValue({ items: [], total: 3 });
+  api.listFolders.mockResolvedValue({ items: [] });
   api.askStream.mockImplementation(
     (_q: string, _c: unknown, _s: unknown, choice: unknown, _r: unknown, signal: AbortSignal, onEvent: (event: StreamEvent) => void) =>
       new Promise<ChatResponse>((resolve, reject) => {
@@ -508,5 +517,28 @@ describe("Ask hotfix: a question the service could not finish", () => {
     await act(async () => void (await vi.advanceTimersByTimeAsync(2000)));
     expect(asked).toHaveLength(1);
     expect(text()).toContain("Your answer is still being saved.");
+  });
+});
+
+describe("#725: Ask in this folder", () => {
+  const FOLDER_ID = "0b6f2a4e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
+
+  it("opens limited to the folder and its subfolders, sent with the next question", async () => {
+    api.listFolders.mockResolvedValue({ items: [{ id: FOLDER_ID, name: "Land records", parent_id: null, created_at: "2026-11-01" }] });
+    await showChat(`?folder=${FOLDER_ID}`);
+    expect(picker.state).toMatchObject({ scope: { kind: "folder", folderId: FOLDER_ID, subfolders: true }, changed: true });
+  });
+
+  it("asks in every document instead when the folder is not one this person can see", async () => {
+    api.listFolders.mockResolvedValue({ items: [] }); // hidden, gone, or another organisation's
+    await showChat(`?folder=${FOLDER_ID}`);
+    expect(picker.state).toMatchObject({ scope: { kind: "all" }, changed: false });
+    expect(text()).not.toContain(FOLDER_ID);
+  });
+
+  it("never reads a malformed folder id", async () => {
+    await showChat("?folder=not-an-id");
+    expect(picker.state).toMatchObject({ scope: { kind: "all" } });
+    expect(api.listFolders).not.toHaveBeenCalled();
   });
 });

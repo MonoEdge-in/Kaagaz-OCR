@@ -133,11 +133,12 @@ describe("a conversation still loading, or that failed to load", () => {
 describe("what the status line says aloud", () => {
   it("says the scope after a pick or a restore, once its names are known", () => {
     const picked = chooseScope(startScope(null), FOLDER);
-    expect(scopeAnnouncement(picked, "Folder: Suppliers / 2026", false)).toBe(
-      "Asking about: Folder: Suppliers / 2026",
+    // Changed on purpose (#725): the chip's words alone, which say what is chosen.
+    expect(scopeAnnouncement(picked, "Ask in folder: Suppliers › 2026", false)).toBe(
+      "Ask in folder: Suppliers › 2026",
     );
     expect(scopeAnnouncement(picked, "One folder", true)).toBe("");
-    expect(scopeAnnouncement(restoredScope([]), "All documents", false)).toBe("Asking about: All documents");
+    expect(scopeAnnouncement(restoredScope([]), "All documents", false)).toBe("All documents");
   });
 
   it("says nothing while a conversation opens, on a new chat, or after an answer", () => {
@@ -156,18 +157,19 @@ describe("the scope chip's words", () => {
 
   it("names every document, a folder by its path, and documents", () => {
     expect(scopeText(EVERY_DOCUMENT, null, null)).toBe("All documents");
-    expect(scopeText(FOLDER, tree, null)).toBe("Folder: Suppliers / 2026");
+    // Changed on purpose (#725): the words say exactly what is chosen, a place with "›".
+    expect(scopeText(FOLDER, tree, null)).toBe("Ask in folder: Suppliers › 2026");
     expect(scopeText({ kind: "folder", folderId: "f1", subfolders: true }, tree, null)).toBe(
-      "Folder: Suppliers, with its subfolders",
+      "Ask in folder: Suppliers (and its subfolders)",
     );
-    expect(scopeText(ONE_DOCUMENT, null, "bill.pdf")).toBe("This document: bill.pdf");
-    expect(scopeText({ kind: "documents", ids: ["a", "b", "c"] }, null, null)).toBe("3 documents");
+    expect(scopeText(ONE_DOCUMENT, null, "bill.pdf")).toBe("Ask about file: bill.pdf");
+    expect(scopeText({ kind: "documents", ids: ["a", "b", "c"] }, null, null)).toBe("Ask about 3 files");
   });
 
   it("still says something while names load, or once they are gone", () => {
     expect(scopeText(FOLDER, null, null)).toBe("One folder");
     expect(scopeText({ ...FOLDER, folderId: "gone" }, tree, null)).toBe("A folder that was deleted");
-    expect(scopeText(ONE_DOCUMENT, null, null)).toBe("1 document");
+    expect(scopeText(ONE_DOCUMENT, null, null)).toBe("Ask about 1 file"); // changed on purpose (#725)
     expect(scopeText({ kind: "documents", ids: [] }, null, null)).toBe("No documents");
     expect(scopeText({ kind: "other", body: { tag_ids: ["t1"] } }, tree, null)).toBe("Filtered documents");
   });

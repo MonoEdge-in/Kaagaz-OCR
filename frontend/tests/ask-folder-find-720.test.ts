@@ -16,9 +16,11 @@ const folders: Folder[] = [
   { id: "f3", name: "Survey 44, Wakad", parent_id: "f2", created_at: "2026-10-01" },
   { id: "f4", name: "Sale deeds", parent_id: "f1", created_at: "2026-10-01" },
 ];
+// #725: and the find box asks for files by name, found none here.
 vi.mock("@/lib/api", async (original) => ({
   ...(await original<typeof import("@/lib/api")>()),
   listFolders: async () => ({ items: folders }),
+  listDocuments: async () => ({ items: [], total: 0 }),
 }));
 
 describe("find a folder by name or path", () => {
@@ -26,11 +28,11 @@ describe("find a folder by name or path", () => {
 
   it("matches a name or a path, any case, in tree order, at most the cap", () => {
     expect(findFolders(tree, "land REC").map((f) => f.path)).toEqual([
-      "Land & Legal / Land records",
-      "Land & Legal / Land records / Survey 44, Wakad",
+      "Land & Legal › Land records",
+      "Land & Legal › Land records › Survey 44, Wakad",
     ]);
     expect(findFolders(tree, "wakad")).toEqual([
-      { id: "f3", name: "Survey 44, Wakad", path: "Land & Legal / Land records / Survey 44, Wakad" },
+      { id: "f3", name: "Survey 44, Wakad", path: "Land & Legal › Land records › Survey 44, Wakad", department: false },
     ]);
     expect(findFolders(tree, "land", 2)).toHaveLength(2);
     expect(findFolders(tree, "   ")).toEqual([]);

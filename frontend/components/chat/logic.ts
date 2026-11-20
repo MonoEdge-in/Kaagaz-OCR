@@ -332,6 +332,14 @@ export function documentFromSearch(search: string): string | null {
   return id !== null && UUID.test(id) ? id.toLowerCase() : null;
 }
 
+/** #725: the folder "Ask in this folder" named (a well-formed id), unless a conversation is
+ * named; the screen still checks the person can see it (ChatScreen). */
+export function folderFromSearch(search: string): string | null {
+  if (conversationFromSearch(search) !== null) return null;
+  const id = new URLSearchParams(search).get("folder");
+  return id !== null && UUID.test(id) ? id.toLowerCase() : null;
+}
+
 // Home's Ask box and question suggestions open chat with an already-submitted question.
 
 /** The question an address brings (trimmed, at most MAX_QUESTION_LENGTH characters), or null. */
@@ -350,6 +358,11 @@ export function askHref(question: string): string {
 /** The chat address with these words in the question box, never sent (#468: a search that found nothing). */
 export function askWithWordsHref(q: string): string {
   return `/chat?q=${encodeURIComponent(q)}`;
+}
+
+/** #725: the chat address that asks in one folder (or department) and its subfolders. */
+export function askInFolderHref(folderId: string): string {
+  return `/chat?folder=${encodeURIComponent(folderId)}`;
 }
 
 /** The chat address that asks about one document. */
