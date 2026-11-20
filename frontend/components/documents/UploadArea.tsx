@@ -348,7 +348,8 @@ export function useUploads(onUploaded: () => void) {
       const retry = stopped.current === null && canSendAgain(caught) && kept.current.has(key);
       const message = uploadErrorText(caught, navigator.onLine, retry);
       if (drop && isStorageFull(caught)) drop.full ??= message;
-      update(key, { kind: "error", message, retry });
+      // #713: an ask of it is gone (answered above): a Retry promises no Stop it won't do.
+      dispatch({ type: "change", key, change: { state: { kind: "error", message, retry }, asked: undefined } });
     }
   }
 

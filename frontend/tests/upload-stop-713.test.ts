@@ -693,6 +693,22 @@ describe("stopping and cancelling through the queue (#713)", () => {
     await uploads.unmount();
   });
 
+  it("forgets an ask when the upload fails, so a Retry never promises a Stop that won't come", async () => {
+    let fail = (_: unknown) => undefined as void;
+    api.uploadDocument.mockImplementation(() => new Promise((_, reject) => (fail = reject)));
+    const uploads = await mount();
+    await act(async () => void uploads.current().addFiles([new File(["x"], "a.pdf")]));
+    const [a] = uploads.current().entries;
+    let result: unknown = "pending";
+    await act(async () => void uploads.current().stopOrCancel("stop", [a!.key]).then((r) => (result = r)));
+    expect(uploads.current().entries[0]?.asked).toBe("stop");
+    await act(async () => fail(new TypeError("Failed to fetch"))); // not sent: nothing to stop
+    expect(result).toEqual({ count: 0, why: "" });
+    expect(uploads.current().entries[0]?.state.kind).toBe("error");
+    expect(uploads.current().entries[0]?.asked).toBeUndefined(); // a Retry later shows no "Will stop once sent."
+    await uploads.unmount();
+  });
+
   it("a second Stop or Cancel of a file still being sent never hangs the first: both are done once it is stored", async () => {
     api.uploadDocument.mockImplementation(() => new Promise((resolve) => replies.push(resolve)));
     api.stopDocument.mockImplementation(async (id: string) => stoppedDoc(id));
