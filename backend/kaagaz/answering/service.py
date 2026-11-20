@@ -161,7 +161,7 @@ word and no unknown topic word, then either one fixed query or one search
 call (one per agent with Ensemble, at most three, in parallel; step 20's parts add at most
 ANSWER_PARTS_MAX, in parallel, before it); the rest is
 O(e * t) over e pieces of evidence of t characters. e is at most
-1.5 * ANSWER_MAX_EVIDENCE hits (#723, answering/slots.py) plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
+1.25 * ANSWER_MAX_EVIDENCE hits (#723, answering/slots.py) plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
 
 import copy
@@ -1714,8 +1714,12 @@ class AnswerService:
                 _timing().vectorless = True  # #535: no outage, but never reused for a repeat
             if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
                 _timing().degraded = False
+            # The script to translate into: from the first hits, as before #722's larger search; from every
+            # one when they are kept one a document.
+            every = asks_documents(question) or exclude is not None
+            scripted = hits if every else hits[: self._slots(question)]
             translated = self._translated_search(
-                customer_id, user_id, question, query_text, vector, hits, scope, expansion, extra
+                customer_id, user_id, question, query_text, vector, scripted, scope, expansion, extra
             )
             if translated is not None:
                 own = number_evidence(self._documents_once(question, scope, hits, exclude))
@@ -1935,8 +1939,7 @@ class AnswerService:
         the aspects (CX6), searched with them."""
         if self._translator is None or self._translated is None:
             return None
-        first = hits if asks_documents(question) else hits[: self._slots(question)]  # as before #722's pool
-        scripts = target_scripts(question, [hit.text for hit in first])
+        scripts = target_scripts(question, [hit.text for hit in hits])
         queries = translate(self._translator, question, scripts) if scripts else None
         if not queries:
             return None

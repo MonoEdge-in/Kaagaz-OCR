@@ -1,20 +1,17 @@
-"""Ask's evidence slots (#722): spread over pages and documents, then wired into the service."""
+"""Ask's evidence slots: spread over pages (#722), and how many by the question's kind (#723)."""
 
 import dataclasses
 
 import pytest
 
 from kaagaz.answering import draft
-from kaagaz.answering.slots import (
-    DOCUMENT_CAP,
-    PAGE_CAP,
-    POOL_PER_SLOT,
-    Kind,
-    evidence_slots,
-    question_kind,
-    spread,
-)
+from kaagaz.answering import service as answering
+from kaagaz.answering.expansion import NO_EXPANSION
+from kaagaz.answering.hinglish import normalise
+from kaagaz.answering.service import AnswerService
+from kaagaz.answering.slots import POOL_PER_SLOT, Kind, evidence_slots, question_kind, spread
 from kaagaz.search.hybrid import MAX_LIMIT
+from kaagaz.search.scope import EVERYTHING
 from tests.test_answering_context import (
     SEARCH_ONLY,
     A,
@@ -26,7 +23,7 @@ from tests.test_answering_context import (
     cites,
     page,
 )
-from tests.test_answering_golden import FakeHit
+from tests.test_answering_golden import NOW, UNUSED_DB, FakeFixedQueries, FakeHit, FakeModel, FakeUnchecked
 
 A_PDF, B_PDF, C_PDF = "a.pdf", "b.pdf", "c.pdf"
 
@@ -34,10 +31,6 @@ A_PDF, B_PDF, C_PDF = "a.pdf", "b.pdf", "c.pdf"
 def pages(document: str, *numbers: int) -> list[FakeHit]:
     """One piece a page number given, in that order (a number twice: two pieces of that page)."""
     return [page(n, f"{document} piece {at}", document=document, seq=at) for at, n in enumerate(numbers)]
-
-
-def test_the_caps_are_two_a_page_and_three_a_document() -> None:
-    assert (PAGE_CAP, DOCUMENT_CAP, POOL_PER_SLOT) == (2, 3, 3)
 
 
 def test_one_page_keeps_two_slots_and_the_next_hits_take_the_rest() -> None:
@@ -49,24 +42,22 @@ def test_one_page_keeps_two_slots_and_the_next_hits_take_the_rest() -> None:
     assert kept == [same[0], same[1], others[0], others[1]]
 
 
-def test_one_document_keeps_three_slots_and_the_next_hits_take_the_rest() -> None:
-    mine = pages(A_PDF, 1, 2, 3, 4, 5)
-    others = [*pages(B_PDF, 1, 2), *pages(C_PDF, 1)]
+def test_one_document_keeps_every_slot_its_pages_fill() -> None:
+    """Principal review: "List the conditions in the Sharma lease" keeps all the lease's pages,
+    never three of them and other leases."""
+    lease = pages(A_PDF, 1, 2, 3, 4, 5, 6)
+    others = pages(B_PDF, 1, 2, 3)
 
-    kept = spread([*mine, *others], 6)
-
-    assert kept == [*mine[:3], *others]
+    assert spread([*lease, *others], 7) == [*lease, others[0]]
 
 
-def test_capped_hits_fill_the_slots_no_other_hit_can() -> None:
-    """A question about one document still gets every slot: the capped hits fill it, after the rest."""
-    mine = pages(A_PDF, 4, 4, 4, 5, 6)
+def test_capped_hits_fill_the_slots_no_other_hit_can_after_the_rest() -> None:
+    mine = pages(A_PDF, 4, 4, 4, 5)
     other = pages(B_PDF, 2)
 
     kept = spread([*mine, *other], 5)
 
-    # mine[2] (a third of page 4) and mine[4] (a fourth of the file) wait; mine[2] fills the last slot
-    assert kept == [mine[0], mine[1], mine[3], other[0], mine[2]]
+    assert kept == [mine[0], mine[1], mine[3], other[0], mine[2]]  # a third piece of page 4 is a repeat
 
 
 def test_fewer_hits_than_slots_keeps_them_all_in_order() -> None:
@@ -96,16 +87,50 @@ def test_the_service_spreads_the_hits_then_adds_topic_pieces_and_neighbours() ->
     assert blocks(model.drafted[0]) == [hit.text for hit in draft.edges(order)]
 
 
+@pytest.mark.parametrize(("exclude", "read"), [(False, 4), (True, 12)])
+def test_translation_reads_the_first_slots_hits_or_every_hit_on_the_other_documents_route(
+    exclude: bool, read: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Principal review: the script to translate into comes from the first hits as before #722's
+    larger search; on the "any other document" route (``exclude``) from every hit, as before."""
+    settings = dataclasses.replace(SEARCH_ONLY, answer_max_evidence=4, answer_translate_question=True)
+    sellers = [page(n, f"Seller {n}", document=f"deed-{n}.pdf") for n in range(1, 13)]
+    retriever = Fused(sellers)
+    texts: list[int] = []
+
+    def scripts(question: str, given: list[str]) -> list[str]:
+        texts.append(len(given))
+        return []
+
+    monkeypatch.setattr(answering, "target_scripts", scripts)
+    service = AnswerService(
+        db=UNUSED_DB,
+        model=Routed(cites()),
+        settings=settings,
+        clock=lambda: NOW,
+        retriever=retriever,
+        translated_search=retriever,
+        fixed_queries=FakeFixedQueries({}),
+        unchecked=FakeUnchecked(),
+        translator=FakeModel(),
+    )
+    left_out = "elsewhere" if exclude else None  # no hit is in it: every one is searched and read
+
+    service._search_answer(
+        A, None, "Seller?", normalise("Seller?"), "Seller?", EVERYTHING, NO_EXPANSION, exclude=left_out
+    )
+
+    assert texts == [read]
+
+
 # --- #723: the number of slots from the question's kind ---------------------------------------
 
 
 @pytest.mark.parametrize(
     ("question", "kind"),
     [
-        ("Who is the buyer?", "fact"),
-        ("When was the deed registered?", "fact"),
-        ("Kaun hai seller?", "fact"),  # Hinglish: kaun is who
-        ("Who are the owners of Gat 12?", "unknown"),  # "are": more than one
+        ("Who is the buyer?", "unknown"),  # a single fact keeps the setting (principal review)
+        ("Who are the owners of Gat 12?", "unknown"),
         ("List all the invoices from Sharma Traders", "list"),
         ("How many invoices came from Sharma Traders?", "list"),
         ("Compare the rent in the two leases", "compare"),
@@ -124,26 +149,23 @@ def test_the_kind_comes_from_the_question_s_words(question: str, kind: str) -> N
 @pytest.mark.parametrize(
     ("kind", "most", "slots"),
     [
-        ("fact", 8, 6),
         ("unknown", 8, 8),
-        ("list", 8, 12),
-        ("compare", 8, 12),
-        ("summary", 8, 12),
-        ("fact", 1, 1),  # never none
-        ("list", 1, 1),
-        ("summary", 80, MAX_LIMIT),  # never past the search's limit
+        ("list", 8, 10),
+        ("compare", 8, 10),
+        ("summary", 8, 10),
+        ("list", 1, 1),  # never none
+        ("unknown", 0, 1),
+        ("summary", 90, MAX_LIMIT),  # never past the search's limit
     ],
 )
 def test_the_slots_scale_the_setting_by_kind_within_bounds(kind: Kind, most: int, slots: int) -> None:
     assert evidence_slots(kind, most) == slots
 
 
-@pytest.mark.parametrize(
-    ("question", "slots"), [("Who is the seller?", 6), ("List every seller", 12), ("Seller?", 8)]
-)
+@pytest.mark.parametrize(("question", "slots"), [("Who is the seller?", 8), ("List every seller", 10)])
 def test_the_service_searches_and_keeps_the_kind_s_slots(question: str, slots: int) -> None:
     settings = dataclasses.replace(SEARCH_ONLY, answer_max_evidence=8)
-    sellers = [page(n, f"Seller {n}", document=f"deed-{n}.pdf") for n in range(1, 21)]
+    sellers = [page(n, f"Seller {n}", document=f"deed-{n}.pdf") for n in range(1, 41)]
     retriever = Fused(sellers)
     model = Routed(cites())
 
