@@ -169,7 +169,7 @@ _STOP_READING = (
     "UPDATE documents d SET status = 'failed', failure_code = 'stopped', reading_held = NULL"
     " WHERE d.customer_id = :c AND d.family_id = :f AND (CAST(:d AS uuid) IS NULL OR d.id = CAST(:d AS uuid))"
     " AND d.status IN ('received', 'clean') AND d.deleted_at IS NULL AND d.locked_at IS NULL"
-    " AND NOT EXISTS (SELECT 1 FROM processing_runs r WHERE r.customer_id = d.customer_id"
+    " AND NOT EXISTS (SELECT 1 FROM processing_runs r WHERE r.customer_id = :c"
     " AND r.document_id = d.id AND r.status = 'ready') RETURNING d.id"
 )
 _CLEAR_READ_AGAIN = (
