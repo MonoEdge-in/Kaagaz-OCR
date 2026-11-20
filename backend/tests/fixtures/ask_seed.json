@@ -1,0 +1,7 @@
+[
+  {"question": "What is the GST rate on cement?", "expect": [{"document": "tax-note.pdf", "pages": [2]}], "kind": "fact"},
+  {"question": "Who is the buyer?", "expect": [{"document": "sale-deed.pdf", "pages": [3]}], "kind": "fact"},
+  {"question": "What is the monthly rent?", "expect": [{"document": "lease.pdf", "pages": [2]}], "kind": "fact"},
+  {"question": "What is the rate per bag?", "expect": [{"document": "quote-b.pdf", "pages": [1]}], "kind": "list"},
+  {"question": "When was the property bought?", "expect": [{"document": "sale-deed.pdf", "pages": [4]}], "kind": "fact"}
+]

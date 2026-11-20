@@ -1976,6 +1976,21 @@ class AnswerService:
             customer_id, query_text, vector, limit, scope, expansion, user_id=user_id
         )
 
+    def evidence_hits(
+        self, customer_id: str, question: str, scope: Scope = EVERYTHING, *, user_id: str | None
+    ) -> Sequence[Hit]:
+        """#721 (the retrieval scorer, answering/scorecard.py): the hits the search route keeps as
+        evidence for ``question`` as asked, best first, as ``_early`` and ``_search_answer`` get
+        them, as ``user_id``: no rewrite, aspects, translation, gate or widening. One embedding
+        with the model on, none with it off."""
+        _, query_text, spoken = _searched_as(question, normalise(question))
+        if not query_text:
+            return []
+        expansion = self._expansion(customer_id, question, scope, user_id)
+        most = self._search_limit(question, scope)
+        hits = self._hits(customer_id, user_id, query_text, self._embed(spoken), [], scope, expansion, most)
+        return self._documents_once(question, scope, hits[:most])
+
     def _search_limit(self, question: str, scope: Scope, exclude: str | None = None) -> int:
         """How many hits a search of ``question`` keeps: POOL_PER_SLOT a slot (``_slots``), for
         ``spread`` to choose from (#722); or MAX_LIMIT when it asks which documents (#617 item 5), or
