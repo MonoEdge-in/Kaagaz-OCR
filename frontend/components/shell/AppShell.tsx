@@ -24,7 +24,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
-import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
+import { MAX_FIND_LENGTH } from "@/components/search/pathSearch";
 import { Drawer } from "@/components/ui/Drawer";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -152,7 +152,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                     type="search"
                     enterKeyHint="search"
                     autoComplete="off"
-                    maxLength={MAX_SEARCH_LENGTH}
+                    maxLength={MAX_FIND_LENGTH}
                     placeholder="Find a file by name or path"
                     aria-keyshortcuts="Control+K Meta+K"
                     title="Find a file by name or path (Ctrl+K, or Cmd+K on a Mac)"

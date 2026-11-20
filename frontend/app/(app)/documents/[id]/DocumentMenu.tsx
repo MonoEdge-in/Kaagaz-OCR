@@ -26,7 +26,7 @@ import { LockDialog } from "@/components/documents/LockDialog";
 import { buildTree } from "@/components/documents/folderTree";
 import type { EditAction, RowAction } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
-import { COPY_FAILED, copyFor, detailPath } from "@/components/documents/copyPath";
+import { copyFor, detailPath } from "@/components/documents/copyPath";
 import { deletedMessage } from "@/components/documents/logic";
 import { placedMessage, restoredMessage, trashQuestion } from "@/components/documents/trash";
 import { LOCK_TEXT } from "@/components/viewer/locked";
@@ -124,7 +124,7 @@ export function DocumentMenu({
     else if (action === "link") setLinking(true);
     else if (action === "copyPath" || action === "copyLink") {
       // #730: the line says how to use it, or that the browser would not copy.
-      void copyFor(action, detailPath(detail), detail.id).then((line) => (line === COPY_FAILED ? setError(line) : setCopied(line)));
+      void copyFor(action, detailPath(detail), detail.id).then(({ copied, line }) => (copied ? setCopied(line) : setError(line)));
     }
   }
 

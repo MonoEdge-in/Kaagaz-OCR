@@ -117,7 +117,6 @@ describe("G5: the header's search, Upload and account menu", () => {
     const upload = end.indexOf("className={`btn btn-primary ${styles.upload}`}");
     expect(upload).toBeGreaterThan(end.indexOf('role="search"'));
     expect(end.indexOf("<AccountMenu")).toBeGreaterThan(upload);
-    // Changed on purpose (UI rebuild, 21 Oct 2026): it searches inside documents first, names too.
     // Changed on purpose (#730): one search, a file by name or path; inside documents is the Documents screen's.
     expect(end).toMatch(/<label htmlFor="app-search" className="visually-hidden">\s*Find a file by name or path/);
     expect(end).toContain('placeholder="Find a file by name or path"');

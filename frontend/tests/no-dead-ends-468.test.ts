@@ -16,7 +16,6 @@ import { InsideSearchResults } from "@/components/documents/InsideResults";
 import { askWithWordsHref } from "@/components/chat/logic";
 import { askAboutLabel } from "@/components/documents/insideSearch";
 import { buildTree } from "@/components/documents/folderTree";
-import { NO_MATCH_TEXT } from "@/components/search/pathSearch";
 import { SearchResults } from "@/components/search/SearchScreen";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
@@ -66,10 +65,13 @@ describe("a search with no result is never a dead end", () => {
   // Changed on purpose (#730): the top bar's search finds a file by name or path only; nothing found
   // (or nothing this person may open) is one neutral line naming nothing, whose next step is an Admin.
   it("search: one neutral line that says what to do next, naming nothing", () => {
-    const empty = { tree: buildTree([]), files: [], more: 0, folders: [], closestIn: null };
-    const html = renderToStaticMarkup(createElement(SearchResults, { found: empty }));
-    expect(html).toContain(NO_MATCH_TEXT.replace("'", "&#x27;")); // as HTML writes the apostrophe
-    expect(NO_MATCH_TEXT).toContain("Ask an Admin");
+    const empty = { tree: buildTree([]), files: [], totalFiles: 0, folders: [], totalFolders: 0, closestIn: null };
+    const html = renderToStaticMarkup(createElement(SearchResults, { found: empty, q: "rent paid" }));
+    expect(html).toContain("No file or folder matches this, or you don&#x27;t have access to it. Ask an Admin if you need it.");
+    // #730 review: and where words inside files are searched now, with the same words for Ask.
+    expect(html).toContain("Looking for words inside a file?");
+    expect(html).toContain('href="/documents"');
+    expect(html).toContain('href="/chat?q=rent%20paid"');
   });
 
   it("the documents screen switches with the same words, by its own state", () => {

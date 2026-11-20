@@ -17,10 +17,10 @@ import Form from "next/form";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { askWithWordsHref } from "@/components/chat/logic";
 import { filePlace } from "@/components/chat/scope";
 import { buildTree } from "@/components/documents/folderTree";
 import type { FolderTree } from "@/components/documents/folderTree";
-import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
 import { SEARCH_DRAFT } from "@/components/shell/gate";
 import { StillLoading } from "@/components/shell/StillLoading";
 import { Button } from "@/components/ui/Button/Button";
@@ -36,21 +36,27 @@ import {
   FILES_FETCHED,
   FILES_SHOWN,
   FOLDERS_SHOWN,
+  MAX_FIND_LENGTH,
   NO_MATCH_TEXT,
+  PATH_FOLDERS,
   documentFromLink,
   fileQuery,
   findByPath,
+  pathFolders,
   pathParts,
 } from "./pathSearch";
 import type { FoundPlace } from "./pathSearch";
 import styles from "./Search.module.css";
 
 export const SEARCH_LABEL = "Find a file by name or path";
+/** #730 review: words someone used to search inside files are sent to where that is done now. */
+export const INSIDE_ELSEWHERE = "Looking for words inside a file?";
 
-/** The search the address asks for: the words (trimmed, at most 200 characters). An old `in=`
- * (inside, names) is left out: every search is by name or path now (#730). */
+/** The search the address asks for: the words (trimmed, at most MAX_FIND_LENGTH characters, so a
+ * long pasted path keeps its end). An old `in=` (inside, names) is left out: every search is by
+ * name or path now (#730). */
 export function searchFromAddress(params: URLSearchParams): { q: string } {
-  return { q: (params.get("q") ?? "").trim().slice(0, MAX_SEARCH_LENGTH) };
+  return { q: (params.get("q") ?? "").trim().slice(0, MAX_FIND_LENGTH) };
 }
 
 /** The address of a search: /search?q=rent. */
@@ -64,15 +70,17 @@ const errorText = (caught: unknown) => (caught instanceof ApiError && caught.sta
 export interface Found {
   tree: FolderTree;
   files: DocumentSummary[];
-  more: number; // matching files past FILES_SHOWN
+  totalFiles: number; // all the matching files, of which `files` are the first FILES_SHOWN
   folders: FoundPlace[];
+  totalFolders: number;
   closestIn: FoundPlace | null; // no file matched; these are this folder's files
 }
 
-const NOTHING: Found = { tree: buildTree([]), files: [], more: 0, folders: [], closestIn: null };
+const NOTHING: Found = { tree: buildTree([]), files: [], totalFiles: 0, folders: [], totalFolders: 0, closestIn: null };
 
 /** What a search finds (a link's file is opened instead: "open"); a hidden or unknown file's link
- * finds nothing, as a random id does (the API answers both alike). */
+ * finds nothing, as a random id does (the API answers both alike). A name that more files hold than
+ * one page is asked again inside the first folders the path names, so an older file is found. */
 export async function runSearch(q: string): Promise<Found | { open: string }> {
   const linked = documentFromLink(q);
   if (linked !== null) {
@@ -86,18 +94,32 @@ export async function runSearch(q: string): Promise<Found | { open: string }> {
   }
   const parts = pathParts(q);
   if (parts.length === 0) return NOTHING; // only separators or quotes
-  const [folders, named] = await Promise.all([listFolders(), listDocuments({ q: fileQuery(parts), limit: FILES_FETCHED })]);
+  const name = fileQuery(parts);
+  const [folders, named] = await Promise.all([listFolders(), listDocuments({ q: name, limit: FILES_FETCHED })]);
   const tree = buildTree(folders.items);
-  const found = findByPath(tree, parts, named.items);
-  const files = found.closestIn
-    ? (await listDocuments({ folder_id: found.closestIn.id, limit: FILES_SHOWN })).items
-    : found.files;
+  let candidates = named.items;
+  if (named.total > named.items.length) {
+    const places = pathFolders(tree, parts).slice(0, PATH_FOLDERS);
+    const inPlaces = await Promise.all(
+      places.map((place) => listDocuments({ q: name, folder_id: place.id, include_subfolders: true, limit: FILES_FETCHED })),
+    );
+    const seen = new Set(candidates.map((file) => file.id));
+    candidates = [...candidates, ...inPlaces.flatMap((page) => page.items).filter((file) => !seen.has(file.id) && seen.add(file.id))];
+  }
+  const found = findByPath(tree, parts, candidates);
+  if (found.closestIn) {
+    const inFolder = await listDocuments({ folder_id: found.closestIn.id, limit: FILES_SHOWN });
+    return { tree, files: inFolder.items, totalFiles: inFolder.total, folders: found.folders, totalFolders: 1, closestIn: found.closestIn };
+  }
+  // A name alone: every file holding it counts, past the page asked for.
+  const totalFiles = parts.length === 1 ? Math.max(named.total, found.files.length) : found.files.length;
   return {
     tree,
-    files: files.slice(0, FILES_SHOWN),
-    more: Math.max(0, files.length - FILES_SHOWN),
+    files: found.files.slice(0, FILES_SHOWN),
+    totalFiles,
     folders: found.folders.slice(0, FOLDERS_SHOWN),
-    closestIn: found.closestIn,
+    totalFolders: found.folders.length,
+    closestIn: null,
   };
 }
 
@@ -166,7 +188,7 @@ export function SearchScreen({ q }: { q: string }) {
             type="search"
             className={`input ${styles.input}`}
             value={draft}
-            maxLength={MAX_SEARCH_LENGTH}
+            maxLength={MAX_FIND_LENGTH}
             enterKeyHint="search"
             autoComplete="off"
             placeholder={SEARCH_LABEL}
@@ -192,7 +214,7 @@ export function SearchScreen({ q }: { q: string }) {
           </Button>
         </div>
       ) : current ? (
-        <SearchResults found={current.found} />
+        <SearchResults found={current.found} q={q} />
       ) : (
         <>
           <p className="muted" role="status">
@@ -205,24 +227,38 @@ export function SearchScreen({ q }: { q: string }) {
   );
 }
 
-/** The files first, each with its place in grey, then the folders. Exported for the render test. */
-export function SearchResults({ found }: { found: Found }) {
+const counted = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** The status line: "3 files and 1 folder found." */
+export function foundText(found: Pick<Found, "totalFiles" | "totalFolders" | "closestIn">): string {
+  const parts = [
+    found.totalFiles > 0 && !found.closestIn ? counted(found.totalFiles, "file", "files") : "",
+    found.totalFolders > 0 ? counted(found.totalFolders, "folder", "folders") : "",
+  ].filter(Boolean);
+  return `${parts.join(" and ")} found.`;
+}
+
+/** The files first, each with its place in grey, then the folders; nothing found is one neutral
+ * line naming nothing, and where to search inside files instead. Exported for the render test. */
+export function SearchResults({ found, q }: { found: Found; q: string }) {
   const from = useBackFrom(); // this search, for the documents' back link (#436)
-  const { tree, files, folders, closestIn, more } = found;
+  const { tree, files, folders, closestIn, totalFiles, totalFolders } = found;
   if (files.length === 0 && folders.length === 0) {
     return (
-      <p className="muted" role="status">
-        {NO_MATCH_TEXT}
-      </p>
+      <div role="status">
+        <p className="muted">{NO_MATCH_TEXT}</p>
+        <p className="muted">
+          {INSIDE_ELSEWHERE} Search on the <Link href="/documents">Documents page</Link>, or{" "}
+          <Link href={askWithWordsHref(q)}>Ask Kaagaz</Link>.
+        </p>
+      </div>
     );
   }
   return (
     <>
-      {closestIn ? (
-        <p className="muted" role="status">
-          No file matches that name in {closestIn.path}. These are the files in that folder.
-        </p>
-      ) : null}
+      <p className="muted" role="status">
+        {closestIn ? `No file matches that name in ${closestIn.path}. These are the files in that folder.` : foundText(found)}
+      </p>
       {files.length > 0 ? (
         <section aria-labelledby="found-files">
           <h2 id="found-files" className={styles.groupHeading}>
@@ -246,7 +282,11 @@ export function SearchResults({ found }: { found: Found }) {
               );
             })}
           </ol>
-          {more > 0 ? <p className="muted">And {more} more. Paste more of the path to narrow it.</p> : null}
+          {totalFiles > files.length ? (
+            <p className="muted">
+              Showing {files.length} of {totalFiles} files. Type or paste more of the name or path to narrow it.
+            </p>
+          ) : null}
         </section>
       ) : null}
       {folders.length > 0 ? (
@@ -263,6 +303,11 @@ export function SearchResults({ found }: { found: Found }) {
               </li>
             ))}
           </ol>
+          {totalFolders > folders.length ? (
+            <p className="muted">
+              Showing {folders.length} of {totalFolders} folders. Type or paste more of the path to narrow it.
+            </p>
+          ) : null}
         </section>
       ) : null}
     </>

@@ -200,7 +200,7 @@ The look comes from the design handoff in `design/kaagaz-ui-handoff/` (HANDOFF.m
 
 **The shell** (`components/shell/`): the sidebar with the brand, the links for the role and session, and the workspace; the top bar with the search, Upload and the account menu; the status bar; the phone's tab bar. Only `<main>` and the sidebar scroll.
 - Upload works on every page: the shell holds the one upload queue and the one batch tray (`Uploads.tsx`). The documents screen and the dashboard add files into the folder or department they show; anywhere else the files go into the last department used.
-- The top bar's search opens `/search`: inside documents first, names on request.
+- The top bar's search opens `/search`: a file or folder by its name, a pasted path or a file's link (#730); searching inside documents is the Documents screen's own search.
 - A reviewer's and an admin's Review link shows the values waiting there; a member has no Review link.
 
 **Needs backend.** Parts of the handoff the backend can't feed yet. Each stays out of the UI (or uses its fallback) behind `TODO(needs-backend: NB-xx)`; no screen shows made-up data. Size: S = a field or filter on an existing query, M = a new endpoint, L = a new feature. Priority 1 first, then 2 (approved 20 Oct 2026); the list as of that day.

@@ -34,7 +34,7 @@ import { isEmpty, notEmptyText } from "./folderDelete";
 import { MAX_FOLDER_DEPTH, canAddSubfolder, pathLabel, validMoveTargets } from "./folderTree";
 import type { FolderNode, FolderTree } from "./folderTree";
 import { FolderPicker } from "./FolderPicker";
-import { COPY_FAILED, FOLDER_PATH_COPIED, copyText } from "./copyPath";
+import { FOLDER_PATH_COPIED, copyFailed, copyText } from "./copyPath";
 import { folderNameProblem, libraryErrorText } from "./library";
 import styles from "./Library.module.css";
 
@@ -99,7 +99,9 @@ export function FolderActions({
   const [preview, setPreview] = useState<MovePreview | null>(null); // PR 10c: what a move changes
   const passwordStep = usePasswordStep();
   const [summary, setSummary] = useState<FolderSummary | null>(null); // #537: what Delete would take
-  const [copied, setCopied] = useState<string | null>(null); // #730: Copy path's line
+  const [copied, setCopied] = useState<{ ok: boolean; line: string } | null>(null); // #730: Copy path's line
+  const copyFolderPath = (text: string) =>
+    copyText(text).then((done) => setCopied(done ? { ok: true, line: FOLDER_PATH_COPIED } : { ok: false, line: copyFailed(text) }));
   const [heardNew, setHeardNew] = useState(askNew);
   const [name, setName] = useState("");
   const [target, setTarget] = useState(""); // "" is the top level
@@ -352,7 +354,7 @@ export function FolderActions({
             type="button"
             className="btn btn-quiet"
             onClick={() =>
-              void copyText(folderPathText(tree, current.folder.id)).then((done) => setCopied(done ? FOLDER_PATH_COPIED : COPY_FAILED))
+              void copyFolderPath(folderPathText(tree, current.folder.id))
             }
           >
             Copy path<span className="visually-hidden"> of this folder</span>
@@ -369,8 +371,8 @@ export function FolderActions({
         </div>
       )}
       {copied && (
-        <p className={copied === COPY_FAILED ? "error-text" : "muted"} role="status">
-          {copied}
+        <p className={copied.ok ? "muted" : "error-text"} role="status">
+          {copied.line}
         </p>
       )}
 

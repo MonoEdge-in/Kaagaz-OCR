@@ -13,7 +13,8 @@ import type { DocumentDetail, DocumentSummary } from "@/lib/types";
 export const PATH_COPIED = "Path copied. Paste it in Search to find this file.";
 export const FOLDER_PATH_COPIED = "Path copied. Paste it in Search to find this folder.";
 export const LINK_COPIED = "Link copied. Anyone who can open this file can use it.";
-export const COPY_FAILED = "Could not copy. Your browser did not allow it. Try again, or copy it from the page.";
+/** The browser refused: the text itself, to select and copy by hand. */
+export const copyFailed = (text: string) => `Could not copy. Select it here: ${text}`;
 
 /** A listed file's path, from the folders this person sees (`tree`). */
 export function filePath(
@@ -45,9 +46,14 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** Copies a file's path or link, and gives the line to show: what to do with it, or why not. */
-export async function copyFor(action: "copyPath" | "copyLink", path: string, documentId: string): Promise<string> {
-  const copied = await copyText(action === "copyPath" ? path : fileLink(documentId));
-  if (!copied) return COPY_FAILED;
-  return action === "copyPath" ? PATH_COPIED : LINK_COPIED;
+/** Copies a file's path or link: whether it worked, and the line to show: what to do with it, or
+ * the text to select by hand. */
+export async function copyFor(
+  action: "copyPath" | "copyLink",
+  path: string,
+  documentId: string,
+): Promise<{ copied: boolean; line: string }> {
+  const text = action === "copyPath" ? path : fileLink(documentId);
+  if (!(await copyText(text))) return { copied: false, line: copyFailed(text) };
+  return { copied: true, line: action === "copyPath" ? PATH_COPIED : LINK_COPIED };
 }
