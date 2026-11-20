@@ -120,6 +120,7 @@ from kaagaz.api.views import (
     conversation_summary,
     message,
     no_access,
+    shown_document_ids,
     shown_message,
 )
 from kaagaz.db import ai_settings, audit, organization_words
@@ -430,7 +431,7 @@ def _saved_reply(context: AppContext, user: CurrentUser, question_id: str) -> di
         owner, question, answer = found
         if owner != user.user_id or question["role"] != "user" or answer is None:
             raise ApiError(409, "conflict")
-        named = cited_document_ids(answer["answer"]) + _scope_ids(question)
+        named = shown_document_ids(answer["answer"]) + _scope_ids(question)
         states = chat_sql.document_states(conn, user.customer_id, named)
     return {
         "conversation_id": str(question["conversation_id"]),
@@ -618,7 +619,7 @@ def _ask(
     shown = message(answered)
     if copied and shown["answer"]:  # A10: a stored copy is shown as a conversation shows it
         with context.db.user(user.customer_id, user.user_id) as conn:
-            states = chat_sql.document_states(conn, user.customer_id, cited_document_ids(shown["answer"]))
+            states = chat_sql.document_states(conn, user.customer_id, shown_document_ids(shown["answer"]))
         shown = shown_message(answered, states)
     return {"conversation_id": conversation_id, "question": message(asked), "answer": shown}
 
@@ -1366,7 +1367,7 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         if found is None:
             raise ApiError(404, "not_found")
         rows = chat_sql.messages_with_feedback(conn, user.customer_id, str(conversation_id), user.user_id)
-        cited = [document_id for row in rows for document_id in cited_document_ids(row["answer"])]
+        cited = [document_id for row in rows for document_id in shown_document_ids(row["answer"])]
         states = chat_sql.document_states(
             conn, user.customer_id, cited + [d for r in rows for d in _scope_ids(r)]
         )

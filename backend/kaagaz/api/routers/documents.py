@@ -189,7 +189,6 @@ from kaagaz.api.views import (
     LOCKED_NOTE,
     answer_with_source_states,
     can_delete,
-    cited_document_ids,
     document_folder,
     document_link,
     document_summary,
@@ -201,6 +200,7 @@ from kaagaz.api.views import (
     page_readings,
     page_summary,
     seen_items,
+    shown_document_ids,
     shown_folder,
     timeline,
 )
@@ -1661,7 +1661,7 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
         rows = chat_sql.document_questions(conn, user.customer_id, user.user_id, family)
         # As the chat view: sources in Trash, replaced, hidden or deleted since
         # (views.answer_with_source_states: replaced whole for one hidden, PRD 7).
-        cited = [each for row in rows if row["answer"] for each in cited_document_ids(row["answer"])]
+        cited = [each for row in rows if row["answer"] for each in shown_document_ids(row["answer"])]
         states = chat_sql.document_states(conn, user.customer_id, cited)
         opens = chat_sql.opens_locked(conn, user.customer_id, user.user_id)
     return {

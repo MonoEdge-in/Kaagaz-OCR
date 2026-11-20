@@ -1134,6 +1134,28 @@ export interface ListedDocument {
   title: string;
   why: string;
   citations: number[];
+  // #718, missing on answers saved before: folder names, root first; [] at the top level; null in
+  // a folder this person can't see ("Shared with you").
+  path?: string[] | null;
+  pages?: FilePage[]; // at most 5: cited first, then pages that also matched
+}
+
+/** #718: a page of a listed or searched file: cited (the numbers citing it), or one that also
+ * matched the search (`citations` empty); `regions` are its spot on that page. */
+export interface FilePage {
+  page_no: number;
+  regions: Region[];
+  snippet: string; // plain text, never markup
+  citations: number[];
+}
+
+/** #719: one of the closest files the answer's search found, best first. */
+export interface SearchedFile {
+  document_id: string;
+  name: string;
+  used: boolean; // the answer cites it
+  path: string[] | null; // as ListedDocument's
+  pages: FilePage[];
 }
 
 export interface Answer {
@@ -1173,6 +1195,7 @@ export interface Answer {
   unreadable_page_count?: number;
   related_documents?: RelatedDocument[]; // "Also in"; missing before 16 Oct 2026
   mentions?: Mentions; // "Also mentions"; only when there is one (17 Oct 2026)
+  searched_files?: SearchedFile[]; // #719: only when there is one
   missing_words?: string[]; // #410: a not-found's words no document searched has; only when there is one
   // Features 25-27 (C7), only on an answer drafted with the asker's answer settings: the
   // names (and ids) of the models that replied, the one used first; how many were asked;

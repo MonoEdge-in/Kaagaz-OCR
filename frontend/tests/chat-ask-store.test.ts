@@ -61,6 +61,7 @@ describe("the question on its way (askStore.ts)", () => {
     expect(resumable(entry, `c=${C}`)).toBe(entry);
     expect(resumable(entry, `c=${D}`)).toBeNull(); // another conversation named
     expect(resumable(entry, `document=${D}`)).toBeNull(); // "Ask about this document" starts a new chat
+    expect(resumable(entry, `folder=${D}`)).toBeNull(); // #725: so does "Ask in this folder"
     expect(resumable(null, "")).toBeNull();
     settleAsk(entry);
   });

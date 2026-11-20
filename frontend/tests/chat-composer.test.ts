@@ -88,7 +88,7 @@ describe("the toolbar chips", () => {
 
   it("say the scope on a chip, with no separate Asking about line or Change button", () => {
     const html = renderToStaticMarkup(createElement(ScopePicker, { state: startScope(null), locked: null, onChoose: () => {} }));
-    expect(html).toContain('<span class="visually-hidden">Asking about: </span>');
+    expect(html).toContain('<span class="visually-hidden">Where to ask: </span>'); // changed on purpose (#725)
     expect(html).toMatch(/<span class="[^"]*_toolText[^"]*">All documents<\/span>/);
     expect(html).toContain('popover="auto" role="dialog" aria-label="Which documents to ask about"');
     expect(html).not.toContain("Change");
@@ -98,6 +98,8 @@ describe("the toolbar chips", () => {
   it("open each panel above its chip, close on Enter instead of sending, and move focus inside", () => {
     const menu = read("components/chat/ComposerMenu.tsx");
     expect(menu).toContain('event.key === "Enter" && event.target instanceof HTMLInputElement');
+    // #725 review: never sends from any box; in a search box (the find box) the panel stays open.
+    expect(menu).toMatch(/event\.preventDefault\(\);\s*if \(event\.target\.type !== "search"\) event\.currentTarget\.hidePopover\(\);/);
     expect(menu).toContain("event.currentTarget.hidePopover();");
     expect(menu).toContain('menu.querySelector<HTMLElement>("input:checked:enabled")');
     const css = read("components/chat/Chat.module.css");

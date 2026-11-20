@@ -31,6 +31,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import { accessAbilities, privateFirst } from "@/components/access/abilities";
 import { ASK_FOR_ACCESS, asksForAccess } from "@/components/access/askForAccess";
+import { askInFolderHref } from "@/components/chat/logic";
 import { AudiencePanel } from "@/components/access/AudiencePanel";
 import { KeptFromMe } from "@/components/access/KeptFromMe";
 import type { AudienceTarget } from "@/components/access/AudiencePanel";
@@ -38,7 +39,7 @@ import { PlaceBadge } from "@/components/access/PlaceBadge";
 import { folderPlace, placeHint, placeKind } from "@/components/access/places";
 import { NOT_FOUND_FOLDER, NOT_FOUND_TEXT, SHARED, hiddenMovedText } from "@/components/access/words";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
-import { chosenDepartment, departmentsOf, sortInto } from "@/components/files/departments";
+import { chosenDepartment, departmentsOf, isDepartment, sortInto } from "@/components/files/departments";
 import { DocumentsGrid } from "@/components/files/DocumentsGrid";
 import { FolderTiles } from "@/components/files/FolderTiles";
 import { readViewMode, saveViewMode } from "@/components/files/viewMode";
@@ -725,6 +726,12 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
               </h2>
               {current && (
                 <p className={libraryStyles.placeHint}>Files you upload here go into this folder.</p>
+              )}
+              {/* #725: Ask limited to this folder (or department) and its subfolders. */}
+              {current && (
+                <Link className={`btn ${libraryStyles.askHere}`} href={askInFolderHref(current.folder.id)}>
+                  {isDepartment(current.folder) ? "Ask in this department" : "Ask in this folder"}
+                </Link>
               )}
               {/* PRD 7 (#604): who sees this folder's files, with the people icon's words. */}
               {accessHint && (

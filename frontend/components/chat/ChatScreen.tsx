@@ -57,6 +57,7 @@ import {
   getConversation,
   listConversations,
   listDocuments,
+  listFolders,
   randomId,
   renameConversation,
   savedAnswer,
@@ -107,6 +108,7 @@ import {
   conversationLoadText,
   defaultPick,
   documentFromSearch,
+  folderFromSearch,
   hasChoices,
   isNearBottom,
   isUnfinished,
@@ -201,8 +203,26 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   // The documents the next question may use (scope.ts): one document when the
   // viewer's "Ask about this document" opened chat, else restored from the conversation.
   const [scope, setScope] = useState(() =>
-    restoreId ? keptScope() : startScope(documentFromSearch(initialSearch)),
+    restoreId ? keptScope() : startScope(documentFromSearch(initialSearch), folderFromSearch(initialSearch)),
   );
+  // #725: "Ask in this folder" for a folder this person can't see, or one gone since, asks in
+  // every document instead, saying nothing of it (the server would find nothing in it).
+  const [askedFolder] = useState(() => (restoreId ? null : folderFromSearch(initialSearch)));
+  useEffect(() => {
+    if (!askedFolder || documentFromSearch(initialSearch)) return;
+    let cancelled = false;
+    listFolders()
+      .then(({ items }) => {
+        if (cancelled || items.some((folder) => folder.id === askedFolder)) return;
+        setScope((state) =>
+          state.scope.kind === "folder" && state.scope.folderId === askedFolder ? startScope(null) : state,
+        );
+      })
+      .catch(() => undefined); // the picker loads the folders again and says when it can't
+    return () => {
+      cancelled = true;
+    };
+  }, [askedFolder, initialSearch]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [threadError, setThreadError] = useState(""); // why, once threadState is "error"
   const [threadState, setThreadState] = useState<"idle" | "loading" | "error">(
@@ -287,7 +307,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [chosenMode, setChosenMode] = useState<ChatMode | null>(null);
   const mode: ChatMode =
     chosenMode ??
-    (hydrated ? startMode(readMode(tabStorage()), documentFromSearch(initialSearch), restoreId) : "documents");
+    (hydrated
+      ? startMode(readMode(tabStorage()), documentFromSearch(initialSearch) ?? folderFromSearch(initialSearch), restoreId)
+      : "documents");
   // PRD 6 B2: the open clarifying question, which the composer answers until it is left.
   const [leftClarify, setLeftClarify] = useState<string | null>(null);
   const asking = mode === "documents" ? openClarify(messages, leftClarify) : null;

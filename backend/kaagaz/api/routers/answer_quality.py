@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict
 from kaagaz.api.auth import AdminSession, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.views import answer_with_source_states, cited_document_ids, iso, no_access
+from kaagaz.api.views import answer_with_source_states, iso, no_access, shown_document_ids
 from kaagaz.db import answer_quality as quality_sql
 from kaagaz.db import audit
 from kaagaz.db import chat as chat_sql
@@ -77,7 +77,7 @@ def list_answer_quality(
         rows, total = quality_sql.not_useful(
             conn, user.customer_id, since=since, handled=status == "handled", limit=limit, offset=offset
         )
-        cited = [document_id for row in rows for document_id in cited_document_ids(row["answer"])]
+        cited = [document_id for row in rows for document_id in shown_document_ids(row["answer"])]
         states = chat_sql.document_states(conn, user.customer_id, cited)
         counts = quality_sql.weekly_counts(conn, user.customer_id, since=since, zone=zone)
     mondays = [(since + timedelta(days=7 * n)).date().isoformat() for n in range(weeks)]

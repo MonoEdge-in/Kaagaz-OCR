@@ -1045,6 +1045,16 @@ def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
     return ids
 
 
+def shown_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
+    """``cited_document_ids`` and the files the answer searched (#719): the documents whose states
+    a saved answer is shown with. A file searched but not cited never replaces the answer whole;
+    it only leaves the list (``answer_with_source_states``)."""
+    searched = (answer or {}).get("searched_files") or []
+    return cited_document_ids(answer) + [
+        str(each["document_id"]) for each in searched if each.get("document_id")
+    ]
+
+
 def _choices(answer: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     clarify = answer.get("clarify")
     return list(clarify.get("choices", [])) if isinstance(clarify, Mapping) else []
@@ -1172,6 +1182,14 @@ def answer_with_source_states(
         shown["related_documents"] = related
     if "documents" in answer:
         shown["documents"] = [each for each in answer.get("documents") or [] if kept(each.get("document_id"))]
+    # #719: only the files searched that are still live or an older version; none, no list.
+    searched = [
+        each
+        for each in shown.pop("searched_files", None) or []
+        if states.get(str(each.get("document_id"))) in ("live", "older_version")
+    ]
+    if searched:
+        shown["searched_files"] = searched
     if answer.get("clarify"):  # PRD 6 B1: a choice whose every document is gone is no choice
         alive = {document for document, state in states.items() if state != "in_trash"}
         documents = [set(map(str, c.get("document_ids", []))) for c in _choices(answer)]

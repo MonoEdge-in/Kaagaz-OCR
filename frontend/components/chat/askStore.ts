@@ -12,7 +12,7 @@
 
 import type { Landing, StreamEvent } from "@/lib/askStream";
 import type { ChatResponse } from "@/lib/types";
-import { conversationFromSearch, documentFromSearch } from "./logic";
+import { conversationFromSearch, documentFromSearch, folderFromSearch } from "./logic";
 import { NO_PROGRESS, progressAfter } from "./stream";
 import type { StreamProgress } from "./stream";
 
@@ -82,14 +82,14 @@ export function settleAsk(entry: InFlight): void {
 
 /**
  * The question a chat screen opened at `search` should pick up, or null: the
- * address names its conversation, or names none and no document ("Ask about
- * this document" starts a new chat).
+ * address names its conversation, or names none and no document or folder ("Ask about
+ * this document" and "Ask in this folder" start a new chat).
  */
 export function resumable(entry: InFlight | null, search: string): InFlight | null {
   if (entry === null) return null;
   const named = conversationFromSearch(search);
   if (named !== null) return named === entry.conversationId ? entry : null;
-  return documentFromSearch(search) === null ? entry : null;
+  return documentFromSearch(search) === null && folderFromSearch(search) === null ? entry : null;
 }
 
 /** The conversation to show for a picked-up question: its own, or the new one its answer made. */
