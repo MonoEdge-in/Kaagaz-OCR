@@ -1115,6 +1115,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                       onFolderCreated={foldersEdited}
                       onRemoved={afterRemoved}
                       onSaved={afterSave}
+                      onCopied={(message) => setToast({ message })} // #730: no new list: nothing changed
                       onFocusList={() => headingRef.current?.focus()}
                       onTagCreated={() => setTagsVersion((n) => n + 1)}
                       onUploadVersion={chooseVersion}

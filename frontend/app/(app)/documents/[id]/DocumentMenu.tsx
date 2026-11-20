@@ -26,6 +26,7 @@ import { LockDialog } from "@/components/documents/LockDialog";
 import { buildTree } from "@/components/documents/folderTree";
 import type { EditAction, RowAction } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
+import { copyFor, detailPath } from "@/components/documents/copyPath";
 import { deletedMessage } from "@/components/documents/logic";
 import { placedMessage, restoredMessage, trashQuestion } from "@/components/documents/trash";
 import { LOCK_TEXT } from "@/components/viewer/locked";
@@ -65,6 +66,7 @@ export function DocumentMenu({
   const [trashing, setTrashing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null); // #730: what was copied, and how to use it
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [tags, setTags] = useState<Tag[] | null>(null);
   const [locking, setLocking] = useState(false);
@@ -109,6 +111,7 @@ export function DocumentMenu({
 
   function pick(action: RowAction) {
     setError(null);
+    setCopied(null);
     if (action === "read") onReadAgain();
     else if (action === "trash") setTrashing(true);
     else if (action === "restore") {
@@ -119,6 +122,10 @@ export function DocumentMenu({
     } else if (action === "rename" || action === "move" || action === "tags") setEditing(action);
     else if (action === "give" || action === "audience") setSharing(action);
     else if (action === "link") setLinking(true);
+    else if (action === "copyPath" || action === "copyLink") {
+      // #730: the line says how to use it, or that the browser would not copy.
+      void copyFor(action, detailPath(detail), detail.id).then(({ copied, line }) => (copied ? setCopied(line) : setError(line)));
+    }
   }
 
   function trash() {
@@ -182,6 +189,11 @@ export function DocumentMenu({
           onClosed={() => buttonRef.current?.focus()}
           onChanged={onChanged}
         />
+      )}
+      {copied && (
+        <p className="muted" role="status">
+          {copied}
+        </p>
       )}
       {error && !trashing && (
         <p className="error-text" role="alert">

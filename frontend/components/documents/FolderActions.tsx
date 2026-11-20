@@ -17,6 +17,7 @@
 // PRD 7 PR 11b (#604, PR 10c): Move says first who would lose and gain what the folder holds (its
 // move preview; nothing when the person may not make such a move, or the same people see it), and a
 // move that opens it to the admin asks their password first, or on 403 password_required.
+// #730: Copy path copies the folder's place (only folders this person sees), to paste in Search.
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
@@ -24,6 +25,7 @@ import { includesMe } from "@/components/access/passwordStep";
 import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
 import { MAKE_PRIVATE, MAKE_PRIVATE_HELP, WHO_CAN_SEE, moveEffectText, quoted } from "@/components/access/words";
 import { Icon } from "@/components/ui/Icon";
+import { folderPathText } from "@/components/chat/scope";
 import { createFolder, deleteFolder, folderMovePreview, folderSummary, updateFolder } from "@/lib/api";
 import type { FolderSummary, MovePreview } from "@/lib/types";
 import { BusyLabel } from "./BusyLabel";
@@ -32,6 +34,7 @@ import { isEmpty, notEmptyText } from "./folderDelete";
 import { MAX_FOLDER_DEPTH, canAddSubfolder, pathLabel, validMoveTargets } from "./folderTree";
 import type { FolderNode, FolderTree } from "./folderTree";
 import { FolderPicker } from "./FolderPicker";
+import { FOLDER_PATH_COPIED, copyFailed, copyText } from "./copyPath";
 import { folderNameProblem, libraryErrorText } from "./library";
 import styles from "./Library.module.css";
 
@@ -96,6 +99,9 @@ export function FolderActions({
   const [preview, setPreview] = useState<MovePreview | null>(null); // PR 10c: what a move changes
   const passwordStep = usePasswordStep();
   const [summary, setSummary] = useState<FolderSummary | null>(null); // #537: what Delete would take
+  const [copied, setCopied] = useState<{ ok: boolean; line: string } | null>(null); // #730: Copy path's line
+  const copyFolderPath = (text: string) =>
+    copyText(text).then((done) => setCopied(done ? { ok: true, line: FOLDER_PATH_COPIED } : { ok: false, line: copyFailed(text) }));
   const [heardNew, setHeardNew] = useState(askNew);
   const [name, setName] = useState("");
   const [target, setTarget] = useState(""); // "" is the top level
@@ -343,6 +349,16 @@ export function FolderActions({
           >
             Move<span className="visually-hidden"> this folder</span>
           </button>
+          {/* #730: the folder's place, to paste in Search; the line says so, or that it could not. */}
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() =>
+              void copyFolderPath(folderPathText(tree, current.folder.id))
+            }
+          >
+            Copy path<span className="visually-hidden"> of this folder</span>
+          </button>
           <button
             type="button"
             className={`btn btn-quiet ${styles.danger}`}
@@ -353,6 +369,11 @@ export function FolderActions({
             Delete<span className="visually-hidden"> this folder</span>
           </button>
         </div>
+      )}
+      {copied && (
+        <p className={copied.ok ? "muted" : "error-text"} role="status">
+          {copied.line}
+        </p>
       )}
 
       {choosing && current && (

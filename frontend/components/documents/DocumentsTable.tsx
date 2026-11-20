@@ -79,6 +79,7 @@ import { DOCUMENT_DRAG } from "./FolderNav";
 import { pathLabel, shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
+import { copyFor, filePath } from "./copyPath";
 import { movableItems } from "./library";
 import type { EditAction, RowAction } from "./library";
 import type { SortKey, SortOrder } from "./libraryQuery";
@@ -146,6 +147,8 @@ export interface RowEvents {
   onUploadVersion(document: DocumentSummary): void;
   /** PRD 7 (#604): files given to people: the toast's words. */
   onShared?(message: string): void;
+  /** #730: Copy path or Copy link worked: the toast's words; nothing changed, so no new list. */
+  onCopied?(message: string): void;
   /** #648 (V13): the link dialog, from a row ("pick") or the selection ("order"); left out for
    * anyone who may not link. */
   onLinkVersions?(documents: DocumentSummary[], start: "pick" | "order"): void;
@@ -337,6 +340,7 @@ export function DocumentsTable({
     () => ({
       onRemoved: (message, undo) => latestEvents.current.onRemoved(message, undo),
       onSaved: (message, undo, moved) => latestEvents.current.onSaved(message, undo, moved),
+      onCopied: (message) => latestEvents.current.onCopied?.(message),
       onFocusList: () => latestEvents.current.onFocusList(),
       onTagCreated: () => latestEvents.current.onTagCreated(),
       onFolderCreated: () => latestEvents.current.onFolderCreated(),
@@ -946,6 +950,13 @@ const DocumentRow = memo(function DocumentRow({
       return;
     }
     if (action === "read") return; // only the document screen's menu offers it
+    if (action === "copyPath" || action === "copyLink") {
+      // #730: the line says how to use it, or that the browser would not copy.
+      void copyFor(action, filePath(tree, document), document.id).then(({ copied, line }) =>
+        copied ? events.onCopied?.(line) : setError(line),
+      );
+      return;
+    }
     if (action === "give" || action === "audience") {
       setSharing(action);
       return;

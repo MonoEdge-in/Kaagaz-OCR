@@ -275,6 +275,8 @@ describe("menuEntries", () => {
       "Move to folder",
       "Tags",
       "Upload new version",
+      "Copy path", // changed on purpose (#730): Copy path and Copy link
+      "Copy link",
       "Download original",
     ]);
     expect(words(menuEntries(doc({ can_delete: true }), false)).at(-1)).toBe("Move to Trash");

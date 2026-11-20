@@ -40,7 +40,7 @@ describe("backFrom: where ?from= leads back to", () => {
   });
 
   it("keeps a search's own words as the address holds them, and a #part", () => {
-    const search = searchHref("जालना rent", "inside");
+    const search = searchHref("जालना rent"); // changed on purpose (#730): one search, no "in"
     expect(backFrom(search)?.href).toBe(search);
     expect(backFrom("/chat?c=1#answer-a1")?.href).toBe("/chat?c=1#answer-a1");
   });
@@ -242,8 +242,9 @@ describe("Review, search, Home, My words and a document say where they are", () 
     expect(card).toContain("{ scanned: true }), from)");
   });
 
-  it("search: the results inside documents and by name carry the search, with its words", () => {
-    expect(read("app/(app)/search/page.tsx")).toContain("<BackFrom value={searchHref(q, mode)}>");
+  // Changed on purpose (#730): one search, by name or path; inside documents is the Documents screen's.
+  it("search: the files found carry the search, with its words", () => {
+    expect(read("app/(app)/search/page.tsx")).toContain("<BackFrom value={searchHref(q)}>");
     expect(read("components/documents/InsideResults.tsx")).toContain("href={withFrom(view.href, from)}");
     expect(read("components/search/SearchScreen.tsx")).toContain("href={withFrom(`/documents/${document.id}`, from)}");
     // The documents screen's own search sets no place, so its results keep the folder back link.
