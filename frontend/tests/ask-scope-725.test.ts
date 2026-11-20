@@ -253,7 +253,8 @@ describe("Enter in the find box (#725 re-check)", () => {
       createElement("input", { key: "find", type: "search", "aria-label": "find" }),
       createElement("input", { key: "pick", type: "radio", "aria-label": "pick", readOnly: true }),
     ];
-    await act(async () => root!.render(createElement(ComposerMenu, { label: "All documents", name: "Where to ask", title: "t" }, choices)));
+    const menu = { label: "All documents", name: "Where to ask", title: "t", children: choices };
+    await act(async () => root!.render(createElement(ComposerMenu, menu)));
     const panel = all().find((element) => element.getAttribute("popover") === "auto")!;
     const hidePopover = vi.fn();
     Object.assign(panel, { hidePopover });
