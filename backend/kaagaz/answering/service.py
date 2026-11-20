@@ -2020,23 +2020,6 @@ class AnswerService:
             customer_id, query_text, vector, limit, scope, expansion, user_id=user_id
         )
 
-    def evidence_hits(
-        self, customer_id: str, question: str, scope: Scope = EVERYTHING, *, user_id: str | None
-    ) -> tuple[Sequence[Hit], bool]:
-        """#721 (the retrieval scorer, answering/scorecard.py): the hits the search route keeps as
-        evidence for ``question`` as asked, best first, as ``_early`` and ``_search_answer`` get
-        them, as ``user_id``: no rewrite, aspects, translation, gate or widening; and whether it was
-        searched by meaning too (one embedding; False with the model off or the embedding failed)."""
-        _, query_text, spoken = _searched_as(question, normalise(question))
-        if not query_text:
-            return [], False
-        expansion = self._expansion(customer_id, question, scope, user_id)
-        vector = self._embed(spoken)
-        limit = self._search_limit(question, scope)
-        hits = self._hits(customer_id, user_id, query_text, vector, [], scope, expansion, limit)
-        pool = hits[: self._evidence_limit(question, scope)]  # as the search route cuts the fetch
-        return self._documents_once(question, scope, pool), vector is not None
-
     def _search_limit(self, question: str, scope: Scope, exclude: str | None = None) -> int:
         """How many hits a search of ``question`` fetches: its ``_evidence_limit``, but at least
         SEARCHED_PIECES of the fused list for the files searched (#719, sources.py)."""

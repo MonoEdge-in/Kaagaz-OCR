@@ -209,7 +209,3 @@ def test_a_hit_fetched_past_the_pool_is_never_evidence_but_may_be_a_file_searche
     # From the 50 it would be crowd[0], crowd[1] and past; from the pool, a third crowd piece.
     assert blocks(model.drafted[0]) == [hit.text for hit in draft.edges(crowd[:3])]
     assert "staff-rules.pdf" in {row["name"] for row in answer.searched_files}
-    # The scorer's own read (#721) cuts the fetch the same way: the pool's slots, never ``past``.
-    service = answers(Fused([*crowd, past]), FakeContext([]), Routed(cites()), settings)
-    hits, _ = service.evidence_hits(A, "Casual leave days?", user_id=None)
-    assert [hit.piece_id for hit in hits] == [hit.piece_id for hit in crowd[:3]]

@@ -8,14 +8,14 @@ ANSWER_MAX_EVIDENCE (8 -> 10; more slots and their neighbours would push long De
 Precision answers past ANSWER_PARTS_TOKENS into extra model calls), and any other question the
 setting itself, from 1 to the search's MAX_LIMIT. A question asking for "the top of page 3"
 reads as a comparison (intent.py's "top"): it costs two pieces more, never a wrong answer.
-PROVISIONAL: #724 tunes these with real questions (``score-ask``).
+PROVISIONAL: #724 tunes these with real questions.
 
 Which: the search ranks pieces; one page often holds the best several, and then fills every
 slot with near repeats while the page that answers waits just below. ``spread`` keeps at most
 PAGE_CAP pieces of one page and gives the freed slots to the next ranked hits; slots still free
 then take the capped pieces, after them. A file's other pages are never capped: "List the
 conditions in the Sharma lease" keeps every lease page that ranks (a cap on a file comes back only
-if ``score-ask`` shows a gain, #724). The search is asked for POOL_PER_SLOT hits a slot, so there
+if real questions show a gain, #724). The search is asked for POOL_PER_SLOT hits a slot, so there
 are next ranked hits to take.
 
 A "which documents" question keeps its own rule and count (each document once, service
