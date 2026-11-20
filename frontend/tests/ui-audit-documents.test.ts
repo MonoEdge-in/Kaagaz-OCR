@@ -113,6 +113,8 @@ describe("D5: a row's menu", () => {
       "Rename",
       "Move to folder",
       "Tags",
+      "Copy path", // changed on purpose (#730)
+      "Copy link",
       "Move to Trash",
     ]);
     expect(words(menuEntries(item, false, "document", false))[0]).toBe("Rename");
@@ -125,6 +127,8 @@ describe("D5: a row's menu", () => {
       "Move to folder",
       "Tags",
       "Upload new version",
+      "Copy path", // changed on purpose (#730): Copy path and Copy link
+      "Copy link",
       "Download original",
       "Move to Trash",
     ]);

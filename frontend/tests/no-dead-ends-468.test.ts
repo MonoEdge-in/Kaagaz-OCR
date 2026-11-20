@@ -15,7 +15,9 @@ import { InsideSearchResults } from "@/components/documents/InsideResults";
 // Changed on purpose (#468 review, PT7): askWithWordsHref sits next to askHref in chat/logic.
 import { askWithWordsHref } from "@/components/chat/logic";
 import { askAboutLabel } from "@/components/documents/insideSearch";
-import { NameResults } from "@/components/search/SearchScreen";
+import { buildTree } from "@/components/documents/folderTree";
+import { NO_MATCH_TEXT } from "@/components/search/pathSearch";
+import { SearchResults } from "@/components/search/SearchScreen";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 const noop = () => undefined;
@@ -61,18 +63,16 @@ describe("a search with no result is never a dead end", () => {
     expect(html).toContain("Ask Kaagaz about “rent”");
   });
 
-  it("names: Search inside documents instead and Ask Kaagaz about the words", () => {
-    const html = renderToStaticMarkup(
-      createElement(NameResults, { names: { items: [], total: 0 }, error: null, q: "mehta", onRetry: noop, onSearchInside: noop }),
-    );
-    expect(html).toContain("No document is named like this.");
-    expect(html).toContain(">Search inside documents instead</button>");
-    expect(html).toContain('href="/chat?q=mehta"');
+  // Changed on purpose (#730): the top bar's search finds a file by name or path only; nothing found
+  // (or nothing this person may open) is one neutral line naming nothing, whose next step is an Admin.
+  it("search: one neutral line that says what to do next, naming nothing", () => {
+    const empty = { tree: buildTree([]), files: [], more: 0, folders: [], closestIn: null };
+    const html = renderToStaticMarkup(createElement(SearchResults, { found: empty }));
+    expect(html).toContain(NO_MATCH_TEXT.replace("'", "&#x27;")); // as HTML writes the apostrophe
+    expect(NO_MATCH_TEXT).toContain("Ask an Admin");
   });
 
-  it("both screens switch with the same words, by their own route or state", () => {
-    expect(read("components/search/SearchScreen.tsx")).toMatch(/onSearchNames=\{\(\) => router\.replace\(searchHref\(q, "names"\)\)\}/);
-    expect(read("components/search/SearchScreen.tsx")).toMatch(/onSearchInside=\{\(\) => router\.replace\(searchHref\(q, "inside"\)\)\}/);
+  it("the documents screen switches with the same words, by its own state", () => {
     expect(read("components/documents/DocumentsView.tsx")).toMatch(/onSearchNames=\{\(\) => setModeChoice\("names"\)\}/);
   });
 });

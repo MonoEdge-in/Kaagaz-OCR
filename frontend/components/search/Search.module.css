@@ -86,3 +86,23 @@
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
+
+/* Issue 730: the files found, then the folders, each under a plain heading; a file's place in grey. */
+.groupHeading {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.place {
+  min-width: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.name .nameLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--h-lg); /* a full 44px target */
+}

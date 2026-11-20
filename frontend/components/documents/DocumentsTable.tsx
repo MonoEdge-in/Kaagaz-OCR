@@ -79,6 +79,7 @@ import { DOCUMENT_DRAG } from "./FolderNav";
 import { pathLabel, shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
+import { COPY_FAILED, copyFor, filePath } from "./copyPath";
 import { movableItems } from "./library";
 import type { EditAction, RowAction } from "./library";
 import type { SortKey, SortOrder } from "./libraryQuery";
@@ -946,6 +947,13 @@ const DocumentRow = memo(function DocumentRow({
       return;
     }
     if (action === "read") return; // only the document screen's menu offers it
+    if (action === "copyPath" || action === "copyLink") {
+      // #730: the line says how to use it, or that the browser would not copy.
+      void copyFor(action, filePath(tree, document), document.id).then((line) =>
+        line === COPY_FAILED ? setError(line) : events.onSaved(line),
+      );
+      return;
+    }
     if (action === "give" || action === "audience") {
       setSharing(action);
       return;

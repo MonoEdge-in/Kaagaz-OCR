@@ -38,7 +38,9 @@ export type RowAction =
   | "forever"
   | "read"
   | "give"
-  | "audience";
+  | "audience"
+  | "copyPath" // #730
+  | "copyLink";
 
 /** What each action does, in one plain line under it in the menu (plain words, 25 Oct 2026). */
 export const ACTION_HELP: Record<RowAction | "download", string> = {
@@ -54,6 +56,8 @@ export const ACTION_HELP: Record<RowAction | "download", string> = {
   forever: "Deletes it for good. It can't be recovered.",
   give: GIVE_HELP, // PRD 7 (#604)
   audience: AUDIENCE_HELP,
+  copyPath: "Copy where it is, to paste in Search and find it again.", // #730
+  copyLink: "Copy its address, for someone who can open it.",
 };
 
 /** PRD 7 (#604): the access items a menu may offer (accessAbilities: Give access is an admin
@@ -108,6 +112,8 @@ export function menuEntries(
         act("tags", "Tags"),
         act("version", "Upload new version"),
         ...(linkVersions ? [act("link", "Make it a version of…")] : []),
+        act("copyPath", "Copy path"), // #730
+        act("copyLink", "Copy link"),
       ];
   if (place === "document") {
     const kept = entries.filter((entry) => entry.kind === "action" && entry.action !== "version");
