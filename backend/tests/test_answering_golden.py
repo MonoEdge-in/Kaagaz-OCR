@@ -34,6 +34,7 @@ from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, Figure, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.answering.slots import POOL_PER_SLOT
+from kaagaz.answering.sources import SEARCHED_PIECES
 from kaagaz.db.engine import Database
 from kaagaz.db.models import Agent, ChatChoice
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -69,6 +70,7 @@ ANSWER_KEYS = {
     "assumptions",
 }
 DOCUMENT_KEYS = {"document_id", "title", "why", "citations"}  # PRD 6 A
+SOURCED_KEYS = {"pages", "path"}  # #718: an answered card's files only
 CITATION_KEYS = {
     "n",
     "kind",
@@ -565,7 +567,7 @@ def assert_well_formed(answer: Answer) -> None:
     """The properties every answer keeps, answered or not (no source, no answer)."""
     data = answer.to_json()
     # Changed on purpose (24 Oct 2026): an outage adds ``outage`` (KZ-006, never "busy").
-    assert set(data) - {"outage", "outage_reason"} == ANSWER_KEYS  # #535: a timeout says so
+    assert set(data) - {"outage", "outage_reason", "searched_files"} == ANSWER_KEYS  # #535, #719
     assert data.get("outage", True) is True and ("outage" in data) == answer.unavailable
     assert data["route"] in {"fixed_query", "search"}
     # PRD 6 A: v2, the opening is the API's, nothing assumed yet; at most 10 documents listed,
@@ -573,7 +575,8 @@ def assert_well_formed(answer: Answer) -> None:
     assert (data["version"], data["opening"], data["assumptions"]) == (2, None, [])
     assert len(data["documents"]) <= 10
     for doc in data["documents"]:
-        assert set(doc) == DOCUMENT_KEYS and doc["title"]
+        sourced = SOURCED_KEYS if data["status"] == "answered" else set()
+        assert set(doc) == DOCUMENT_KEYS | sourced and doc["title"]
         assert not any(ch.isdigit() for ch in doc["why"])
         owners = {c["document_id"] for c in data["citations"] if c["n"] in doc["citations"]}
         assert owners <= {doc["document_id"]}
@@ -797,9 +800,11 @@ def test_no_model_gives_the_extractive_answer() -> None:
     assert answer.citations[0].regions == INVOICE.regions
     assert answer.label == "verified"
     assert answer.normalized_question == "What is the grand total of INV-1042?"
-    assert retriever.calls == [
-        (A, "grand total inv-1042", None, POOL_PER_SLOT * SETTINGS.answer_max_evidence)
-    ]
+    # Changed on purpose (#719): the search fetches SEARCHED_PIECES of its fused list for the files
+    # searched; the evidence is chosen from its first POOL_PER_SLOT a slot (#722, test_ask_sources.py).
+    assert retriever.calls == [(A, "grand total inv-1042", None, SEARCHED_PIECES)]
+    pool = answer_service._evidence_limit("What is the grand total of INV-1042?", EVERYTHING)
+    assert pool == POOL_PER_SLOT * SETTINGS.answer_max_evidence
 
 
 def test_a_model_answer_is_used_and_cited() -> None:

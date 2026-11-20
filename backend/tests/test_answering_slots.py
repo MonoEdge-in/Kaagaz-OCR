@@ -10,6 +10,7 @@ from kaagaz.answering.expansion import NO_EXPANSION
 from kaagaz.answering.hinglish import normalise
 from kaagaz.answering.service import AnswerService
 from kaagaz.answering.slots import POOL_PER_SLOT, Kind, evidence_slots, question_kind, spread
+from kaagaz.answering.sources import SEARCHED_PIECES
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.scope import EVERYTHING
 from tests.test_answering_context import (
@@ -68,8 +69,9 @@ def test_fewer_hits_than_slots_keeps_them_all_in_order() -> None:
 
 
 def test_the_service_spreads_the_hits_then_adds_topic_pieces_and_neighbours() -> None:
-    """The search is asked for POOL_PER_SLOT hits a slot; the draft reads the spread hits, then the
-    topic pieces, then the neighbours, each numbered after them (CX6 and Q4 unchanged)."""
+    """The search fetches SEARCHED_PIECES (the files searched, #719) and the evidence is chosen from
+    its first POOL_PER_SLOT a slot; the draft reads the spread hits, then the topic pieces, then the
+    neighbours, each numbered after them (CX6 and Q4 unchanged)."""
     settings = dataclasses.replace(SEARCH_ONLY, answer_max_evidence=3)
     crowd = [page(9, f"Casual leave days, rule {at}.", seq=at) for at in range(5)]  # one page, best first
     theirs = page(2, "Casual leave: 10 a year.", document="staff-rules.pdf")  # ranked 6th
@@ -80,9 +82,11 @@ def test_the_service_spreads_the_hits_then_adds_topic_pieces_and_neighbours() ->
     context = FakeContext([*crowd, topic], topics=[("leave", ("maternity leave",), [crowd[0], topic])])
     model = Routed(cites(("Casual leave is 10 days a year.", theirs.text)))
 
-    answers(retriever, context, model, settings).answer(A, "Casual leave days?")
+    service = answers(retriever, context, model, settings)
+    service.answer(A, "Casual leave days?")
 
-    assert {call[3] for call in retriever.calls} == {POOL_PER_SLOT * 3}
+    assert {call[3] for call in retriever.calls} == {SEARCHED_PIECES}
+    assert service._evidence_limit("Casual leave days?", EVERYTHING) == POOL_PER_SLOT * 3
     order = [crowd[0], crowd[1], theirs, topic, near]
     assert blocks(model.drafted[0]) == [hit.text for hit in draft.edges(order)]
 
@@ -169,9 +173,11 @@ def test_the_service_searches_and_keeps_the_kind_s_slots(question: str, slots: i
     retriever = Fused(sellers)
     model = Routed(cites())
 
-    answers(retriever, FakeContext(sellers), model, settings).answer(A, question)
+    service = answers(retriever, FakeContext(sellers), model, settings)
+    service.answer(A, question)
 
-    assert {call[3] for call in retriever.calls} == {POOL_PER_SLOT * slots}
+    assert {call[3] for call in retriever.calls} == {SEARCHED_PIECES}
+    assert service._evidence_limit(question, EVERYTHING) == POOL_PER_SLOT * slots
     assert len(blocks(model.drafted[0])) == slots
 
 
@@ -185,3 +191,21 @@ def test_a_which_documents_question_keeps_its_own_count() -> None:
 
     assert {call[3] for call in retriever.calls} == {MAX_LIMIT}
     assert len(blocks(model.drafted[0])) == 8
+
+
+def test_a_hit_fetched_past_the_pool_is_never_evidence_but_may_be_a_file_searched() -> None:
+    """The merge of #719 and #722: the search fetches SEARCHED_PIECES for the files searched, but
+    ``spread`` picks the slots from the first POOL_PER_SLOT a slot only, so the hit just past the
+    pool is never read, even where spreading over pages would take it."""
+    settings = dataclasses.replace(SEARCH_ONLY, answer_max_evidence=3)  # 3 slots, a pool of 9
+    crowd = [page(9, f"Casual leave days, rule {at}.", seq=at) for at in range(POOL_PER_SLOT * 3)]
+    past = page(2, "Casual leave: 10 a year.", document="staff-rules.pdf")  # rank 10: the pool + 1
+    retriever = Fused([*crowd, past])
+    model = Routed(cites((crowd[0].text, crowd[0].text)))
+
+    answer = answers(retriever, FakeContext([]), model, settings).answer(A, "Casual leave days?")
+
+    assert {call[3] for call in retriever.calls} == {SEARCHED_PIECES}
+    # From the 50 it would be crowd[0], crowd[1] and past; from the pool, a third crowd piece.
+    assert blocks(model.drafted[0]) == [hit.text for hit in draft.edges(crowd[:3])]
+    assert "staff-rules.pdf" in {row["name"] for row in answer.searched_files}

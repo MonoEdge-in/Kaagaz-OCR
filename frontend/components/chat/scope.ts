@@ -9,7 +9,7 @@
 // it, or when chat was opened with "Ask about this document". The server
 // resolves every id again for this customer.
 
-import { pathLabel } from "@/components/documents/folderTree";
+import { inTreeOrder, pathLabel } from "@/components/documents/folderTree";
 import type { FolderTree } from "@/components/documents/folderTree";
 import type { Message, ScopeBody } from "@/lib/types";
 
@@ -155,4 +155,23 @@ export function scopeAnnouncement(state: ScopeState, text: string, namesLoading:
 export function scopeLockedText(answerPending: boolean, conversationLoading: boolean): string | null {
   if (answerPending) return "You can change this once the answer arrives.";
   return conversationLoading ? "You can change this once the conversation loads." : null;
+}
+
+/** #720: "Find a folder by name or path": the folders whose path (its name too) holds `query`,
+ * any case, in tree order, at most `most`; none for an empty query. O(f * d) for f folders of
+ * depth d, stopping at the `most`th match. */
+export function findFolders(
+  tree: FolderTree,
+  query: string,
+  most = 8,
+): { id: string; name: string; path: string }[] {
+  const wanted = query.trim().toLocaleLowerCase();
+  const found: { id: string; name: string; path: string }[] = [];
+  if (!wanted) return found;
+  for (const node of inTreeOrder(tree)) {
+    const path = pathLabel(tree, node.folder.id);
+    if (path.toLocaleLowerCase().includes(wanted)) found.push({ id: node.folder.id, name: node.folder.name, path });
+    if (found.length === most) break;
+  }
+  return found;
 }
