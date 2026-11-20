@@ -332,6 +332,8 @@ export type UploadState =
   | { kind: "restoring"; documentId: string; existingName: string }
   // #697: into, the folder the upload was going to, where Restore moved it; notMoved, why it stayed where it was.
   | { kind: "restored"; documentId: string; existingName: string; into?: string; notMoved?: string }
+  // #713: sent, then cancelled from the tray: moved to Trash (Upload again, or restore it from Trash).
+  | { kind: "cancelled"; documentId: string }
   // retry: it was not sent (the connection or the server), and this tab still has the file.
   | { kind: "error"; message: string; retry?: boolean };
 
@@ -363,7 +365,7 @@ export function uploadStateText(state: UploadState): string {
     case "done": {
       const { document } = state;
       if (!document) return "Uploaded";
-      if (document.status !== "ready") return document.failure_code === "customer_disabled" ? "Stopped" : "Not read";
+      if (document.status !== "ready") return ["customer_disabled", "stopped"].includes(document.failure_code ?? "") ? "Stopped" : "Not read"; // #713
       return document.first_unreadable ? `Page ${document.first_unreadable.page_no} to check` : "Ready";
     }
     case "duplicate":
@@ -376,6 +378,8 @@ export function uploadStateText(state: UploadState): string {
       return "Restoring";
     case "restored":
       return "Restored from Trash";
+    case "cancelled":
+      return "Cancelled"; // #713
     case "error":
       return state.retry ? "Not sent" : "Not uploaded";
   }

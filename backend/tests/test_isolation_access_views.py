@@ -542,6 +542,7 @@ _ROUTES: list[tuple[str, str, Any]] = [
     ("GET", "/api/documents/{d}/ensemble/estimate?scope=document", None),
     ("GET", "/api/documents/{d}/compare?with={v}", None),
     ("POST", "/api/documents/{d}/reprocess", None),
+    ("POST", "/api/documents/{d}/stop", None),  # Changed on purpose (#713): Stop
     ("POST", "/api/documents/{d}/pages/1/read-again", None),
     ("POST", "/api/documents/{d}/pages/1/accept", None),
     ("POST", "/api/documents/{d}/autofile/undo", None),
