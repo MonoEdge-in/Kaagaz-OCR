@@ -90,7 +90,11 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/documents.py", "REFUSED_ALONE"): (DUPLICATE_LOOKUP, "a refused copy is replaced, not a duplicate"),
     ("db/documents.py", "_REFUSED_COPY"): (DUPLICATE_LOOKUP, "a refused copy is replaced, not a duplicate"),
     ("db/documents.py", "_READY_STATE"): (SHARED_WITH_WORKER, "the pipeline's store; the upload's own row"),
-    ("db/documents.py", "_READ_BEFORE"): (SHARED_WITH_WORKER, "the pipeline's store; the upload's own row"),
+    # Changed on purpose (#713): Stop reads it too, after _document_or_404.
+    ("db/documents.py", "_READ_BEFORE"): (
+        SHARED_WITH_WORKER,
+        "the pipeline's store; the upload's own row; POST /documents/{id}/stop: _document_or_404 first",
+    ),
     ("db/documents.py", "_REPROCESS_STATE"): (
         WRITE_AFTER_CHECK,
         "reprocess and read again: _document_or_404 first",
@@ -98,6 +102,12 @@ ALLOWED: dict[tuple[str, str], tuple[str, str]] = {
     ("db/documents.py", "_ENSEMBLE_RUNNING"): (
         SHARED_WITH_WORKER,
         "reprocess and read again: _document_or_404 first",
+    ),
+    # Changed on purpose (#713): Stop's change returns the rows it stopped (RETURNING id), for Stop and
+    # Move to Trash (DELETE /documents/{id}, under the family lock after _document_or_404).
+    ("db/trash.py", "_STOP_READING"): (
+        WRITE_AFTER_CHECK,
+        "POST /documents/{id}/stop and DELETE /documents/{id}: _document_or_404 first",
     ),
     ("db/documents.py", "_REQUEST_PAGE"): (
         WRITE_AFTER_CHECK,
@@ -438,6 +448,9 @@ NOT_EXISTS_CHECKED: dict[tuple[str, str], str] = {
     ("db/listing.py", "_NEEDS_ATTENTION"): "SAME:the visible document's own word changes",
     ("db/chat.py", "MARKS"): "SAME:the visible document's own learning removals",
     ("db/documents.py", "REFUSED_ALONE"): _ALL_OR_NONE,
+    # Changed on purpose (#713): Stop and Move to Trash ask whether the file was read before (a ready
+    # run of its own), after the route found it through the view.
+    ("db/trash.py", "_STOP_READING"): "SAME:the visible document's own runs",
     ("db/folder_uploads.py", "_INSERT_LEVEL"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
     ("db/folders.py", "_FREE"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",
     ("db/folders.py", "_MOVE_FREE"): "FEWER_OK:Q12, a hidden sibling's name meets its unique index",

@@ -611,8 +611,9 @@ class DocumentStore(Protocol):
         ...
 
     def still_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
-        """PRD 7 (#605): the run is still running and the version not locked (one indexed
-        query): checked before each model step, so a lock stops what is sent to an AI."""
+        """PRD 7 (#605): the run is still running and the version not locked, nor in Trash (#713;
+        one indexed query): checked before each model step, so a lock, a Stop (it closes the run)
+        or a Cancel (it moves the file to Trash) stops what is sent to an AI."""
         ...
 
     def file_document(self, customer_id: str, document_id: str) -> None:
@@ -1095,6 +1096,10 @@ class DocumentProcessor:
             # PRD 7 (#605): the first progress write takes the family lock, so a lock under way is
             # waited for; the record read again after it says whether a lock came since ``get``.
             self._progress(job, run, "scanning", 0, 1)
+            # #713: a Stop (or a Cancel) that came after the check above and before this run
+            # started never closed this run: seen here, after the family lock the progress took.
+            if self._statuses.get_status(job.customer_id, job.document_id) in _SETTLED:
+                raise Superseded(run.run_id or "")
             record = self._documents.get(job.customer_id, job.document_id) or record
             if record.locked:
                 self._prepare_locked(job, record, heartbeat, run)  # PRD 7 (#605): never read
@@ -1271,7 +1276,10 @@ class DocumentProcessor:
             content = DocumentContent(customer_id, document_id, pages, [], [], [], reader="")
             self._store.save(content, run_id=run.run_id)
             self._documents.set_page_count(customer_id, document_id, len(pages))
-            self._statuses.set_status(customer_id, document_id, DocumentStatus.NEEDS_READER)
+            # #713: fenced, so a Stop since require_clean is never turned into needs_reader.
+            self._statuses.set_status(
+                customer_id, document_id, DocumentStatus.NEEDS_READER, run_id=run.run_id
+            )
             self._close_run(job, run, "needs_reader", None)
             return
         if self._ocr_meter is not None:
@@ -1413,7 +1421,8 @@ class DocumentProcessor:
 
     def _still_open(self, job: Job, run: _Run) -> None:
         """PRD 7 (#605): before a step that sends the file to a model, Superseded unless its run
-        is still open and the version not locked. A call already in flight can't be called back."""
+        is still open and the version not locked nor in Trash (#713). A call already in flight
+        can't be called back."""
         if run.run_id is not None and not self._documents.still_open(
             job.customer_id, job.document_id, run.run_id
         ):

@@ -25,6 +25,8 @@ from datetime import datetime
 
 from sqlalchemy import Connection, text
 
+from kaagaz.db.runs import close_running
+
 _LOCK_FAMILY = (
     "SELECT family_id FROM documents WHERE customer_id = :c"
     " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
@@ -146,12 +148,51 @@ def lock_live_family(conn: Connection, customer_id: str, document_id: str) -> st
 def trash_document(conn: Connection, customer_id: str, document_id: str, *, by: str, now: datetime) -> bool:
     """Move the document's whole family to Trash at ``now``, by user ``by``.
     False if there is no such document. A family already in Trash is left as it
-    was (still True). O(v log D) time, O(v) space."""
+    was (still True). #713: a version still waiting, checked or read for the first time is
+    stopped first (``stop_reading``), so it never sits as "Reading" once restored; one read before
+    goes on as it did. O(v log D) time, O(v) space."""
     family_id = lock_family(conn, customer_id, document_id)
     if family_id is None:
         return False
+    stop_reading(conn, customer_id, family_id, now=now)
     conn.execute(text(_TRASH), {"c": customer_id, "f": family_id, "by": by, "now": now})
     return True
+
+
+# --- Stop (#713), shared by Stop and Move to Trash -----------------------------------------
+
+STOPPED = "stopped"
+# The family's versions (or the one named) still waiting, checked or read for the first time, out
+# of Trash and not locked. One read before (a ready run, as documents._READ_BEFORE) is never
+# stopped: its reading again goes on (Tushar, 20 Nov 2026). A hold of the reading pause ends too.
+_STOP_READING = (
+    "UPDATE documents d SET status = 'failed', failure_code = 'stopped', reading_held = NULL"
+    " WHERE d.customer_id = :c AND d.family_id = :f AND (CAST(:d AS uuid) IS NULL OR d.id = CAST(:d AS uuid))"
+    " AND d.status IN ('received', 'clean') AND d.deleted_at IS NULL AND d.locked_at IS NULL"
+    " AND NOT EXISTS (SELECT 1 FROM processing_runs r WHERE r.customer_id = :c"
+    " AND r.document_id = d.id AND r.status = 'ready') RETURNING d.id"
+)
+_CLEAR_READ_AGAIN = (
+    "UPDATE pages SET read_again_requested_at = NULL, read_again_regions = NULL"
+    " WHERE customer_id = :c AND document_id = :d AND read_again_requested_at IS NOT NULL"
+)
+
+
+def stop_reading(
+    conn: Connection, customer_id: str, family_id: str, *, now: datetime, document_id: str | None = None
+) -> list[str]:
+    """Stop (#713) the family's versions (``document_id`` alone, when given) still waiting, checked or
+    read for the first time: failed with ``stopped``, their runs still ``running`` ended failed
+    with the same code, their read-again marks cleared (as ``documents.fail_stuck``). A worker on
+    one stops at its next step (its run is closed); a queued job is skipped (the status is
+    settled); the stuck sweep never takes it (failed). The caller holds the family lock. The ids
+    stopped. 1 + 2k statements for k stopped."""
+    params = {"c": customer_id, "f": family_id, "d": document_id}
+    stopped = [str(row[0]) for row in conn.execute(text(_STOP_READING), params)]
+    for each in stopped:
+        close_running(conn, customer_id, each, status="failed", error_code=STOPPED, now=now)
+        conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": each})
+    return stopped
 
 
 def trash_in_folders(

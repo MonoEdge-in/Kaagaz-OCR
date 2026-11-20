@@ -90,6 +90,7 @@ const FIXES: Record<string, string> = {
   unreadable: "Upload a sharper scan.",
   ocr_failed: "Read it again, or upload a clearer scan.",
   customer_disabled: "Read it again.",
+  stopped: "Read it again.", // #713: Stop
   office_unreadable: "Remove its password, or save it again and upload that copy.", // #522 PR 2
   password_protected: "Remove the password and upload it again.",
   too_large: "Split it into smaller files and upload them.",

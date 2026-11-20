@@ -53,6 +53,7 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
   "document.autofile": (entry) => `filed it in ${place(entry) ?? "a folder"}`,
   "document.autofile_undo": () => "undid the automatic filing",
   "document.reprocess": () => "asked to read it again",
+  "document.stop": () => "stopped reading it", // #713
   // #600: pages is how many pages the save changed, turned how many are left turned after it.
   "document.page_turns": ({ details: { pages, turned } }) => {
     if (turned === 0) return "put the pages back as scanned";
