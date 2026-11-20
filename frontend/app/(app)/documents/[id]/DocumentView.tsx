@@ -57,6 +57,7 @@ import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
 import { FILED_HERE_TEXT, undoErrorText } from "@/components/documents/batchTray";
 import { UNDERSTANDING_TEXT } from "@/components/documents/logic";
+import { StopCancel } from "@/components/documents/StopCancel";
 import { TimeLeft } from "@/components/documents/TimeLeft";
 import { AutofileNote } from "@/components/documents/UploadArea";
 import { Icon } from "@/components/ui/Icon";
@@ -571,7 +572,7 @@ export function DocumentView({
         ? { href: libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id }), name: folder.name }
         : { href: "/documents", name: "documents" });
   const next = nextDocumentHref(nextParam);
-  const chip = statusChip(detail.status, detail.detected_type);
+  const chip = statusChip(detail.status, detail.detected_type, detail.failure_code);
   const barSaysStatus = detail.status !== "rejected" && review.status !== null && review.status.status !== "ready";
   // Trash means deleted: no download from there, only Restore (the Trash view).
   const download = detail.deleted_at === null ? downloadHref(detail) : null;
@@ -746,6 +747,19 @@ export function DocumentView({
               )}
               {position && <span className={styles.meta}>{versionText(position)}</span>}
             </p>
+            {/* #713: while it is read, Stop (it stays here) or Cancel (to Trash), each asked first. */}
+            {beingRead(detail.status) && detail.deleted_at === null && (
+              <StopCancel
+                documentId={detail.id}
+                name={detail.display_name}
+                canStop={canReview(me.user.role)}
+                canCancel={detail.can_delete}
+                onDone={(message) => {
+                  focusAfterReload();
+                  reloadWith(message);
+                }}
+              />
+            )}
             <AutofileNote
               document={detail}
               name={detail.display_name}

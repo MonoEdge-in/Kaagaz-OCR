@@ -111,9 +111,10 @@ export function beingRead(status: DocumentStatus): boolean {
 
 /** Said once when reading ends while the viewer is open; again: after Read again. */
 export function settledText(
-  document: { status: DocumentStatus; status_message: string; values: readonly { label: Label }[] },
+  document: { status: DocumentStatus; status_message: string; values: readonly { label: Label }[]; failure_code?: string | null },
   again: boolean,
 ): string {
+  if (document.failure_code === "stopped") return document.status_message; // #713: stopped on purpose
   if (document.status !== "ready") return `Reading failed. ${document.status_message}`;
   const found = document.values.length;
   const review = document.values.filter((value) => value.label === "needs_review").length;
