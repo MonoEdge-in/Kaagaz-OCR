@@ -822,7 +822,7 @@ li:has(> .menuItem.danger) {
   padding-block-end: var(--space-2);
 }
 
-/* #725: "Ask in this folder", under the place's hints; a full 44px target. */
+/* Issue 725: "Ask in this folder", under the place's hints; a full 44px target. */
 .askHere {
   align-self: flex-start;
   min-height: var(--h-lg);
