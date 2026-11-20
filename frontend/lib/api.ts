@@ -439,6 +439,9 @@ export const restoreDocument = (id: string) =>
  */
 export const reprocessDocument = (id: string, reading?: UploadReading) =>
   request<DocumentSummary>("POST", `/documents/${id}/reprocess`, reading);
+/** #713: stop reading a file still waiting, being checked or read (a reviewer or an admin; 409
+ * not_stoppable, in_trash or locked otherwise). The reply: failed with ``stopped``; Read again starts it again. */
+export const stopDocument = (id: string) => request<DocumentSummary>("POST", `/documents/${id}/stop`);
 /**
  * An admin session with two-step sign-in, or a granted user who just confirmed
  * their password (403 otherwise), and only from Trash (409 not_in_trash

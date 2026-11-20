@@ -18,15 +18,16 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from unittest import mock
 
 import pytest
 from sqlalchemy import text
 
-from kaagaz.db.documents import PgDocuments, mark_for_reprocess
+from kaagaz.db.documents import NotStoppable, PgDocuments, mark_for_reprocess, stop_reading
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns
-from kaagaz.db.trash import lock_family, restore_document
+from kaagaz.db.trash import lock_family, restore_document, trash_document
 from kaagaz.extraction.card import CARD_PROMPT_HASH
 from kaagaz.extraction.understanding import ModelBudget
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -491,6 +492,206 @@ def test_a_stale_delivery_after_a_reprocess_does_not_fail_the_document(db: Datab
         None,
     )
     assert runs_of(db, customer, doc) == [("superseded", None), ("ready", None), ("ready", None)]
+
+
+# --- #713: Stop and Cancel -----------------------------------------------------------------
+
+
+def _uploaded(db: Database) -> tuple[str, str, str, MemoryStorage]:
+    """(customer, its admin, a CSV uploaded and not read yet, its storage)."""
+    customer, admin = new_customer(db)
+    storage = MemoryStorage()
+    upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
+    return (
+        customer,
+        admin,
+        upload.accept(customer, io.BytesIO(CSV), display_name=CSV_NAME).document_id,
+        storage,
+    )
+
+
+def _stop(db: Database, customer: str, doc: str) -> None:
+    with db.customer(customer) as conn:
+        stop_reading(conn, customer, doc, now=moving_clock())
+
+
+def _trash(db: Database, customer: str, admin: str, doc: str) -> None:
+    with db.customer(customer) as conn:  # Cancel: Move to Trash
+        assert trash_document(conn, customer, doc, by=admin, now=moving_clock())
+
+
+def _revive(db: Database, customer: str) -> list[Job]:
+    """The stuck sweep with no wait at all: what it would ever take of this customer's."""
+    sent: list[Job] = []
+    revive_stuck(
+        db, lambda job, tries: sent.append(job), lambda c: c != customer, stale_seconds=0, max_attempts=5
+    )
+    return sent
+
+
+STATE = "SELECT status, failure_code, deleted_at IS NOT NULL FROM documents WHERE id = :d"
+
+
+def test_713_a_queued_job_of_a_stopped_file_reads_nothing_and_no_sweep_takes_it(db: Database) -> None:
+    customer, _, doc, storage = _uploaded(db)
+    _stop(db, customer, doc)
+
+    with_runs(db, storage)(Job(customer, doc), lambda: None)  # acknowledged: settled, never read
+
+    assert one(db, customer, STATE, doc) == ("failed", "stopped", False)
+    assert runs_of(db, customer, doc) == []
+    assert counts(db, customer, doc)["pages"] == 0
+    assert _revive(db, customer) == []  # failed: never revived
+
+
+def test_713_a_reading_under_way_stops_at_its_next_step_when_stopped_and_read_again_resumes_it(
+    db: Database,
+) -> None:
+    customer, _, doc, storage = _uploaded(db)
+    held = GatedSocket(real_socket())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        delivery = pool.submit(with_runs(db, storage, held), Job(customer, doc), lambda: None)
+        assert held.entered.wait(timeout=10)  # scanned, its run open, the reader on it
+        _stop(db, customer, doc)
+        held.release.set()  # the call in flight finishes
+        delivery.result(timeout=20)  # acknowledged: no error, so no retry
+
+    assert one(db, customer, STATE, doc) == ("failed", "stopped", False)
+    assert runs_of(db, customer, doc) == [("failed", "stopped")]
+    assert counts(db, customer, doc)["pages"] == 0  # nothing of the reading saved
+    assert _revive(db, customer) == []
+
+    read_again(db, customer, doc)
+    with_runs(db, storage)(Job(customer, doc), lambda: None)
+    assert one(db, customer, STATE, doc) == ("ready", None, False)
+    assert runs_of(db, customer, doc) == [("failed", "stopped"), ("ready", None)]
+
+
+def test_713_a_cancel_stops_a_reading_under_way_and_restored_it_is_stopped_with_read_again(
+    db: Database,
+) -> None:
+    """Move to Trash stops it first (trash.stop_reading): restored, it says Stopped at once, never
+    "Reading" until the stuck sweep, and Read again reads it."""
+    customer, admin, doc, storage = _uploaded(db)
+    held = GatedSocket(real_socket())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        delivery = pool.submit(with_runs(db, storage, held), Job(customer, doc), lambda: None)
+        assert held.entered.wait(timeout=10)
+        _trash(db, customer, admin, doc)
+        held.release.set()
+        delivery.result(timeout=20)
+
+    assert one(db, customer, STATE, doc) == ("failed", "stopped", True)
+    assert runs_of(db, customer, doc) == [("failed", "stopped")]
+    assert counts(db, customer, doc)["pages"] == 0
+    assert _revive(db, customer) == []
+
+    with db.customer(customer) as conn:
+        assert restore_document(conn, customer, doc, by=admin)
+    assert one(db, customer, STATE, doc) == ("failed", "stopped", False)  # at once, no sweep
+    read_again(db, customer, doc)
+    with_runs(db, storage)(Job(customer, doc), lambda: None)
+    assert one(db, customer, STATE, doc) == ("ready", None, False)
+
+
+def test_713_a_queued_job_of_a_cancelled_file_reads_nothing(db: Database) -> None:
+    customer, admin, doc, storage = _uploaded(db)
+    _trash(db, customer, admin, doc)
+    with_runs(db, storage)(Job(customer, doc), lambda: None)
+    assert one(db, customer, STATE, doc) == ("failed", "stopped", True)
+    assert runs_of(db, customer, doc) == []
+    assert counts(db, customer, doc)["pages"] == 0
+
+
+def test_713_a_file_read_before_is_never_stopped_and_its_trash_keeps_todays_rule(db: Database) -> None:
+    """Tushar, 20 Nov 2026: a file being read again after a reading that finished can't be stopped,
+    and Move to Trash doesn't stop it either: the reading goes on to ready (as before #713)."""
+    customer, admin, doc, storage = _uploaded(db)
+    with_runs(db, storage)(Job(customer, doc), lambda: None)
+    read_again(db, customer, doc)
+    with db.customer(customer) as conn, pytest.raises(NotStoppable) as refused:
+        stop_reading(conn, customer, doc, now=moving_clock())
+    assert refused.value.read_before
+    assert one(db, customer, STATE, doc) == ("received", None, False)
+
+    held = GatedSocket(real_socket())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        delivery = pool.submit(with_runs(db, storage, held), Job(customer, doc), lambda: None)
+        assert held.entered.wait(timeout=10)
+        _trash(db, customer, admin, doc)
+        held.release.set()
+        delivery.result(timeout=20)
+    assert one(db, customer, STATE, doc) == ("ready", None, True)
+    assert runs_of(db, customer, doc) == [("ready", None), ("ready", None)]
+
+
+def test_713_a_stop_during_the_virus_check_stops_it(db: Database) -> None:
+    customer, _, doc, storage = _uploaded(db)
+    scanner = GatedScanner()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        delivery = pool.submit(with_runs(db, storage, scanner=scanner), Job(customer, doc), lambda: None)
+        assert scanner.entered.wait(timeout=10)
+        _stop(db, customer, doc)
+        scanner.release.set()
+        delivery.result(timeout=20)  # acknowledged
+
+    assert one(db, customer, STATE, doc) == ("failed", "stopped", False)
+    assert runs_of(db, customer, doc) == [("failed", "stopped")]
+    assert counts(db, customer, doc)["pages"] == 0
+
+
+def test_713_a_stop_just_before_the_run_starts_is_seen_and_nothing_is_read(db: Database) -> None:
+    """The Stop commits after the worker found the file still in progress and before its run
+    starts, so it closed no run of this delivery: the worker sees it and reads nothing."""
+    customer, _, doc, storage = _uploaded(db)
+    start = PgRuns.start
+
+    def stop_then_start(self: PgRuns, customer_id: str, document_id: str, *, now: datetime) -> str:
+        _stop(db, customer_id, document_id)
+        return start(self, customer_id, document_id, now=now)
+
+    with mock.patch.object(PgRuns, "start", stop_then_start):
+        with_runs(db, storage)(Job(customer, doc), lambda: None)  # acknowledged
+
+    assert one(db, customer, STATE, doc) == ("failed", "stopped", False)
+    assert runs_of(db, customer, doc) == [("superseded", None)]
+    assert counts(db, customer, doc)["pages"] == 0
+
+
+class TrashingChat(FakeChat):
+    """The card's model call, during which the ready file is moved to Trash."""
+
+    def __init__(self, trash: Callable[[], None], *replies: dict[str, Any]) -> None:
+        super().__init__(*replies)
+        self._trash: Callable[[], None] | None = trash
+
+    def chat_json(self, **kwargs: Any) -> dict[str, Any]:
+        trash, self._trash = self._trash, None
+        if trash is not None:
+            trash()
+        return super().chat_json(**kwargs)
+
+
+def test_713_a_ready_file_moved_to_trash_while_it_is_understood_keeps_its_card(db: Database) -> None:
+    """Ready first: Trash during the card and map never stops a ready file's understanding (the
+    worker's check before each model step looks at the run and the lock only)."""
+    customer, admin = new_customer(db)
+    storage = MemoryStorage()
+    upload = UploadService(PIPELINE_POLICY, PgDocuments(db), storage, MemoryQueue())
+    doc = upload.accept(customer, io.BytesIO(_receipt("Cotton cloth")), display_name=CSV_NAME).document_id
+    budget = ModelBudget(card_max_chars=12000, card_max_tokens=1024, num_ctx=8192, invoice_windows=None)
+    chat = TrashingChat(lambda: _trash(db, customer, admin, doc), RECEIPT_CARD)
+    processor = with_runs(db, storage, build_reader_socket(SETTINGS, None), chat=chat, model_budget=budget)
+    processor(Job(customer, doc), lambda: None)
+
+    assert one(
+        db, customer, "SELECT status, doc_type, deleted_at IS NOT NULL FROM documents WHERE id = :d", doc
+    ) == (
+        "ready",
+        "receipt",
+        True,
+    )
+    assert runs_of(db, customer, doc) == [("ready", None)]
 
 
 class GatedScanner(FakeScanner):

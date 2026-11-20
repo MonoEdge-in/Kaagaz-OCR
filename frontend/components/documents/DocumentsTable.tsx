@@ -1394,7 +1394,8 @@ export function StatusCell({
 }) {
   const retry = onRetry && !inTrash && (document.status === "failed" || document.stuck === true) && (
     <button type="button" className={styles.statusAction} onClick={onRetry} disabled={busy}>
-      Retry<span className="visually-hidden">{` ${document.display_name}`}</span>
+      {document.failure_code === "stopped" ? "Read again" : "Retry"}
+      <span className="visually-hidden">{` ${document.display_name}`}</span>
     </button>
   );
   if (beingRead(document.status) && document.deleted_at === null) {
@@ -1450,7 +1451,7 @@ export function StatusCell({
   return (
     <span className={styles.statusContent}>
       <span className={styles.statusLine}>
-        <StatusChip status={document.status} detectedType={document.detected_type} />
+        <StatusChip status={document.status} detectedType={document.detected_type} failureCode={document.failure_code} />
       </span>
       <span className={styles.statusLine}>
         <span className={styles.statusText} title={document.status_message}>

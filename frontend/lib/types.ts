@@ -208,6 +208,8 @@ export interface DocumentSummary {
   understanding?: boolean; // Ready first (16 Oct 2026): ready and usable, its card and map still coming
   // Issue 407: still being read 6 hours after it was uploaded or last read again, so it may be read again (Retry).
   stuck?: boolean;
+  // #713: being read again after a reading that finished: it is never stopped (Tushar, 20 Nov 2026).
+  read_before?: boolean;
   // PRD 7 (#605): locked: found by its name only, never read, opened only as page pictures (PR 13).
   locked?: boolean;
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
