@@ -216,12 +216,12 @@ describe("the counts (#713)", () => {
     expect(queue.finished).toEqual({ uploaded: 0, already: 0, failed: 0 }); // the drop settles
   });
 
-  it("forgets who stopped a file once it is read again, so a later Stop by someone else is not 'by you'", () => {
+  it("keeps 'by you' on a row stopped here when a poll read before the Stop still says it is being read", () => {
     let queue = queueReducer(EMPTY_QUEUE, { type: "add", entries: [mine("s")] });
     queue = queueReducer(queue, { type: "batch", batchId: BATCH, documents: [doc("s", { status: "received" })], add: false });
-    expect(queue.entries[0]?.byYou).toBe(false);
     queue = queueReducer(queue, { type: "batch", batchId: BATCH, documents: [stoppedDoc("s")], add: false });
-    expect(trayResultText(queue.entries)).toBe(""); // stopped, but not from this tab this time
+    expect(queue.entries[0]?.byYou).toBe(true);
+    expect(trayResultText(queue.entries)).toBe("1 stopped."); // counted as stopped by you
   });
 });
 
@@ -694,7 +694,7 @@ describe("stopping and cancelling through the queue (#713)", () => {
   });
 
   it("forgets an ask when the upload fails, so a Retry never promises a Stop that won't come", async () => {
-    let fail = (_: unknown) => undefined as void;
+    let fail: (error: unknown) => void = () => undefined;
     api.uploadDocument.mockImplementation(() => new Promise((_, reject) => (fail = reject)));
     const uploads = await mount();
     await act(async () => void uploads.current().addFiles([new File(["x"], "a.pdf")]));

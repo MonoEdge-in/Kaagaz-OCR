@@ -130,8 +130,7 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
         if (entry.state.kind === "cancelled" && beingRead(document.status)) return entry;
         const state = followed(document);
         if (isFiled(state) && !isFiled(entry.state)) filed += 1;
-        // #713: read again (by anyone): a later Stop is not "by you" unless pressed here again.
-        return { ...entry, state, byYou: state.kind === "reading" ? false : entry.byYou };
+        return { ...entry, state };
       });
       const added = event.add
         ? event.documents
