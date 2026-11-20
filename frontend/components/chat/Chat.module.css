@@ -1952,3 +1952,33 @@
   color: inherit;
   font-weight: 600;
 }
+
+/* Issue 720 (design board 3): the folders a find matches, each a button of its name over its path. */
+.folderMatches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.folderMatch {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  min-height: var(--h-lg);
+  height: auto;
+  padding: var(--space-1) var(--space-2);
+  text-align: start;
+}
+
+.folderMatchName {
+  font-weight: 600;
+}
+
+.removeScope {
+  min-width: var(--h-lg);
+  min-height: var(--h-lg);
+}
