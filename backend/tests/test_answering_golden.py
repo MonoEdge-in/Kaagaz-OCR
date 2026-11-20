@@ -33,6 +33,7 @@ from kaagaz.answering.evidence import number_evidence
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, Figure, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
+from kaagaz.answering.slots import POOL_PER_SLOT
 from kaagaz.db.engine import Database
 from kaagaz.db.models import Agent, ChatChoice
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -796,7 +797,9 @@ def test_no_model_gives_the_extractive_answer() -> None:
     assert answer.citations[0].regions == INVOICE.regions
     assert answer.label == "verified"
     assert answer.normalized_question == "What is the grand total of INV-1042?"
-    assert retriever.calls == [(A, "grand total inv-1042", None, SETTINGS.answer_max_evidence)]
+    assert retriever.calls == [
+        (A, "grand total inv-1042", None, POOL_PER_SLOT * SETTINGS.answer_max_evidence)
+    ]
 
 
 def test_a_model_answer_is_used_and_cited() -> None:

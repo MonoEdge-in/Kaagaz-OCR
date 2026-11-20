@@ -286,6 +286,7 @@ from kaagaz.answering.rewrite import MAX_QUESTION, Rewritten, Turn, rewrite_and_
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from kaagaz.answering.sanitize import clean_snippet, clean_text
+from kaagaz.answering.slots import POOL_PER_SLOT, spread
 from kaagaz.answering.stream import Events, StreamingModel, draft_streamed
 from kaagaz.answering.totals import tell
 from kaagaz.answering.translate import target_scripts, translate
@@ -1934,7 +1935,8 @@ class AnswerService:
         the aspects (CX6), searched with them."""
         if self._translator is None or self._translated is None:
             return None
-        scripts = target_scripts(question, [hit.text for hit in hits])
+        first = hits if asks_documents(question) else hits[: self._slots(question)]  # as before #722's pool
+        scripts = target_scripts(question, [hit.text for hit in first])
         queries = translate(self._translator, question, scripts) if scripts else None
         if not queries:
             return None
@@ -1975,12 +1977,19 @@ class AnswerService:
         )
 
     def _search_limit(self, question: str, scope: Scope, exclude: str | None = None) -> int:
-        """How many hits a search of ``question`` keeps: ANSWER_MAX_EVIDENCE, or MAX_LIMIT when it
-        asks which documents (#617 item 5), or any document other than the focus (step 22,
-        ``exclude``), of a scope that names more than one, whose hits are then kept one a document
-        (``_documents_once``), so the evidence spans more documents."""
-        if (asks_documents(question) or exclude is not None) and not _one_document(scope):
+        """How many hits a search of ``question`` keeps: POOL_PER_SLOT a slot (``_slots``), for
+        ``spread`` to choose from (#722); or MAX_LIMIT when it asks which documents (#617 item 5), or
+        any document other than the focus (step 22, ``exclude``), of a scope that names more than
+        one, whose hits are then kept one a document (``_documents_once``), so the evidence spans
+        more documents; ANSWER_MAX_EVIDENCE when such a scope names one."""
+        if not (asks_documents(question) or exclude is not None):
+            return min(MAX_LIMIT, POOL_PER_SLOT * self._slots(question))
+        if not _one_document(scope):
             return MAX_LIMIT
+        return max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+
+    def _slots(self, question: str) -> int:
+        """How many hits the evidence of ``question`` keeps: ANSWER_MAX_EVIDENCE, at most MAX_LIMIT."""
         return max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
 
     def _documents_once(
@@ -1988,12 +1997,13 @@ class AnswerService:
     ) -> Sequence[Hit]:
         """#617 item 5: for a question that asks which documents, each document's best hit only
         (hits come best first); all of them when they are one document's or the scope names one.
-        At most ANSWER_MAX_EVIDENCE either way; any other question's hits as they are. Step 22:
-        ``exclude``'s hits never, and the rest as for a question that asks which documents. O(h)."""
+        At most ANSWER_MAX_EVIDENCE either way; any other question's best ``_slots`` spread over
+        pages and documents (#722, ``spread``). Step 22: ``exclude``'s hits never, and the rest as
+        for a question that asks which documents. O(h)."""
         if exclude is not None:
             hits = [hit for hit in hits if hit.document_id != exclude]
         elif not asks_documents(question):
-            return hits
+            return spread(hits, self._slots(question))
         most = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
         if _one_document(scope) or len({hit.document_id for hit in hits}) <= 1:
             return list(hits)[:most]
