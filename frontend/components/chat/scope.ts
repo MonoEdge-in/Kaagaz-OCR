@@ -9,9 +9,11 @@
 // it, or when chat was opened with "Ask about this document". The server
 // resolves every id again for this customer.
 
-import { inTreeOrder, pathLabel } from "@/components/documents/folderTree";
+import { SHARED } from "@/components/access/words";
+import { folderPath, inTreeOrder } from "@/components/documents/folderTree";
+import { isDepartment } from "@/components/files/departments";
 import type { FolderTree } from "@/components/documents/folderTree";
-import type { Message, ScopeBody } from "@/lib/types";
+import type { DocumentSummary, Message, ScopeBody } from "@/lib/types";
 
 export type ChatScope =
   | { kind: "all" }
@@ -72,11 +74,12 @@ function stateOf(
   return { scope, changed, documents: scope.kind === "documents" ? scope.ids : documents, announce };
 }
 
-/** A new chat: every document, or the one document "Ask about this document" named. */
-export function startScope(documentId: string | null): ScopeState {
-  return documentId
-    ? stateOf({ kind: "documents", ids: [documentId] }, true, null)
-    : stateOf(EVERY_DOCUMENT, false, null);
+/** A new chat: every document, the one document "Ask about this document" named, or (#725) the
+ * folder "Ask in this folder" named, with its subfolders. */
+export function startScope(documentId: string | null, folderId: string | null = null): ScopeState {
+  if (documentId) return stateOf({ kind: "documents", ids: [documentId] }, true, null);
+  if (folderId) return stateOf({ kind: "folder", folderId, subfolders: true }, true, null);
+  return stateOf(EVERY_DOCUMENT, false, null);
 }
 
 /** A conversation being opened: its scope is not known yet, and nothing is sent. */
@@ -114,9 +117,10 @@ export function answeredScope(state: ScopeState, question: Message): ScopeState 
 }
 
 /**
- * The chip's words: "All documents", "Folder: Suppliers / 2026", "This
- * document: bill.pdf", "3 documents". `tree` is null while the folders load;
- * `documentName` is null until the one document's name is known.
+ * The chip's words, saying exactly what is chosen (#725): "All documents", "Ask in department:
+ * Land & Legal", "Ask in folder: Land & Legal › Land records (and its subfolders)", "Ask about
+ * file: bill.pdf", "Ask about 3 files". `tree` is null while the folders load; `documentName` is
+ * null until the one document's name is known.
  */
 export function scopeText(
   scope: ChatScope,
@@ -128,13 +132,14 @@ export function scopeText(
       return "All documents";
     case "folder": {
       if (tree === null) return "One folder";
-      const path = pathLabel(tree, scope.folderId);
-      if (!path) return "A folder that was deleted";
-      return `Folder: ${path}${scope.subfolders ? ", with its subfolders" : ""}`;
+      const folder = tree.byId.get(scope.folderId)?.folder;
+      if (!folder) return "A folder that was deleted";
+      if (isDepartment(folder) && scope.subfolders) return `Ask in department: ${folder.name}`;
+      return `Ask in folder: ${folderPathText(tree, scope.folderId)}${scope.subfolders ? " (and its subfolders)" : ""}`;
     }
     case "documents":
-      if (scope.ids.length === 1) return documentName ? `This document: ${documentName}` : "1 document";
-      return scope.ids.length === 0 ? "No documents" : `${scope.ids.length} documents`;
+      if (scope.ids.length === 1) return documentName ? `Ask about file: ${documentName}` : "Ask about 1 file";
+      return scope.ids.length === 0 ? "No documents" : `Ask about ${scope.ids.length} files`;
     case "other":
       return "Filtered documents";
     case "kept":
@@ -148,7 +153,7 @@ export function scopeText(
  * so a name arriving later never says it twice. Otherwise nothing.
  */
 export function scopeAnnouncement(state: ScopeState, text: string, namesLoading: boolean): string {
-  return state.announce && !namesLoading ? `Asking about: ${text}` : "";
+  return state.announce && !namesLoading ? text : ""; // #725: the words say what is chosen
 }
 
 /** Why the choices can't be changed right now, or null when they can. */
@@ -157,21 +162,63 @@ export function scopeLockedText(answerPending: boolean, conversationLoading: boo
   return conversationLoading ? "You can change this once the conversation loads." : null;
 }
 
-/** #720: "Find a folder by name or path": the folders whose path (its name too) holds `query`,
- * any case, in tree order, at most `most`; none for an empty query. O(f * d) for f folders of
- * depth d, stopping at the `most`th match. */
-export function findFolders(
-  tree: FolderTree,
-  query: string,
-  most = 8,
-): { id: string; name: string; path: string }[] {
+/** A folder's place, root first: "Land & Legal › Land records". */
+export const folderPathText = (tree: FolderTree, folderId: string) =>
+  folderPath(tree, folderId)
+    .map((folder) => folder.name)
+    .join(" › ");
+
+/** One department or folder the find box matched (#720, #725). */
+export interface FoundFolder {
+  id: string;
+  name: string;
+  path: string;
+  department: boolean; // a department: asked in with all its folders
+}
+
+/** #720, #725: the departments and folders whose name or place holds `query`, any case, in tree
+ * order, at most `most`; none for an empty query. O(f * d) for f folders of depth d, stopping at
+ * the `most`th match. */
+export function findFolders(tree: FolderTree, query: string, most = 8): FoundFolder[] {
   const wanted = query.trim().toLocaleLowerCase();
-  const found: { id: string; name: string; path: string }[] = [];
+  const found: FoundFolder[] = [];
   if (!wanted) return found;
   for (const node of inTreeOrder(tree)) {
-    const path = pathLabel(tree, node.folder.id);
-    if (path.toLocaleLowerCase().includes(wanted)) found.push({ id: node.folder.id, name: node.folder.name, path });
+    const path = folderPathText(tree, node.folder.id);
+    if (path.toLocaleLowerCase().includes(wanted)) {
+      found.push({ id: node.folder.id, name: node.folder.name, path, department: isDepartment(node.folder) });
+    }
     if (found.length === most) break;
   }
   return found;
+}
+
+/** The most files one question asks about (backend/kaagaz/search/scope.py MAX_DOCUMENT_IDS). */
+export const MAX_FILES = 50;
+
+/** #725: the files asked about after `fileId` is pressed: out when it was in, else in, while
+ * fewer than MAX_FILES are; null when it can't go in (MAX_FILES already). */
+export function pickFile(picked: readonly string[], fileId: string): string[] | null {
+  if (picked.includes(fileId)) return picked.filter((id) => id !== fileId);
+  return picked.length < MAX_FILES ? [...picked, fileId] : null;
+}
+
+/** #725: where a file found by name is, in grey: its folder's place; "Shared with you" in a
+ * folder this person can't see; "Not in a folder" at the top level. */
+export function filePlace(tree: FolderTree, file: Pick<DocumentSummary, "folder_id" | "shared_with_you">): string {
+  if (file.shared_with_you) return SHARED.row;
+  return file.folder_id && tree.byId.has(file.folder_id) ? folderPathText(tree, file.folder_id) : "Not in a folder";
+}
+
+/** #720, #725: the words of the chip's remove button, back to all documents, naming what it takes
+ * away; null when there is nothing to remove. */
+export function removeScopeLabel(scope: ChatScope, tree: FolderTree | null, documentName: string | null): string | null {
+  if (scope.kind === "folder") {
+    const folder = tree?.byId.get(scope.folderId)?.folder;
+    if (!folder) return null;
+    return `Remove ${isDepartment(folder) && scope.subfolders ? "department" : "folder"} ${folder.name}`;
+  }
+  if (scope.kind !== "documents" || scope.ids.length === 0) return null;
+  if (scope.ids.length > 1) return `Remove ${scope.ids.length} files`;
+  return documentName ? `Remove file ${documentName}` : "Remove the file";
 }

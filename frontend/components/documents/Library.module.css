@@ -821,3 +821,10 @@ li:has(> .menuItem.danger) {
 .pickerFind {
   padding-block-end: var(--space-2);
 }
+
+/* Issue 725: "Ask in this folder", under the place's hints; a full 44px target. */
+.askHere {
+  align-self: flex-start;
+  min-height: var(--h-lg);
+  margin-top: var(--space-2);
+}

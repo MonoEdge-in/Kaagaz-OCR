@@ -88,7 +88,7 @@ describe("the toolbar chips", () => {
 
   it("say the scope on a chip, with no separate Asking about line or Change button", () => {
     const html = renderToStaticMarkup(createElement(ScopePicker, { state: startScope(null), locked: null, onChoose: () => {} }));
-    expect(html).toContain('<span class="visually-hidden">Asking about: </span>');
+    expect(html).toContain('<span class="visually-hidden">Where to ask: </span>'); // changed on purpose (#725)
     expect(html).toMatch(/<span class="[^"]*_toolText[^"]*">All documents<\/span>/);
     expect(html).toContain('popover="auto" role="dialog" aria-label="Which documents to ask about"');
     expect(html).not.toContain("Change");

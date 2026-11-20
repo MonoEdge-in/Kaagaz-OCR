@@ -5,8 +5,8 @@
 // status line, after a pick or when a conversation loads), which opens a small
 // panel (ComposerMenu.tsx) with one labelled group of choices: all documents, one
 // folder (with or without its subfolders), or the documents chat was opened
-// for. #720: "Find a folder by name or path" picks a folder with its subfolders, and the
-// chosen folder has a remove button beside the chip. A choice applies to the next question; until then a follow-up keeps
+// for. #720, #725: one find box finds a department, folder or file by name (ScopeFind.tsx), and
+// the chip has a remove button naming what is chosen. A choice applies to the next question; until then a follow-up keeps
 // the conversation's scope (scope.ts). Folders load only when needed. Folder
 // and document names are plain text.
 
@@ -18,7 +18,8 @@ import { loadDocument } from "@/components/viewer/documentCache";
 import { listFolders } from "@/lib/api";
 import type { Folder } from "@/lib/types";
 import { ComposerMenu } from "./ComposerMenu";
-import { EVERY_DOCUMENT, findFolders, scopeAnnouncement, scopeText } from "./scope";
+import { ScopeFind } from "./ScopeFind";
+import { EVERY_DOCUMENT, removeScopeLabel, scopeAnnouncement, scopeText } from "./scope";
 import type { ChosenScope, ScopeState } from "./scope";
 import styles from "./Chat.module.css";
 
@@ -54,7 +55,6 @@ export function ScopePicker({
   const [open, setOpen] = useState(false);
   const [folders, setFolders] = useState<Folder[] | null>(null);
   const [foldersFailed, setFoldersFailed] = useState(false);
-  const [find, setFind] = useState(""); // #720: "Find a folder by name or path"
   // name null: it could not be loaded (gone, or not this person's).
   const [named, setNamed] = useState<{ id: string; name: string | null } | null>(null);
   const { scope, documents } = state;
@@ -97,8 +97,7 @@ export function ScopePicker({
   const name = named !== null && named.id === oneDocument ? named.name : null;
   const ordered = tree ? inTreeOrder(tree) : [];
   const firstFolder = ordered[0]?.folder.id;
-  const found = tree ? findFolders(tree, find) : [];
-  const chosenFolder = scope.kind === "folder" ? tree?.byId.get(scope.folderId)?.folder.name : undefined;
+  const removeLabel = removeScopeLabel(scope, tree, name);
   const kind = `${id}-kind`;
   const text = scopeText(scope, tree, name);
   const namesLoading =
@@ -111,7 +110,7 @@ export function ScopePicker({
       <p className="visually-hidden" role="status" aria-atomic="true">
         {scopeAnnouncement(state, text, namesLoading)}
       </p>
-      <ComposerMenu label={text} name="Asking about" title="Which documents to ask about" onToggle={setOpen}>
+      <ComposerMenu label={text} name="Where to ask" title="Which documents to ask about" onToggle={setOpen}>
         <fieldset
           className={styles.menuGroup}
           disabled={locked !== null}
@@ -131,47 +130,7 @@ export function ScopePicker({
           >
             One folder
           </Choice>
-          {tree && ordered.length > 0 ? (
-            <div className={styles.scopeFolder}>
-              <div className="field">
-                <label htmlFor={`${id}-find`}>Find a folder by name or path</label>
-                <input
-                  id={`${id}-find`}
-                  type="search"
-                  className="input"
-                  value={find}
-                  onChange={(event) => setFind(event.target.value)}
-                  aria-describedby={`${id}-find-hint`}
-                />
-              </div>
-              {found.length > 0 ? (
-                <ul className={styles.folderMatches} aria-label="Folders found">
-                  {found.map((folder) => (
-                    <li key={folder.id}>
-                      <button
-                        type="button"
-                        className={`btn btn-quiet ${styles.folderMatch}`}
-                        onClick={() => {
-                          onChoose({ kind: "folder", folderId: folder.id, subfolders: true });
-                          setFind("");
-                        }}
-                      >
-                        <span className={styles.folderMatchName}>{folder.name}</span>
-                        <span className={styles.sourceMeta}>{folder.path}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : find.trim() ? (
-                <p className="hint" role="status">
-                  No folder matches “{find.trim()}”.
-                </p>
-              ) : null}
-              <p id={`${id}-find-hint`} className="hint">
-                Only folders you can open are shown. Ask then searches that folder and its subfolders.
-              </p>
-            </div>
-          ) : null}
+          {tree ? <ScopeFind id={id} tree={tree} scope={scope} onChoose={onChoose} /> : null}
           {scope.kind === "folder" && tree ? (
             <div className={styles.scopeFolder}>
               <div className="field">
@@ -229,10 +188,10 @@ export function ScopePicker({
           </p>
         </fieldset>
       </ComposerMenu>
-      {chosenFolder !== undefined ? (
+      {removeLabel ? (
         <IconButton
           icon="close"
-          label={`Remove folder ${chosenFolder}`}
+          label={removeLabel}
           className={`btn-quiet ${styles.removeScope}`}
           disabled={locked !== null}
           onClick={() => onChoose(EVERY_DOCUMENT)}

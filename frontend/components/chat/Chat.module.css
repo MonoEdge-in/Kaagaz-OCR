@@ -1965,13 +1965,30 @@
 
 .folderMatch {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: flex-start;
   width: 100%;
   min-height: var(--h-lg);
   height: auto;
   padding: var(--space-1) var(--space-2);
   text-align: start;
+}
+
+.folderMatch[aria-pressed="true"] {
+  background: var(--bg-selected);
+}
+
+.folderMatchText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.findHeading {
+  margin: var(--space-2) 0 var(--space-1);
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 .folderMatchName {
