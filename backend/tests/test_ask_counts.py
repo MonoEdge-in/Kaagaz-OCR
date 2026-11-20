@@ -23,7 +23,7 @@ from kaagaz.answering.exhaustive import (
     pages_with,
 )
 from kaagaz.answering.service import Answer, AnswerService
-from kaagaz.answering.slots import POOL_PER_SLOT
+from kaagaz.answering.slots import POOL_PER_SLOT, evidence_slots
 from kaagaz.search.hybrid import MAX_LIMIT
 from kaagaz.search.scope import EVERYTHING, Scope
 from tests.test_answering_golden import (
@@ -531,8 +531,9 @@ def test_a_which_documents_question_reads_each_document_once() -> None:
     for hit in (pieces[0], pieces[6], pieces[7]):
         assert sum(hit.text in block for block in drafted[0]) == 1, hit.document_name
 
-    service.answer(A, "Where did Krishna Jindal sign?")  # any other question: as before
-    assert retriever.calls[-1][3] == POOL_PER_SLOT * SETTINGS.answer_max_evidence  # #722: room to spread
+    service.answer(A, "Where did Krishna Jindal sign?")  # any other question: its own slots
+    fact = evidence_slots("fact", SETTINGS.answer_max_evidence)  # #723: "where" asks one fact
+    assert retriever.calls[-1][3] == POOL_PER_SLOT * fact  # #722: room to spread
 
 
 def _drafted(pieces: list[FakeHit], question: str, scope: Scope = EVERYTHING) -> tuple[int, list[str]]:

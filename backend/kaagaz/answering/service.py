@@ -161,7 +161,7 @@ word and no unknown topic word, then either one fixed query or one search
 call (one per agent with Ensemble, at most three, in parallel; step 20's parts add at most
 ANSWER_PARTS_MAX, in parallel, before it); the rest is
 O(e * t) over e pieces of evidence of t characters. e is at most
-ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
+1.5 * ANSWER_MAX_EVIDENCE hits (#723, answering/slots.py) plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
 
 import copy
@@ -286,7 +286,7 @@ from kaagaz.answering.rewrite import MAX_QUESTION, Rewritten, Turn, rewrite_and_
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from kaagaz.answering.sanitize import clean_snippet, clean_text
-from kaagaz.answering.slots import POOL_PER_SLOT, spread
+from kaagaz.answering.slots import POOL_PER_SLOT, evidence_slots, question_kind, spread
 from kaagaz.answering.stream import Events, StreamingModel, draft_streamed
 from kaagaz.answering.totals import tell
 from kaagaz.answering.translate import target_scripts, translate
@@ -2004,8 +2004,9 @@ class AnswerService:
         return max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
 
     def _slots(self, question: str) -> int:
-        """How many hits the evidence of ``question`` keeps: ANSWER_MAX_EVIDENCE, at most MAX_LIMIT."""
-        return max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+        """How many hits the evidence of ``question`` keeps: ANSWER_MAX_EVIDENCE scaled by what it
+        asks (#723, ``evidence_slots``)."""
+        return evidence_slots(question_kind(question), self._settings.answer_max_evidence)
 
     def _documents_once(
         self, question: str, scope: Scope, hits: Sequence[Hit], exclude: str | None = None

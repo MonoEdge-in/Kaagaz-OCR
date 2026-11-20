@@ -136,7 +136,8 @@ def test_this_conversations_pick_is_the_stronger_and_two_picks_keep_the_larger()
 def test_the_timing_line_counts_the_hits_a_pick_moved(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="kaagaz.answering.timing")
     pieces = deeds()
-    ask(pieces, [Pin(pieces[4].document_id, 1, same_conversation=True)])
+    # The last kept hit (#723: a "who" question keeps 4 of the 5, a quarter fewer than the setting).
+    ask(pieces, [Pin(pieces[3].document_id, 1, same_conversation=True)])
     ask(pieces, [])
     lines = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
     assert [" pinned=1 " in lines[0], " pinned=0 " in lines[1]] == [True, True]

@@ -2,8 +2,19 @@
 
 import dataclasses
 
+import pytest
+
 from kaagaz.answering import draft
-from kaagaz.answering.slots import DOCUMENT_CAP, PAGE_CAP, POOL_PER_SLOT, spread
+from kaagaz.answering.slots import (
+    DOCUMENT_CAP,
+    PAGE_CAP,
+    POOL_PER_SLOT,
+    Kind,
+    evidence_slots,
+    question_kind,
+    spread,
+)
+from kaagaz.search.hybrid import MAX_LIMIT
 from tests.test_answering_context import (
     SEARCH_ONLY,
     A,
@@ -82,3 +93,72 @@ def test_the_service_spreads_the_hits_then_adds_topic_pieces_and_neighbours() ->
     assert {call[3] for call in retriever.calls} == {POOL_PER_SLOT * 3}
     order = [crowd[0], crowd[1], theirs, topic, near]
     assert blocks(model.drafted[0]) == [hit.text for hit in draft.edges(order)]
+
+
+# --- #723: the number of slots from the question's kind ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("question", "kind"),
+    [
+        ("Who is the buyer?", "fact"),
+        ("When was the deed registered?", "fact"),
+        ("Kaun hai seller?", "fact"),  # Hinglish: kaun is who
+        ("Who are the owners of Gat 12?", "unknown"),  # "are": more than one
+        ("List all the invoices from Sharma Traders", "list"),
+        ("How many invoices came from Sharma Traders?", "list"),
+        ("Compare the rent in the two leases", "compare"),
+        ("Which vendor had the highest invoice?", "compare"),
+        ("Kiska profit sabse jyada tha last month?", "compare"),  # Hinglish: sabse jyada is highest
+        ("Give me a summary of the lease", "summary"),
+        ("Explain the leave policy", "summary"),
+        ("What is the grand total of INV-1042?", "unknown"),
+        ("Rate per bag?", "unknown"),
+    ],
+)
+def test_the_kind_comes_from_the_question_s_words(question: str, kind: str) -> None:
+    assert question_kind(question) == kind
+
+
+@pytest.mark.parametrize(
+    ("kind", "most", "slots"),
+    [
+        ("fact", 8, 6),
+        ("unknown", 8, 8),
+        ("list", 8, 12),
+        ("compare", 8, 12),
+        ("summary", 8, 12),
+        ("fact", 1, 1),  # never none
+        ("list", 1, 1),
+        ("summary", 80, MAX_LIMIT),  # never past the search's limit
+    ],
+)
+def test_the_slots_scale_the_setting_by_kind_within_bounds(kind: Kind, most: int, slots: int) -> None:
+    assert evidence_slots(kind, most) == slots
+
+
+@pytest.mark.parametrize(
+    ("question", "slots"), [("Who is the seller?", 6), ("List every seller", 12), ("Seller?", 8)]
+)
+def test_the_service_searches_and_keeps_the_kind_s_slots(question: str, slots: int) -> None:
+    settings = dataclasses.replace(SEARCH_ONLY, answer_max_evidence=8)
+    sellers = [page(n, f"Seller {n}", document=f"deed-{n}.pdf") for n in range(1, 21)]
+    retriever = Fused(sellers)
+    model = Routed(cites())
+
+    answers(retriever, FakeContext(sellers), model, settings).answer(A, question)
+
+    assert {call[3] for call in retriever.calls} == {POOL_PER_SLOT * slots}
+    assert len(blocks(model.drafted[0])) == slots
+
+
+def test_a_which_documents_question_keeps_its_own_count() -> None:
+    settings = dataclasses.replace(SEARCH_ONLY, answer_max_evidence=8)
+    sellers = [page(n, f"Seller {n}", document=f"deed-{n}.pdf") for n in range(1, 21)]
+    retriever = Fused(sellers)
+    model = Routed(cites())
+
+    answers(retriever, FakeContext(sellers), model, settings).answer(A, "Which documents name a seller?")
+
+    assert {call[3] for call in retriever.calls} == {MAX_LIMIT}
+    assert len(blocks(model.drafted[0])) == 8
