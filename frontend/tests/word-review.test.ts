@@ -536,20 +536,16 @@ describe("a file not ready yet", () => {
     );
     expect(view).toMatch(/\{detail\.status !== "ready" && !barSaysStatus && <span className=\{styles\.meta\}>\{detail\.status_message\}<\/span>\}/);
     expect(view).toMatch(/scanningIcon=\{STATUS_ICONS\[chip\.tone\]\}/);
-    // Changed on purpose (#713): and its failure code, so a stopped file says "Stopped by you".
-    expect(view).toMatch(/const chip = statusChip\(detail\.status, detail\.detected_type, detail\.failure_code\);/);
+    expect(view).toMatch(/const chip = statusChip\(detail\.status, detail\.detected_type\);/);
     expect(words.statusLine(status({ status: "failed" }), "Why.").text).toBe("Why.");
     expect(words.statusLine(status({ status: "ready" }), "Why.").text).not.toBe("Why.");
   });
 
   it("passes the file's kind wherever a finished file's chip is drawn", () => {
-    // Changed on purpose (#713): and its failure code, so a stopped file says "Stopped by you".
     expect(css("components/documents/DocumentsTable.tsx")).toContain(
-      "<StatusChip status={document.status} detectedType={document.detected_type} failureCode={document.failure_code} />",
+      "<StatusChip status={document.status} detectedType={document.detected_type} />",
     );
-    expect(css("components/search/SearchScreen.tsx")).toContain(
-      "statusChip(document.status, document.detected_type, document.failure_code)",
-    );
+    expect(css("components/search/SearchScreen.tsx")).toContain("statusChip(document.status, document.detected_type)");
   });
 });
 

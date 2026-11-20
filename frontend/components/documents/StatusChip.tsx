@@ -6,18 +6,8 @@
 import { statusChip } from "@/lib/format";
 import type { DetectedType, DocumentStatus } from "@/lib/types";
 
-export function StatusChip({
-  status,
-  text,
-  detectedType,
-  failureCode,
-}: {
-  status: DocumentStatus;
-  text?: string;
-  detectedType?: DetectedType;
-  failureCode?: string | null; // #713: a stopped one says "Stopped by you"
-}) {
-  const chip = statusChip(status, detectedType, failureCode);
+export function StatusChip({ status, text, detectedType }: { status: DocumentStatus; text?: string; detectedType?: DetectedType }) {
+  const chip = statusChip(status, detectedType);
   return (
     <span className={chip.className} data-tone={chip.tone}>
       {text ?? chip.text}

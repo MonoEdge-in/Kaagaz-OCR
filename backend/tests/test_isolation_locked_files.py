@@ -462,7 +462,6 @@ REFUSED = {
     ("GET", "/api/documents/{document_id}/words"),
     ("GET", "/api/documents/{document_id}/questions"),
     ("POST", "/api/documents/{document_id}/reprocess"),
-    ("POST", "/api/documents/{document_id}/stop"),  # Changed on purpose (#713): a locked file is never read
     ("POST", "/api/documents/{document_id}/pages/{page_no}/read-again"),
     ("POST", "/api/documents/{document_id}/pages/{page_no}/accept"),
     ("GET", "/api/documents/{document_id}/clear-copy"),

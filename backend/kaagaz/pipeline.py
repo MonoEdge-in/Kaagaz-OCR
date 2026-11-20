@@ -611,9 +611,8 @@ class DocumentStore(Protocol):
         ...
 
     def still_open(self, customer_id: str, document_id: str, run_id: str) -> bool:
-        """PRD 7 (#605): the run is still running and the version not locked, nor in Trash (#713;
-        one indexed query): checked before each model step, so a lock, a Stop (it closes the run)
-        or a Cancel (it moves the file to Trash) stops what is sent to an AI."""
+        """PRD 7 (#605): the run is still running and the version not locked (one indexed
+        query): checked before each model step, so a lock stops what is sent to an AI."""
         ...
 
     def file_document(self, customer_id: str, document_id: str) -> None:
@@ -1414,8 +1413,7 @@ class DocumentProcessor:
 
     def _still_open(self, job: Job, run: _Run) -> None:
         """PRD 7 (#605): before a step that sends the file to a model, Superseded unless its run
-        is still open and the version not locked nor in Trash (#713). A call already in flight
-        can't be called back."""
+        is still open and the version not locked. A call already in flight can't be called back."""
         if run.run_id is not None and not self._documents.still_open(
             job.customer_id, job.document_id, run.run_id
         ):

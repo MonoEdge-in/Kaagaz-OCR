@@ -196,7 +196,6 @@ describe("each file's place in the tray", () => {
       attention: 1,
       failed: 2,
       stopped: 0,
-      cancelled: 0, // Changed on purpose (#713): files cancelled from the tray, counted on their own
       already: 1,
       notSent: 0,
     });
@@ -216,7 +215,6 @@ describe("each file's place in the tray", () => {
       attention: 2,
       failed: 0,
       stopped: 0,
-      cancelled: 0, // Changed on purpose (#713): the new count
       already: 1,
       notSent: 0, // Changed on purpose (#468): the new count
     };

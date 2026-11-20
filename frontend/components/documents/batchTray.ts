@@ -53,22 +53,12 @@ export function newBatchId(random: (bytes: Uint8Array) => Uint8Array = (b) => cr
 
 // --- rows -------------------------------------------------------------------------
 
-export type RowKind =
-  | "failed"
-  | "stopped"
-  | "cancelled"
-  | "attention"
-  | "waiting"
-  | "sending"
-  | "reading"
-  | "already"
-  | "ready";
+export type RowKind = "failed" | "stopped" | "attention" | "waiting" | "sending" | "reading" | "already" | "ready";
 
 // Every kind, for the total (the tray lists files in the order they were dropped).
 const ROW_KINDS: readonly RowKind[] = [
   "failed",
   "stopped",
-  "cancelled",
   "attention",
   "waiting",
   "sending",
@@ -83,8 +73,6 @@ export function rowKind(entry: Pick<UploadEntry, "state">): RowKind {
   switch (state.kind) {
     case "error":
       return "failed";
-    case "cancelled": // #713: moved to Trash from the tray
-      return "cancelled";
     case "duplicate":
     case "elsewhere":
     case "locked":
@@ -104,9 +92,8 @@ export function rowKind(entry: Pick<UploadEntry, "state">): RowKind {
     case "done":
       if (!state.document) return "ready";
       if (state.document.status !== "ready") {
-        // PRD 5 section 12: a file of an organisation disabled mid-batch is stopped, not failed; #713:
-        // and one stopped by a person.
-        return ["customer_disabled", "stopped"].includes(state.document.failure_code ?? "") ? "stopped" : "failed";
+        // PRD 5 section 12: a file of an organisation disabled mid-batch is stopped, not failed.
+        return state.document.failure_code === "customer_disabled" ? "stopped" : "failed";
       }
       return attentionWords(state.document).length > 0 ? "attention" : "ready";
   }
@@ -123,7 +110,6 @@ export interface TrayCounts {
   attention: number;
   failed: number;
   stopped: number;
-  cancelled: number; // #713: moved to Trash from the tray
   already: number;
   notSent: number; // #468: not sent before a reload, so the file must be chosen again (no row of its own)
 }
@@ -142,7 +128,6 @@ export function trayCounts(
     attention: 0,
     failed: 0,
     stopped: 0,
-    cancelled: 0,
     already: 0,
     notSent: 0,
   };
@@ -164,118 +149,14 @@ export function notSentText(counts: Pick<TrayCounts, "notSent">): string | null 
 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 
-/** #699: the tray's Cancel for files still waiting: one at once, all of a drop after one question.
- * Changed on purpose (#713): "Cancel all" covers the files already sent too (TRAY_ACTIONS). */
+/** #699: the tray's Cancel for files still waiting: one at once, all of a drop after one question. */
 export const CANCEL_TEXT = {
   one: (name: string) => `Cancel upload of ${name}`,
-  all: "Cancel all",
+  all: "Cancel all waiting",
   question: (n: number) => `Cancel ${n} waiting ${n === 1 ? "file" : "files"}?`,
   yes: "Cancel files",
   no: "Keep them",
 };
-
-// --- #713: Stop and Cancel a file already sent ---------------------------------------------
-
-export type TrayAction = "stop" | "cancel";
-
-/** #713: the words of Stop and Cancel, on a row (named for its file), for a drop, and after. */
-export const STOP_TEXT = {
-  stop: "Stop",
-  cancel: "Cancel",
-  stopOne: (name: string) => `Stop reading ${name}`,
-  cancelOne: (name: string) => `Cancel ${name} and move it to Trash`,
-  stopAll: "Stop all",
-  note: "A page being read right now finishes first.",
-  keep: { stop: "Keep reading", cancel: "Keep them", cancelOne: "Keep it" },
-  stoppedLine: "Stopped by you. It stays in Documents.",
-  cancelledLine: "Cancelled. Moved to Trash.",
-  readAgain: "Read again",
-  uploadAgain: "Upload again",
-};
-
-/** A row a reviewer or an admin may stop (Read again's right): on the server, waiting, checked or read. */
-export const canStop = (entry: Pick<UploadEntry, "state">, canReread: boolean) => canReread && entry.state.kind === "reading";
-
-/** A row its person may cancel (Move to Trash's right, ``can_delete``): on the server, waiting, checked or read. */
-export const canCancel = (entry: Pick<UploadEntry, "state">) =>
-  entry.state.kind === "reading" && entry.state.document.can_delete === true;
-
-/**
- * The files a drop's Stop all or Cancel all acts on: those it may stop (or cancel), and every file
- * still waiting in this tab, which either only cancels (#699). Shown when a file may be stopped (or
- * cancelled); Cancel all also with two or more waiting (#699's rule). O(n).
- */
-export function trayActionKeys(
-  rows: readonly Pick<UploadEntry, "key" | "state">[],
-  action: TrayAction,
-  canReread: boolean,
-): { keys: string[]; shown: boolean } {
-  const sent = rows.filter((entry) => (action === "stop" ? canStop(entry, canReread) : canCancel(entry)));
-  const waiting = rows.filter((entry) => entry.state.kind === "waiting");
-  const shown = sent.length > 0 || (action === "cancel" && waiting.length > 1);
-  return { keys: [...sent, ...waiting].map((entry) => entry.key), shown };
-}
-
-/**
- * The question before Stop or Cancel of the files ``names``, its note, and its buttons: one file
- * named, or a count; files none of which was sent yet (``waitingOnly``) keep #699's question (they
- * never reach Documents or Trash).
- */
-export function trayQuestion(
-  action: TrayAction,
-  names: readonly string[],
-  waitingOnly = false,
-): { title: string; note: string | null; yes: string; no: string } {
-  const n = names.length;
-  const one = n === 1 ? names[0] : undefined;
-  if (waitingOnly) {
-    return { title: CANCEL_TEXT.question(n), note: null, yes: CANCEL_TEXT.yes, no: CANCEL_TEXT.no };
-  }
-  if (action === "stop") {
-    return {
-      title:
-        one !== undefined
-          ? `Stop ${one}? It stays in Documents and you can read it again later.`
-          : `Stop ${files(n)}? They stay in Documents and you can read them again later.`,
-      note: STOP_TEXT.note,
-      yes: one !== undefined ? "Stop file" : "Stop files",
-      no: STOP_TEXT.keep.stop,
-    };
-  }
-  return {
-    title:
-      one !== undefined
-        ? `Cancel ${one}? It moves to Trash and you can upload it again.`
-        : `Cancel ${files(n)}? They move to Trash and you can upload them again.`,
-    note: STOP_TEXT.note,
-    yes: one !== undefined ? "Cancel file" : "Cancel files",
-    no: one !== undefined ? STOP_TEXT.keep.cancelOne : STOP_TEXT.keep.cancel,
-  };
-}
-
-/** A row stopped by a person (#713), not by the organisation turned off: "Stopped by you". */
-export const stoppedByYou = (entry: Pick<UploadEntry, "state">) =>
-  entry.state.kind === "done" && entry.state.document?.status === "failed" && entry.state.document.failure_code === "stopped";
-
-/**
- * The drop's line once something was stopped or cancelled: "1 stopped. 2 cancelled and moved to
- * Trash."; then what was refused, in the server's words ("1 couldn't be stopped. …"); "" for none.
- */
-export function trayResultText(
-  rows: readonly Pick<UploadEntry, "state">[],
-  refused: { action: TrayAction; count: number; why: string } | null = null,
-): string {
-  const stopped = rows.filter(stoppedByYou).length;
-  const cancelled = rows.filter((entry) => entry.state.kind === "cancelled").length;
-  const parts = [
-    stopped > 0 ? `${stopped} stopped.` : "",
-    cancelled > 0 ? `${cancelled} cancelled and moved to Trash.` : "",
-    refused && refused.count > 0
-      ? `${refused.count} couldn't be ${refused.action === "stop" ? "stopped" : "cancelled"}. ${refused.why}`
-      : "",
-  ];
-  return parts.filter(Boolean).join(" ");
-}
 
 /** "Batch of 50 files (1 already uploaded) · 31 ready · 12 reading · 4 waiting · 2 need attention";
  * #693: the already-uploaded files are said with the total they are part of. */
@@ -289,7 +170,6 @@ export function summaryText(counts: TrayCounts): string {
     counts.attention > 0 ? `${counts.attention} ${counts.attention === 1 ? "needs" : "need"} attention` : "",
     counts.failed > 0 ? `${counts.failed} failed` : "",
     counts.stopped > 0 ? `${counts.stopped} stopped` : "",
-    counts.cancelled > 0 ? `${counts.cancelled} cancelled` : "",
   ];
   return parts.filter(Boolean).join(" · ");
 }
@@ -426,7 +306,7 @@ function finishedText(entries: readonly Pick<UploadEntry, "state">[]): string {
   );
   const counts = trayCounts(entries);
   const notSent = entries.filter((entry) => entry.state.kind === "error").length;
-  const notRead = counts.failed - notSent;
+  const notRead = counts.failed - notSent + counts.stopped;
   const uploaded = entries.filter((entry) => entry.state.kind === "done" && !entry.state.document).length;
   const sum = (count: (document: DocumentSummary) => number) =>
     ready.reduce((total, document) => total + count(document), 0);
@@ -437,9 +317,6 @@ function finishedText(entries: readonly Pick<UploadEntry, "state">[]): string {
     uploaded > 0 ? `${uploaded} uploaded` : "",
     counts.already > 0 ? `${counts.already} already uploaded` : "",
     notRead > 0 ? `${notRead} failed` : "",
-    // #713: stopped (by a person, or the organisation turned off) and cancelled are not failures.
-    counts.stopped > 0 ? `${counts.stopped} stopped` : "",
-    counts.cancelled > 0 ? `${counts.cancelled} cancelled` : "",
     notSent > 0 ? `${notSent} not uploaded` : "",
   ];
   return parts.filter(Boolean).join(" · ");

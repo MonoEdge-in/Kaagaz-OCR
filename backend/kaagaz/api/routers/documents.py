@@ -225,7 +225,6 @@ from kaagaz.db.documents import (
     delete_family_forever,
     mark_for_reprocess,
     request_page_read_again,
-    stop_reading,
 )
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.folder_upload_items import ItemRow
@@ -1763,44 +1762,6 @@ def _read_again_express(context: AppContext, row: RowMapping) -> bool:
     """Read again goes to the express lane by the page count its last read stored (PRD 5
     Q4); a document never counted goes to the main lane."""
     return goes_express(row["page_count"], context.settings.express_max_pages)
-
-
-# --- Stop (#713) ----------------------------------------------------------------------
-
-_NOT_STOPPABLE = "Only a file still waiting, being checked or being read can be stopped."
-
-
-@router.post("/documents/{document_id}/stop")
-def stop_document(document_id: uuid.UUID, user: Reviewer, context: Context) -> dict[str, Any]:
-    """Stop reading a file (#713) and return its summary, now ``failed`` with ``stopped``; Read
-    again starts it again. Who may read it again may stop it: a reviewer or an admin, on a file
-    the view shows them (else 404, as for one that never was). Only one waiting, being checked or
-    being read: in Trash 409 ``in_trash``, locked 409 ``locked``, anything else 409
-    ``not_stoppable``. One transaction: the family lock, the change and its runs closed
-    (``stop_reading``), the ``document.stop`` audit row. A model call already in flight finishes;
-    the worker stops before its next step. A selection is stopped one call a file, as Move to
-    Trash and Read again are (components/documents/trash.ts)."""
-    customer_id, target = user.customer_id, str(document_id)
-    with context.db.user(customer_id, user.user_id) as conn:
-        row = _document_or_404(conn, user, document_id)
-        if row["deleted_at"] is not None:
-            raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
-        if not stop_reading(conn, customer_id, target, now=context.clock()):
-            raise ApiError(409, "not_stoppable", _NOT_STOPPABLE)
-        audit.record(
-            conn,
-            customer_id,
-            actor_user_id=user.user_id,
-            action="document.stop",
-            target_type="document",
-            target_id=target,
-            details={"status": row["status"]},
-        )
-        row = _document_or_404(conn, user, document_id)
-        tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]
-        return document_summary(
-            row, max_pages=context.settings.max_pages, tags=tags, user=user, now=context.clock()
-        )
 
 
 # --- one page: read it again, or keep it as is (PRD 5 F5) ----------------------------

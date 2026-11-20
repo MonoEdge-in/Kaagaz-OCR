@@ -201,9 +201,7 @@ export interface StatusChip {
 const STATUS_TONES = { reading: "working", failed: "danger" } as const;
 
 /** The words, tone and class for a document status chip. */
-export function statusChip(status: DocumentStatus, detectedType?: DetectedType, failureCode?: string | null): StatusChip {
-  // #713: stopped on purpose is no failure; Read again starts it again.
-  if (status === "failed" && failureCode === "stopped") return { text: "Stopped by you", tone: "neutral", className: "status-chip" };
+export function statusChip(status: DocumentStatus, detectedType?: DetectedType): StatusChip {
   // #549: a zip kept as a file (inside a folder upload, or the zip's own copy once unpacked) is
   // needs_reader by design, so nothing failed.
   if (status === "needs_reader" && detectedType === "zip") {
