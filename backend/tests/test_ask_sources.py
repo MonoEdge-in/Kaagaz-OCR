@@ -5,21 +5,32 @@ service fills them in. The folder paths' SQL is proved in test_isolation_ask_sou
 import dataclasses
 from typing import Any
 
+import pytest
+
 from kaagaz.answering import sources
 from kaagaz.answering.evidence import Evidence, number_evidence
-from kaagaz.answering.service import Answer, Citation
+from kaagaz.answering.focus import PgFocus, Profile
+from kaagaz.answering.service import Answer, AnswerService, Citation
 from kaagaz.api import views
+from kaagaz.db.engine import Database
 from tests.test_answering_golden import (
     INVOICE,
+    NOW,
     TERMS,
+    UNUSED_DB,
     A,
+    FakeFixedQueries,
     FakeHit,
     FakeModel,
+    FakeUnchecked,
     assert_well_formed,
     evidence_blocks,
     piece,
     service,
 )
+from tests.test_answering_translate import NAME, ON, WORD, Search, drafts
+from tests.test_api_chat import _cited_answer
+from tests.test_api_support import CSRF, Api
 
 
 def _on(page: int, name: str = "deed.pdf", text: str = "Survey 44 area 0.81") -> FakeHit:
@@ -173,3 +184,100 @@ def test_an_answer_without_searched_files_keeps_its_shape() -> None:
     plain = Answer("not_found", None, [], [], [], "search", "q", False)
     assert "searched_files" not in plain.to_json()
     assert dataclasses.replace(plain, searched_files=[]).to_json() == plain.to_json()
+
+
+def test_a_page_keeps_one_box_covering_its_spot_as_the_screen_draws_it() -> None:
+    lines = [
+        {"kind": "box", "page": 1, "box": [0.1, 0.2, 0.5, 0.25]},
+        {"kind": "box", "page": 1, "box": [0.2, 0.3, 0.9, 0.35]},
+        {"kind": "box", "page": 2, "box": [0.1, 0.1, 0.2, 0.2]},
+    ]
+    hit = dataclasses.replace(_on(1), regions=lines)
+    cited = dataclasses.replace(_cite(1, hit), regions=lines)
+    (page,) = sources.file_pages(hit.document_id, [cited], [])
+    assert page["regions"] == [{"kind": "box", "page": 1, "box": [0.1, 0.2, 0.9, 0.35]}]
+    cell = {"kind": "cell", "page": 3, "row": 4, "column": 2}
+    sheet = dataclasses.replace(_on(3), regions=[cell])
+    assert sources.file_pages(sheet.document_id, [], _searched(sheet))[0]["regions"] == [cell]
+
+
+def test_the_search_list_is_never_kept_on_the_answer_it_returns() -> None:
+    answer_service, _, _ = service(model=FakeModel())
+    answer = answer_service.answer(A, "What is the grand total of INV-1042?")
+    assert answer.searched_files and answer.searched == ()  # the ready cache keeps the answer
+
+
+def test_a_not_found_answer_lists_its_closest_documents_without_pages_or_paths() -> None:
+    weak = _on(2, name="notes.pdf", text="total of the month")
+    answer_service, _, _ = service(pieces=[weak], model=FakeModel())
+    data = answer_service.answer(A, "What is the grand total of INV-1042?").to_json()
+    assert data["status"] == "not_found" and data["documents"]
+    assert all({"pages", "path"}.isdisjoint(doc) for doc in data["documents"])  # the screen shows neither
+
+
+class _Focus(PgFocus):
+    """Step 22's focus, the first of ``last_cited``: one document with no keyed values."""
+
+    def __init__(self) -> None:
+        pass
+
+    def profile(self, customer_id: str, user_id: str | None, document_id: str) -> Profile | None:
+        return Profile(document_id, "focus.pdf", "", ())
+
+
+def test_an_other_document_question_reads_what_its_translated_search_gave_before() -> None:
+    """ "Any other document" leaves the focus out and reads one piece a document (step 22): from the
+    translated search's first ANSWER_MAX_EVIDENCE hits, as before the search fetched more."""
+    held = [
+        dataclasses.replace(piece(f"doc-{n}.pdf", f"{WORD}: {NAME} ({n})"), meaning_score=0.7)
+        for n in range(12)
+    ]
+    search = Search(held, held, {hit.piece_id: 0.7 for hit in held})
+    fake = FakeModel(drafts())
+    answer_service = AnswerService(
+        db=UNUSED_DB,
+        model=fake,
+        settings=ON,
+        clock=lambda: NOW,
+        retriever=search,
+        fixed_queries=FakeFixedQueries({}),
+        unchecked=FakeUnchecked(),
+        translator=fake,
+        translated_search=search,
+        focus=_Focus(),
+    )
+    question = "Who is the cultivator of this in any other document?"
+    answer_service.answer(A, question, last_cited=[held[0].document_id])
+    assert search.translations  # the translated search ran
+    read = [blocks for _, user in fake.prompts if (blocks := evidence_blocks(user))]
+    shown = sorted(text.rsplit("(", 1)[1].rstrip(")\n ") for text in read[0].values())
+    assert shown == ["1", "2", "3", "4"]  # held[0] is the focus; the first 5 hits less it
+
+
+@pytest.mark.db
+def test_a_saved_answers_searched_files_come_back_and_one_moved_to_trash_leaves_the_list(
+    db: Database,
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    used = api.add_document(signed.customer_id, name="used.pdf", uploaded_by=signed.user_id)
+    spare = api.add_document(signed.customer_id, name="spare.pdf", uploaded_by=signed.user_id)
+    files = [
+        {"document_id": d, "name": f"{d}.pdf", "used": d == used, "pages": [], "path": []}
+        for d in (used, spare)
+    ]
+    api.answers.reply = {**_cited_answer(used), "searched_files": files}
+    asked = signed.client.post("/api/chat", json={"question": "totals?"}, headers=CSRF).json()
+
+    def shown() -> dict[str, Any]:
+        reply = signed.client.get(f"/api/conversations/{asked['conversation_id']}")
+        return dict(reply.json()["messages"][1]["answer"])
+
+    first = shown()
+    assert first["searched_files"] == files
+    assert signed.client.delete(f"/api/documents/{spare}", headers=CSRF).status_code == 204
+    after = shown()
+    assert after["searched_files"] == files[:1]  # the spare left the list
+    assert {k: v for k, v in after.items() if k != "searched_files"} == {
+        k: v for k, v in first.items() if k != "searched_files"
+    }  # the answer itself stays

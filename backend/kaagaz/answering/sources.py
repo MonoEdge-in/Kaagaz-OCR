@@ -70,8 +70,19 @@ def file_pages(
 def _page(
     page_no: int, regions: Sequence[Mapping[str, Any]], snippet: str, cited: list[int]
 ) -> dict[str, Any]:
+    """One page row; its spot is one region, as the screen draws it (answer.ts citationRegion):
+    the page's boxes as the one box covering them all, else its first region."""
     on_page = [dict(region) for region in regions if region.get("page") == page_no]
-    return {"page_no": page_no, "regions": on_page, "snippet": snippet, "citations": cited}
+    boxes = [region["box"] for region in on_page if region.get("kind") == "box"]
+    if len(boxes) > 1:
+        covering = [
+            min(b[0] for b in boxes),
+            min(b[1] for b in boxes),
+            max(b[2] for b in boxes),
+            max(b[3] for b in boxes),
+        ]
+        on_page = [{"kind": "box", "page": page_no, "box": covering}]
+    return {"page_no": page_no, "regions": on_page[:1], "snippet": snippet, "citations": cited}
 
 
 def searched_files(citations: Sequence["Citation"], searched: Sequence[Evidence]) -> list[dict[str, Any]]:

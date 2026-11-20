@@ -16,6 +16,7 @@ from tests.test_answering_golden import NOW
 from tests.test_api_support import Api
 from tests.test_isolation_access_views import _app, _walled
 from tests.test_isolation_ask_views import HIDDEN, AskOrg, _ask_org
+from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
 
@@ -33,13 +34,28 @@ def test_a_path_stops_below_the_first_folder_the_asker_cannot_see(db: Database) 
         found = paths.paths(org.c, ids, user_id=org.people[person].user_id)
         return {name: found[d] for name, d in files.items() if d in found}
 
-    assert seen("management") == {
+    whole = {
         "fin": ["Finance"],
         "sal": ["Finance", "Salaries"],
         "sales": ["Sales"],
         "top": [],
         "given": ["Finance"],
     }
+    assert seen("management") == whole
+    # An Admin sees every folder's name (0086): given a Salaries file, its whole path.
+    _owner(
+        db,
+        "INSERT INTO document_shares (customer_id, document_id, user_id, given_by) VALUES (:c, :d, :u, :by)",
+        {
+            "c": org.c,
+            "d": files["sal"],
+            "u": org.people["admin"].user_id,
+            "by": org.people["management"].user_id,
+        },
+    )
+    admin = seen("admin")
+    assert admin["sal"] == ["Finance", "Salaries"]
+    assert all(path == whole[name] for name, path in admin.items())
     # On Salaries but not in Finance: Salaries is named, Finance above it never is.
     named = seen("named")
     assert named["sal"] == ["Salaries"]

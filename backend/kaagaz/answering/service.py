@@ -735,17 +735,18 @@ class AnswerService:
         answer's citations and its search's list, then every one's folder path as the asker sees
         it, in one statement; none with nothing listed."""
         files = searched_files(answer.citations, answer.searched)
+        # Only an answered card shows its files' pages and paths (FileSources.tsx).
+        shown = answer.documents if answer.status == "answered" else []
         documents = [
-            {**d, "pages": file_pages(d["document_id"], answer.citations, answer.searched)}
-            for d in answer.documents
+            {**d, "pages": file_pages(d["document_id"], answer.citations, answer.searched)} for d in shown
         ]
         ids = [str(row["document_id"]) for row in [*documents, *files]]
         if not ids:
-            return answer
+            return replace(answer, searched=())
         paths = self._paths.paths(customer_id, ids, user_id=user_id) if self._paths is not None else {}
-        return replace(
-            answer, documents=with_paths(documents, paths), searched_files=with_paths(files, paths)
-        )
+        listed = with_paths(documents, paths) if documents else answer.documents
+        # The search list is never kept: the ready cache holds the answer (review of #719).
+        return replace(answer, documents=listed, searched_files=with_paths(files, paths), searched=())
 
     def _respond(
         self,
@@ -1742,14 +1743,19 @@ class AnswerService:
                 _timing().vectorless = True  # #535: no outage, but never reused for a repeat
             if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
                 _timing().degraded = False
-            most = self._evidence_limit(question, scope, exclude)  # the rest is for the files searched
+            # The hits read, as many as the search kept before it fetched more for the files
+            # searched (#719); step 19's search and the translated one search without ``exclude``.
+            most = self._evidence_limit(question, scope, exclude)
+            unexcluded = min(most, self._evidence_limit(question, scope))
+            if early is not None and not aspects:
+                most = unexcluded
             translated = self._translated_search(
                 customer_id, user_id, question, query_text, vector, hits[:most], scope, expansion, extra
             )
             if translated is not None:
                 own = number_evidence(self._documents_once(question, scope, hits[:most], exclude))
                 first = enough_evidence(own, normalised.keywords, min_score, numbers, expansion)
-                hits = translated.hits
+                hits, most = translated.hits, unexcluded
             searched = tuple(number_evidence([hit for hit in hits if hit.document_id != exclude]))
             evidence = number_evidence(self._documents_once(question, scope, hits[:most], exclude))
         hits_only = list(evidence)  # the search's own hits, before widening adds to the list

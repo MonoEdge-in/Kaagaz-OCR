@@ -154,9 +154,17 @@ export function listedDocuments(answer: Pick<Answer, "documents" | "citations">)
 }
 
 /** #718: the files a new answer lists with their pages (Sources by file); [] for an answer saved
- * before, which shows its sources one by one as it did. */
-export function sourceFiles(answer: Pick<Answer, "documents">): (ListedDocument & { pages: FilePage[] })[] {
-  return (answer.documents ?? []).flatMap((doc) => (doc.pages ? [{ ...doc, pages: doc.pages }] : []));
+ * before, which shows its sources one by one as it did. Each is named as its sources name it (the
+ * file's name, as in "Searched N files"), and `older` when they are of an older version. */
+export function sourceFiles(
+  answer: Pick<Answer, "documents" | "citations">,
+): (ListedDocument & { pages: FilePage[]; name: string; older: boolean })[] {
+  return (answer.documents ?? []).flatMap((doc) => {
+    if (!doc.pages) return [];
+    const own = answer.citations.filter((c) => c.document_id === doc.document_id);
+    const name = own[0]?.document_name ?? doc.title;
+    return [{ ...doc, pages: doc.pages, name, older: own.some((c) => citationSource(c) === "older") }];
+  });
 }
 
 /** #718: a file's place, "Land & Legal › Sale deeds"; "Shared with you" in a folder this person

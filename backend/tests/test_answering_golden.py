@@ -68,7 +68,8 @@ ANSWER_KEYS = {
     "documents",
     "assumptions",
 }
-DOCUMENT_KEYS = {"document_id", "title", "why", "citations", "pages", "path"}  # PRD 6 A; #718
+DOCUMENT_KEYS = {"document_id", "title", "why", "citations"}  # PRD 6 A
+SOURCED_KEYS = {"pages", "path"}  # #718: an answered card's files only
 CITATION_KEYS = {
     "n",
     "kind",
@@ -573,7 +574,8 @@ def assert_well_formed(answer: Answer) -> None:
     assert (data["version"], data["opening"], data["assumptions"]) == (2, None, [])
     assert len(data["documents"]) <= 10
     for doc in data["documents"]:
-        assert set(doc) == DOCUMENT_KEYS and doc["title"]
+        sourced = SOURCED_KEYS if data["status"] == "answered" else set()
+        assert set(doc) == DOCUMENT_KEYS | sourced and doc["title"]
         assert not any(ch.isdigit() for ch in doc["why"])
         owners = {c["document_id"] for c in data["citations"] if c["n"] in doc["citations"]}
         assert owners <= {doc["document_id"]}

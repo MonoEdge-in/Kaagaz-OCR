@@ -2,7 +2,8 @@
 
 // Sources by file (#718, design board 1) and the files searched (#719, board 2). Each file is one
 // compact row: an arrow button that shows or hides its pages, the file's name, its folder path in
-// grey ("Shared with you" in a folder this person can't see), how many pages, and "Open file".
+// grey ("Shared with you" in a folder this person can't see; "From an older version" when its
+// sources are), how many pages, and "Open file". It is named as in "Searched N files".
 // Open, it lists up to 5 pages: the label, the text with the question's words marked, the
 // citation numbers ("[1]") or "Also matches", and "Open", which goes to the exact spot. "Searched
 // N files" under the sources opens the closest files the search found, best first, the cited ones
@@ -14,6 +15,7 @@ import { Icon } from "@/components/ui/Icon";
 import { useBackFrom, withFrom } from "@/lib/backLink";
 import type { FilePage, SearchedFile } from "@/lib/types";
 import {
+  OLDER_VERSION_TEXT,
   SEARCHED_SHOWN,
   documentLink,
   filePageLink,
@@ -34,12 +36,13 @@ interface FileRowProps {
   rank?: number; // the searched list's place, shown before the name
   used?: boolean; // the answer cites it (the searched list)
   startOpen?: boolean;
+  older?: boolean; // its sources are of an older version (SourceCard's words)
 }
 
-function FileRow({ id, name, path, pages, terms, rank, used = false, startOpen = false }: FileRowProps) {
+function FileRow({ id, name, path, pages, terms, rank, used = false, startOpen = false, older = false }: FileRowProps) {
   const from = useBackFrom();
   const [open, setOpen] = useState(startOpen);
-  const place = folderPathText(path);
+  const place = [folderPathText(path), older ? OLDER_VERSION_TEXT : ""].filter(Boolean).join(" · ");
   return (
     <li className={styles.fileItem}>
       <div className={styles.fileRow}>
@@ -92,7 +95,7 @@ export function FileSources({
   files,
   terms,
 }: {
-  files: readonly { document_id: string; title: string; path?: string[] | null; pages: FilePage[] }[];
+  files: readonly { document_id: string; name: string; path?: string[] | null; pages: FilePage[]; older: boolean }[];
   terms: readonly string[];
 }) {
   return (
@@ -104,7 +107,8 @@ export function FileSources({
             <FileRow
               key={file.document_id}
               id={file.document_id}
-              name={file.title}
+              name={file.name}
+              older={file.older}
               path={file.path}
               pages={file.pages}
               terms={terms}

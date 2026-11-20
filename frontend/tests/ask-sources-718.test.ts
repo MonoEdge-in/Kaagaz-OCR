@@ -27,7 +27,7 @@ const citation = (n: number, document_id: string, page_no: number): Citation => 
   kind: "piece",
   ref_id: `p${n}`,
   document_id,
-  document_name: `${document_id}.pdf`,
+  document_name: "7-12 Extract Survey 44 Wakad.pdf", // the file's name, as "Searched N files" names it
   detected_type: "pdf",
   page_no,
   regions: [{ kind: "box", page: page_no, box: [0.1, 0.2, 0.3, 0.4] }],
@@ -58,7 +58,7 @@ const answered = (extra: Partial<Answer> = {}): Answer => ({
   documents: [
     {
       document_id: "deed",
-      title: "7-12 Extract Survey 44 Wakad.pdf",
+      title: "Satbara extract, Survey 44", // the card's title (DocumentList), not the row's name
       why: "",
       citations: [1, 2],
       path: ["Land & Legal", "Land records"],
@@ -86,9 +86,11 @@ const message = (answer: Answer): Message => ({
 
 describe("sources by file, decided in node", () => {
   it("groups only a new answer's files; one saved before has none", () => {
-    expect(sourceFiles(answered()).map((file) => [file.document_id, file.pages.length])).toEqual([["deed", 3]]);
+    expect(sourceFiles(answered()).map((file) => [file.document_id, file.name, file.pages.length, file.older])).toEqual([
+      ["deed", "7-12 Extract Survey 44 Wakad.pdf", 3, false],
+    ]);
     expect(sourceFiles(savedBefore(answered()))).toEqual([]);
-    expect(sourceFiles({})).toEqual([]);
+    expect(sourceFiles({ citations: [] })).toEqual([]);
   });
 
   it("says the path, Shared with you for a hidden folder, nothing at the top level", () => {
@@ -122,6 +124,13 @@ describe("an answer's sources, rendered", () => {
     expect(html).toContain("/documents/deed?page=4");
     expect(html).toContain("Searched 2 files");
     expect(html).not.toContain("Most relevant"); // the cards one by one are an old answer's
+  });
+
+  it("says a file's sources are of an older version, as a source card does", async () => {
+    const old = answered();
+    const html = await render({ ...old, citations: old.citations.map((c) => ({ ...c, source_state: "older_version" })) });
+    expect(html).toContain("Land &amp; Legal › Land records · From an older version");
+    expect(await render(old)).not.toContain("From an older version");
   });
 
   it("shows an answer saved before as it did: its cited sources one by one, no file rows", async () => {
