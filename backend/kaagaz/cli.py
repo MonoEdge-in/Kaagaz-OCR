@@ -173,6 +173,8 @@
   delayed job counts, read from the queue (``SqsQueue.backlog``). It touches no database, file
   storage or model. The server's idle-stop reads it to stay awake while a job is in flight or a
   retry waits. Numbers only.
+* ``score-ask --customer-id --questions FILE [--embed] [--answers]`` (#721): Ask's search scored
+  on a question file for one customer (``kaagaz.answering.scorecard``); prints its questions.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -196,7 +198,7 @@ import unicodedata
 import uuid
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import IO, Any, Protocol, TextIO
@@ -210,7 +212,10 @@ from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.ai.openrouter import OpenRouterClient
 from kaagaz.ai.usage import usage_scope
+from kaagaz.answering import scorecard
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
+from kaagaz.answering.evidence import Hit
+from kaagaz.answering.service import AnswerService
 from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
@@ -451,6 +456,17 @@ def _parser() -> argparse.ArgumentParser:
     alert.add_argument("--text", required=True)
 
     commands.add_parser("queue-depth", help="each lane's waiting, in-flight and delayed job counts")
+    score = commands.add_parser(
+        "score-ask", help="score Ask's search on a question file for one customer (no model call by default)"
+    )
+    score.add_argument("--customer-id", required=True)
+    score.add_argument("--questions", required=True, type=Path, help="the JSON file (answering/scorecard.py)")
+    score.add_argument(
+        "--embed", action="store_true", help="search by meaning too (an embedding call a question)"
+    )
+    score.add_argument(
+        "--answers", action="store_true", help="answer each in full, check its citations (COSTS model calls)"
+    )
     return parser
 
 
@@ -1130,6 +1146,51 @@ _ACCESS_ORPHANS = text(
     " AND NOT EXISTS (SELECT 1 FROM trashed_folders t WHERE t.customer_id = :c AND t.id = m.folder_id)"
     " ORDER BY 1, 2, 3"
 )
+
+
+def _score_ask(
+    db: Database, settings: Settings, model: ModelClient | None, args: argparse.Namespace, out: TextIO
+) -> None:
+    """#721: ``scorecard.run`` over ``--questions`` for ``--customer-id``, each search in that
+    customer's transaction (``AnswerService``), on the organisation (no person). No model call
+    without --embed or --answers; with one, the configured clients (a test's ``model``), built as
+    the API builds Ask's (api/app.py), their calls billed to the customer, as reembed's. A question
+    searched without its meaning vector (the embedding failed) is counted and said, never hidden."""
+    try:
+        items = scorecard.load(args.questions.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise CliError(f"score-ask: {error}") from None
+    translator = None
+    if not (args.embed or args.answers):
+        model = None
+    elif model is None:
+        model = build_model_client(settings, db=db)
+        if model is None:
+            raise CliError("score-ask --embed or --answers needs the model: set MODEL_ENABLED=true")
+        timeout = settings.model_translate_timeout_seconds  # the translation waits at most this
+        translator = build_model_client(settings, chat_timeout_seconds=timeout, db=db)
+    customer = args.customer_id
+    service = AnswerService(
+        db=db, model=model, settings=settings, clock=lambda: datetime.now(UTC), translator=translator or model
+    )
+    blind = 0
+
+    def evidence(question: str) -> Sequence[Hit]:
+        nonlocal blind
+        hits, meant = service.evidence_hits(customer, question, user_id=None)
+        if model is not None and not meant:
+            blind += 1
+        return hits
+
+    def cited(question: str) -> list[tuple[str, int, int]]:
+        found = service.answer(customer, question)
+        return [(c.document_name, c.page_from, c.page_to) for c in found.citations]
+
+    kind = "chat" if args.answers else "search"
+    with nullcontext() if model is None else usage_scope(db, customer_id=customer, user_id=None, kind=kind):
+        scorecard.run(items, evidence, out, cited if args.answers else None)
+    if blind:
+        out.write(f"searched by words only, the embedding failed: {blind} of {len(items)} questions\n")
 
 
 def _check_access(db: Database, out: TextIO) -> int:
@@ -1982,6 +2043,8 @@ def main(
         elif args.command == "check-access":
             if _check_access(db, stdout):
                 return 1
+        elif args.command == "score-ask":
+            _score_ask(db, settings or Settings.from_env(env), model, args, stdout)
         elif args.command == "cost-saving":
             stdout.write(cost_saving_report(_ready_runs(db, args.customer_id, args.last)) + "\n")
         elif args.command in CUSTOMER_STATUS:
