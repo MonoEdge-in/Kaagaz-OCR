@@ -35,14 +35,20 @@
 		}
 	}
 
-	# Keycloak (company sign-in, #735), when it runs. Its admin console and admin API are never
-	# served from the internet; admin work goes through kcadm.sh inside the container. If
-	# Keycloak is not running, the error handler below answers.
-	handle /kc/admin* {
+	# Keycloak (company sign-in, #735), when it runs. Only the sign-in pages
+	# (/kc/realms/<realm>/...) and their files (/kc/resources/) are served. The master realm
+	# (Keycloak's own admin realm) and the admin console and API are never served from the
+	# internet; admin work goes through kcadm.sh inside the container. If Keycloak is not
+	# running, the error handler below answers.
+	handle /kc/realms/master* {
 		respond 404
 	}
-	handle /kc/* {
+	@keycloak_pages path /kc/realms/* /kc/resources/*
+	handle @keycloak_pages {
 		reverse_proxy keycloak:8080
+	}
+	handle /kc/* {
+		respond 404
 	}
 
 	handle {
@@ -67,7 +73,8 @@
 	# words; source_name: a folder upload's name; property: a survey number read from a document;
 	# code and state: a Google sign-in's; hub.verify_token and hub.challenge: Meta's WhatsApp
 	# webhook check, #603; key and session_code: Keycloak's emailed action links and login
-	# steps, #735), and the Referer header, which repeats
+	# steps; id_token_hint, login_hint and client_data: a Keycloak sign-out's ID token, a
+	# sign-in's email and Keycloak's encoded return address, #735), and the Referer header, which repeats
 	# a page's address, is not logged. The idle check reads only the path and the Cookie
 	# header's name.
 	log {
@@ -87,6 +94,9 @@
 					delete hub.challenge
 					delete key
 					delete session_code
+					delete id_token_hint
+					delete login_hint
+					delete client_data
 				}
 				request>headers>Referer delete
 			}
