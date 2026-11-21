@@ -271,7 +271,11 @@ def test_an_operator_session_opens_no_customer_route(db: Database) -> None:
     for method, path in calls:
         body: dict[str, str] | None = None if method in ("GET", "DELETE") else {}
         reply = api.client().request(method, path, headers=cookie, json=body)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), (method, path)
+        # The company sign-in's open routes are 404 while Keycloak is off (this app's settings), whoever
+        # asks; its re-check (reauth) needs a customer session first, so an operator's is 401 like the rest.
+        off = "/auth/keycloak/" in path and "/reauth/" not in path
+        expected = (404, "not_found") if off else (401, "not_signed_in")
+        assert (reply.status_code, reply.json()["error"]["code"]) == expected, (method, path)
 
 
 def test_a_customer_admin_session_with_two_step_opens_no_operator_route(db: Database) -> None:
