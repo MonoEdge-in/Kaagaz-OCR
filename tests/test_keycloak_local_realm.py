@@ -34,6 +34,7 @@ class KeycloakLocalRealmTests(unittest.TestCase):
                 "KEYCLOAK_ADMIN_CLIENT_SECRET": "",
                 "KEYCLOAK_FLOW_ENCRYPTION_KEY": "",
                 "KEYCLOAK_ENABLED": "false",
+                "KEYCLOAK_ADMIN_URL": "",
             },
             values(api_template),
         )

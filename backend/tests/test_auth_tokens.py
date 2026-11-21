@@ -704,4 +704,5 @@ def test_keycloak_admin_url_is_optional_checked_and_kept_without_a_trailing_slas
     ):
         with pytest.raises(SettingsError, match="KEYCLOAK_ADMIN_URL"):
             Settings.from_env(_keycloak_env(KEYCLOAK_ADMIN_URL=bad))
-    assert Settings.from_env(_example_env()).keycloak_admin_url is None  # Keycloak off: not read
+    off = Settings.from_env(_example_env(KEYCLOAK_ADMIN_URL="http://evil.example/kc"))  # off: not read
+    assert off.keycloak_admin_url is None
