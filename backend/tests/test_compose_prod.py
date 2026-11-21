@@ -473,6 +473,7 @@ def test_keycloak_runs_on_the_test_server_in_production_mode_behind_caddy() -> N
     path = re.search(r"^      KC_HTTP_RELATIVE_PATH: (\S+)$", block, re.MULTILINE).group(1)
     assert re.search(rf"^      KC_HOSTNAME: .*{re.escape(path)}$", block, re.MULTILINE)
     assert re.search(r"- path: \.env\.keycloak-admin\n\s+required: true\n", block)
+    assert "      - ./keycloak/themes/kaagaz:/opt/keycloak/themes/kaagaz:ro\n" in block  # #737 theme
     assert has(block, "mem_limit: 1g")
     assert has(block, 'profiles: ["keycloak"]')
     assert has(block, "networks: [edge, data]")

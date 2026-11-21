@@ -50,9 +50,10 @@ class KeycloakLocalRealmTests(unittest.TestCase):
         self.assertEqual([], REALM["identityProviderMappers"])
         self.assertFalse(REALM["registrationAllowed"])
         self.assertTrue(REALM["bruteForceProtected"])
-        self.assertIn("length(14)", REALM["passwordPolicy"])
-        self.assertIn("notUsername", REALM["passwordPolicy"])
+        self.assertEqual("length(10) and notUsername", REALM["passwordPolicy"])  # owner: 10+, no symbol rules
         self.assertEqual("external", REALM["sslRequired"])
+        self.assertEqual(("Kaagaz", "kaagaz", "kaagaz"), (REALM["displayName"], REALM["loginTheme"], REALM["emailTheme"]))
+        self.assertTrue(REALM["resetPasswordAllowed"])
         self.assertEqual("totp", REALM["otpPolicyType"])
         self.assertEqual(6, REALM["otpPolicyDigits"])
 
