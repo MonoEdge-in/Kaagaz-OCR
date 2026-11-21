@@ -41,9 +41,10 @@ def test_the_downgrade_refuses_while_a_remove_is_kept(fresh: tuple[str, Database
 
     # Changed on purpose (#737, 21 Nov 2026): sign-in marks people Keycloak, which 0103 won't downgrade;
     # clear it so the refusal below is the kept row's own.
-    clear_keycloak_state(db)
-    with pytest.raises(subprocess.CalledProcessError):
+    clear_keycloak_state(db, admin.customer_id)
+    with pytest.raises(subprocess.CalledProcessError) as refused:
         base._downgrade(url, BEFORE)
+    assert b"an admin removed what Kaagaz learned" in refused.value.stderr
     # As the table owner: the app may never delete a Remove.
     assert _owner(db, "SELECT count(*) FROM learning_removals", {}) == [(1,)]
     _owner(db, "DELETE FROM learning_removals", {})

@@ -41,9 +41,10 @@ def test_the_downgrade_refuses_while_a_reason_the_notice_or_a_handled_mark_is_ke
 
     # Changed on purpose (#737, 21 Nov 2026): sign-in marks people Keycloak, which 0103 won't downgrade;
     # clear it so the refusal below is the kept row's own.
-    clear_keycloak_state(db)
-    with pytest.raises(subprocess.CalledProcessError):
+    clear_keycloak_state(db, signed.customer_id)
+    with pytest.raises(subprocess.CalledProcessError) as refused:
         base._downgrade(url, BEFORE)
+    assert b"downgrading would lose them" in refused.value.stderr
     with db.customer(signed.customer_id) as conn:
         assert conn.execute(text("SELECT reason_codes FROM feedback")).scalar_one() == ["wrong_figure"]
         conn.execute(text("UPDATE feedback SET reason_codes = '{}', notice_shown = false"))

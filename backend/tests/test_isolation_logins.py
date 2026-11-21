@@ -249,10 +249,12 @@ def test_the_app_only_adds_to_the_audit_logs(db: Database) -> None:
 
 
 def test_the_app_works_under_its_own_login(logins: dict[str, str]) -> None:
-    """A representative request and worker path, with no owner login anywhere: sign-in
-    (kaagaz_login_lookup), a new customer (kaagaz_create_customer), a document listed, the
-    worker's advisory locks (no switch: they need no right) and the health ping; and the
-    super admin's switch on its own login."""
+    """A representative request and worker path, with no owner login except the sign-in's Keycloak
+    authority (the Keycloak callback can't run in tests): the session is minted, a new
+    customer (kaagaz_create_customer), a document listed, the worker's advisory locks
+    (no switch: they need no right) and the health ping; and the super admin's switch on its own login."""
+    # Changed on purpose (#737, 21 Nov 2026): the session is minted, not signed in through a route; only
+    # its Keycloak authority is written as the owner, because the Keycloak callback can't run in tests.
     app_engine, ops_engine = make_engine(logins[API]), make_engine(logins[OPS])
     try:
         app_db = Database(app_engine, APP_ROLE)
@@ -304,12 +306,14 @@ def test_a_folder_upload_plans_registers_and_sends_under_the_app_login(logins: d
 def test_the_storage_limit_is_read_and_enforced_under_the_two_logins(
     db: Database, logins: dict[str, str]
 ) -> None:
-    """#516 (0061d, merged by 0075) under #479: no owner right anywhere. The super admin's login
-    reads one organisation's limit and the bytes it holds (``kaagaz_op_storage_limit``); on the
-    app's login its admin reads the same, a file of exactly the bytes left goes in, the next is
-    refused ``storage_full`` at the upload, the resumable complete and the folder upload plan, and
-    a duplicate is still answered. The limit is written as the owner here: its write needs a fresh
-    code (test_operator_storage_limit_db)."""
+    """#516 (0061d, merged by 0075) under #479: no owner right but the sign-in's Keycloak authority.
+    The super admin's login reads one organisation's limit and the bytes it holds
+    (``kaagaz_op_storage_limit``); on the app's login its admin reads the same, a file of exactly
+    the bytes left goes in, the next is refused ``storage_full`` at the upload, the resumable complete
+    and the folder upload plan, and a duplicate is still answered. The limit is written as the owner
+    here: its write needs a fresh code (test_operator_storage_limit_db)."""
+    # Changed on purpose (#737, 21 Nov 2026): only the minted session's Keycloak authority is written as the
+    # owner, because the Keycloak callback can't run in tests.
     app_engine, ops_engine = make_engine(logins[API]), make_engine(logins[OPS])
     try:
         api = Api(Database(app_engine, APP_ROLE), storage=ResumableStorage())

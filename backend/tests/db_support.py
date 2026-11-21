@@ -363,8 +363,14 @@ def _write_as_owner(db: Database, statement: str, params: dict[str, Any] | None 
         with db.engine.begin() as conn:
             conn.execute(text(statement), params or {})
         return
-    with _owner_database() as owner, owner.engine.begin() as conn:
-        conn.execute(text(statement), params or {})
+    owner_url = make_url(database_url())  # the owner's login, on db's own database
+    url = db.engine.url.set(username=owner_url.username, password=owner_url.password)
+    owner = make_database(url.render_as_string(hide_password=False))
+    try:
+        with owner.engine.begin() as conn:
+            conn.execute(text(statement), params or {})
+    finally:
+        owner.engine.dispose()
 
 
 def mark_keycloak(db: Database, customer_id: str, user_id: str) -> None:
@@ -376,14 +382,12 @@ def mark_keycloak(db: Database, customer_id: str, user_id: str) -> None:
     )
 
 
-def clear_keycloak_state(db: Database) -> None:
-    """Put every person back on the pre-0103 authority and drop the Keycloak identity, session and flow
-    rows, which are what 0103's downgrade guard looks at. For a test of another migration's downgrade
-    that signs people in first (sign-in marks them Keycloak) and must refuse for its own reason."""
-    for statement in (
-        "DELETE FROM keycloak_sessions",
-        "DELETE FROM keycloak_flows",
-        "DELETE FROM keycloak_identities",
-        "UPDATE users SET auth_authority = 'legacy' WHERE auth_authority = 'keycloak'",
-    ):
-        _write_as_owner(db, statement)
+def clear_keycloak_state(db: Database, customer_id: str) -> None:
+    """Put this organisation's people back on the pre-0103 authority. For a test of another migration's
+    downgrade that signs people in first (sign-in marks them Keycloak, which 0103's downgrade refuses)
+    and must refuse for its own reason. Sign-in writes no identity, session or flow rows."""
+    _write_as_owner(
+        db,
+        "UPDATE users SET auth_authority = 'legacy' WHERE customer_id = :c AND auth_authority = 'keycloak'",
+        {"c": customer_id},
+    )

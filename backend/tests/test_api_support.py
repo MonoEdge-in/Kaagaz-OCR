@@ -346,9 +346,8 @@ class Api:
         """Sign this user in on ``client`` the way the Keycloak callback ends (``routers/keycloak.py``
         ``_login``): the user's authority is Keycloak and the cookie is a ``keycloak`` session at the
         required assurance. No route is used, because the only sign-in is Keycloak's own page."""
-        mark_keycloak(
-            self.db, customer_id, user_id
-        )  # as the owner: the API may not write auth_authority (0103)
+        # As the owner: the API may not write auth_authority (0103).
+        mark_keycloak(self.db, customer_id, user_id)
         with self.app_db.user(customer_id, user_id) as conn:  # the callback's own: the idle clock starts
             users_sql.attempt_succeeded(conn, customer_id, user_id, now=self.clock())
             audit.record(

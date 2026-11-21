@@ -44,13 +44,13 @@ def test_b_gets_404_on_every_trash_route_with_a_s_ids_and_a_is_unchanged(db: Dat
 
     # Changed on purpose (#737, 21 Nov 2026): delete forever needs a fresh sign-in proof first; B has
     # it, so B still reaches the lookup and gets 404.
+    api.prove(b, "delete_forever")
     replies = [
         b.client.delete(f"/api/documents/{live}", headers=CSRF),
         b.client.post(f"/api/documents/{binned}/restore", headers=CSRF),
+        b.client.delete(f"/api/documents/{binned}/permanent", headers=CSRF),
+        b.client.delete(f"/api/documents/{older}/permanent", headers=CSRF),
     ]
-    for document in (binned, older):
-        api.prove(b, "delete_forever")
-        replies.append(b.client.delete(f"/api/documents/{document}/permanent", headers=CSRF))
 
     assert [(reply.status_code, reply.json()) for reply in replies] == [(404, NOT_FOUND)] * 4
     assert _state(db, a.customer_id) == before
