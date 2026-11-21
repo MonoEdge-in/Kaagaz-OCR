@@ -39,7 +39,7 @@ const nextConfig: NextConfig = {
       {
         // The emailed links' pages (#457): their token is in the fragment, never sent anyway;
         // no referrer at all leaves these pages, as the spec asks for link paths.
-        source: "/:page(reset-password|invite|email/confirm)",
+        source: "/:page(reset-password|email/confirm)",
         headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
       },
       {

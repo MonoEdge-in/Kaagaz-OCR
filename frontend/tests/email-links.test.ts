@@ -59,10 +59,8 @@ describe("what the email screens say", () => {
   it("says what to do next about a gone link, per page (#457 review)", () => {
     const gone = new ApiError(400, "link_expired", "That link has expired or was already used.");
     expect(linkGone("reset")).toBe("That link has expired or was already used. Ask for a new one from Forgot password.");
-    expect(linkGone("invite")).toBe("That link has expired or was already used. Ask your admin to send a new invite.");
     expect(linkGone("confirm")).toBe("That link has expired or was already used. Sign in to get a new link.");
     expect(linkError(gone, "reset")).toBe(linkGone("reset"));
-    expect(linkError(gone, "invite")).toBe(linkGone("invite"));
     expect(linkError(gone, "confirm")).toBe(linkGone("confirm"));
     const form = read("app/reset-password/LinkPasswordForm.tsx");
     expect(form).toContain("linkError(caught, kind)");
@@ -123,18 +121,11 @@ describe("what the email screens say", () => {
       title: "Confirm your email",
       text: "We couldn't send the confirm link to asha@sharma.example. Try sending it again.",
     });
-    // Changed on purpose (#457 review): the typed temporary password is always kept, and a
-    // failed invite is a problem notice.
-    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in", invited: true })).toEqual({
-      text: "Invite sent to ramesh@firm.in. If it doesn't arrive, give Ramesh the temporary password you typed.",
-    });
-    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in", invited: false })).toEqual({
-      problem: true,
-      text: "Couldn't send the invite email. Give Ramesh the temporary password you typed.",
-    });
-    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in" })).toEqual({
-      text: "Added Ramesh. They choose their own password when they first sign in.",
-    });
+    // Changed on purpose (#737): the server's own result line; a setup email that did not go is a problem.
+    const sent = "Added. We emailed ramesh@firm.in a link to set their password and authenticator. It works for 12 hours.";
+    expect(addedNotice({ setup_email_sent: true, message: sent })).toEqual({ text: sent });
+    const failed = "Added, but the setup email could not be sent. Use Resend setup email.";
+    expect(addedNotice({ setup_email_sent: false, message: failed })).toEqual({ problem: true, text: failed });
   });
 
   it("knows a sign-up that waits for its email", () => {

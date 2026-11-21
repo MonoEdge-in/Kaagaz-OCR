@@ -53,27 +53,20 @@ import {
 import { GoogleRulesFields } from "@/components/admin/SettingsPanel";
 import {
   OFF_HINT,
-  OrgGoogleSignInDialog,
   PlatformGoogleSignIn,
-  choiceLabels,
-  inForceText,
-  orgGoogleConfirm,
   platformGoogleConfirm,
 } from "@/components/operator/GoogleSignIn";
-import { MENU_HELP } from "@/components/operator/OrganisationsView";
 import { WAYS_PATH, appChrome, appGate } from "@/components/shell/gate";
 import {
   ApiError,
-  getOrgGoogleSignIn,
+  getGoogleSignIn,
   onGoogleLinkRequired,
   setGoogleSignIn,
-  setOrgGoogleSignIn,
   updateSettings,
 } from "@/lib/api";
-import type { AdminUser, GoogleRules, Me, OrgGoogleSignIn, Organisation } from "@/lib/types";
+import type { AdminUser, GoogleRules, Me } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
-const ORG = { id: "org-1", name: "Sharma Traders" } as Organisation;
 const html = (text: string) => text.replaceAll("'", "&#x27;");
 
 afterEach(() => {
@@ -247,7 +240,7 @@ describe("the limited session (a Google-only person with no passing account)", (
           headers: { "Content-Type": "application/json" },
         }),
     );
-    await expect(getOrgGoogleSignIn("org-1")).rejects.toMatchObject({ code: "google_link_required" });
+    await expect(getGoogleSignIn()).rejects.toMatchObject({ code: "google_link_required" });
     expect(heard).toHaveBeenCalledTimes(1);
     expect(read("lib/session.tsx")).toContain("onGoogleLinkRequired(");
   });
@@ -435,77 +428,20 @@ describe("Add a user (plan section 5)", () => {
   });
 });
 
-describe("the super admin's Google sign-in", () => {
-  it("opens from the Manage menu, with its plain line", () => {
-    expect(MENU_HELP.google).toBe("Let this organisation's people sign in with Google, or turn it off.");
+describe("the super admin's Google sign-in (the platform's default only: each organisation's switch is gone, #737)", () => {
+  it("has no Manage menu entry per organisation", () => {
     const view = read("components/operator/OrganisationsView.tsx");
-    expect(view).toContain('{ label: "Google sign-in", description: MENU_HELP.google, onSelect: onGoogle }');
-    expect(view.indexOf('org.status === "deleting"')).toBeLessThan(view.indexOf('label: "Google sign-in"'));
+    expect(view).not.toContain("Google sign-in");
+    expect(read("lib/api.ts")).not.toContain("google-signin`");
   });
 
-  it("offers following the platform, On and Off, and shows the admin's rules read-only", () => {
-    expect(choiceLabels(true)).toEqual(["Follow the platform (On)", "On", "Off"]);
-    expect(choiceLabels(false)[0]).toBe("Follow the platform (Off)");
+  it("says what Off does", () => {
     expect(OFF_HINT).toBe(
       "Off: everyone signs in with their password, even where admins chose Google only. Connected accounts are kept. People signed in with Google are signed out.",
     );
-    const dialog = renderToStaticMarkup(createElement(OrgGoogleSignInDialog, { org: ORG, onClose: () => {}, onDone: () => {} }));
-    expect(dialog).toContain("Google sign-in for Sharma Traders");
-    expect(dialog).toContain(html(MENU_HELP.google));
-    const source = read("components/operator/GoogleSignIn.tsx");
-    expect(source).toContain("rolesText(value.google_only_roles)");
-    expect(source).toContain("value.domains");
-  });
-
-  const value = (on: boolean | null, platformOn: boolean, effective?: boolean): OrgGoogleSignIn => ({
-    on,
-    platform_on: platformOn,
-    effective: effective ?? (on ?? platformOn),
-    google_only_roles: [],
-    domains: [],
-  });
-
-  it("shows the value in force, and says when the server has Google sign-in off (#507 review)", () => {
-    expect(inForceText(value(true, false))).toBe("In force: On.");
-    expect(inForceText(value(null, false))).toBe("In force: Off.");
-    expect(inForceText(value(null, true, false))).toBe("In force: Off. Google sign-in is off on this server.");
-    expect(inForceText(value(false, true, false))).toBe("In force: Off.");
-    expect(read("components/operator/GoogleSignIn.tsx")).toContain("{inForceText(value)}");
-  });
-
-  it("says people are signed out only when the value in force changes (#507 review)", () => {
-    const signedOut = /signed out/;
-    expect(orgGoogleConfirm(ORG, false, value(true, false)).effect).toMatch(signedOut); // On to Off
-    expect(orgGoogleConfirm(ORG, false, value(null, false)).effect).not.toMatch(signedOut); // Off stays Off
-    expect(orgGoogleConfirm(ORG, true, value(null, true)).effect).not.toMatch(signedOut); // On stays On
-    expect(orgGoogleConfirm(ORG, true, value(false, true)).effect).toMatch(signedOut); // Off to On
-    expect(orgGoogleConfirm(ORG, null, value(true, true)).effect).not.toMatch(signedOut);
-    expect(orgGoogleConfirm(ORG, null, value(false, true)).effect).toMatch(signedOut);
-    // The server's switch off: the organisation's value still changes, and its sign-out still happens.
-    expect(orgGoogleConfirm(ORG, false, value(true, true, false)).effect).toMatch(signedOut);
   });
 
   it("asks first, with a fresh code, before every change", () => {
-    const off = orgGoogleConfirm(ORG, false, value(null, true));
-    expect(off).toMatchObject({
-      title: "Turn Google sign-in off for Sharma Traders?",
-      action: "Turn off",
-      done: "Google sign-in is off for Sharma Traders.",
-      danger: true,
-      stepUp: true,
-    });
-    expect(off.effect).toContain("Connected accounts are kept.");
-    expect(orgGoogleConfirm(ORG, true, value(null, false))).toMatchObject({
-      title: "Turn Google sign-in on for Sharma Traders?",
-      action: "Turn on",
-      danger: false,
-      stepUp: true,
-    });
-    expect(orgGoogleConfirm(ORG, null, value(false, true))).toMatchObject({
-      title: "Make Sharma Traders follow the platform for Google sign-in?",
-      done: "Sharma Traders follows the platform for Google sign-in (On).",
-      stepUp: true,
-    });
     expect(platformGoogleConfirm(false)).toMatchObject({
       title: "Turn Google sign-in off for the platform?",
       action: "Turn off",
@@ -521,19 +457,13 @@ describe("the super admin's Google sign-in", () => {
     expect(renderToStaticMarkup(createElement(PlatformGoogleSignIn))).toContain("Google sign-in");
   });
 
-  it("reads and saves in the agreed shapes", async () => {
+  it("saves in the agreed shape", async () => {
     const sent: { url: string; method: string; body: unknown }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
       sent.push({ url, method: init.method ?? "GET", body: init.body ? JSON.parse(String(init.body)) : undefined });
       return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
     });
-    await getOrgGoogleSignIn("org-1");
-    await setOrgGoogleSignIn("org-1", null, "123456");
     await setGoogleSignIn(false, "654321");
-    expect(sent).toEqual([
-      { url: "/api/operator/orgs/org-1/google-signin", method: "GET", body: undefined },
-      { url: "/api/operator/orgs/org-1/google-signin", method: "PUT", body: { on: null, code: "123456" } },
-      { url: "/api/operator/google-signin", method: "PUT", body: { on: false, code: "654321" } },
-    ]);
+    expect(sent).toEqual([{ url: "/api/operator/google-signin", method: "PUT", body: { on: false, code: "654321" } }]);
   });
 });

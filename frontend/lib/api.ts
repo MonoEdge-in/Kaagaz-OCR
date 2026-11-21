@@ -93,7 +93,9 @@ import type {
   OrgAdmin,
   OrgAiReply,
   OrgFeatureSwitch,
-  OrgGoogleSignIn,
+  MoveResult,
+  ResultLine,
+  SignInSummary,
   OrgFolderLimits,
   Organisation,
   OrgModelRates,
@@ -418,8 +420,6 @@ export const resendConfirmEmail = (email: string) =>
 export const forgotPassword = (email: string) => request<{ message: string }>("POST", "/auth/forgot", { email });
 export const resetPassword = (token: string, newPassword: string) =>
   request<{ ok: boolean }>("POST", "/auth/reset", { token, new_password: newPassword });
-export const acceptInvite = (token: string, newPassword: string) =>
-  request<{ ok: boolean }>("POST", "/auth/invite/accept", { token, new_password: newPassword });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
 /** A granted member or reviewer types their password before Delete forever (a 5-minute cookie). */
 export const confirmPassword = (password?: string) =>
@@ -1435,12 +1435,8 @@ export async function verifyAllReview(filters: { document_id?: string; reason?: 
 // --- admin ---------------------------------------------------------------------
 
 export const listUsers = () => request<{ items: AdminUser[] }>("GET", "/admin/users");
-export const createUser = (user: {
-  email: string;
-  display_name: string;
-  role: Role;
-  password: string;
-}) => request<AddedUser>("POST", "/admin/users", user);
+export const createUser = (user: { email: string; display_name: string; role: Role }) =>
+  request<AddedUser>("POST", "/admin/users", user);
 export const updateUser = (
   id: string,
   changes: { role?: Role; disabled?: boolean; password?: string },
@@ -1449,7 +1445,9 @@ export const unlockUser = (id: string) => request<AdminUser>("POST", `/admin/use
 export const resetUserPassword = (id: string) =>
   request<PasswordReset>("POST", `/admin/users/${id}/reset-password`);
 export const resetUser2fa = (id: string) =>
-  request<AdminUser>("POST", `/admin/users/${id}/reset-2fa`);
+  request<AdminUser & ResultLine>("POST", `/admin/users/${id}/reset-2fa`);
+/** Email the person a new link to set their password and authenticator (#737). */
+export const resendSetup = (id: string) => request<ResultLine>("POST", `/admin/users/${id}/resend-setup`);
 /** Allow or stop a member's or reviewer's Delete forever; allowing needs your two-step sign-in. */
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
@@ -1785,18 +1783,13 @@ export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GE
 export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
   request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
 
-/** Operator: whether one organisation's admins must have two-step sign-in (#481, 0068); off by default. */
-const adminTwoStepPath = (orgId: string) => `/operator/orgs/${encodeURIComponent(orgId)}/admin-two-step`;
-export const getAdminTwoStep = (orgId: string) => request<{ required: boolean }>("GET", adminTwoStepPath(orgId));
-/** Require it or stop requiring it, with a fresh code (step-up). */
-export const setAdminTwoStep = (orgId: string, required: boolean, code: string) =>
-  request<{ required: boolean }>("PUT", adminTwoStepPath(orgId), { required, code });
-/** Operator: Google sign-in (#507), one organisation's (null: follow the platform) and the
- * platform's default; each change needs a fresh code (step-up). */
-const orgGooglePath = (orgId: string) => `/operator/orgs/${encodeURIComponent(orgId)}/google-signin`;
-export const getOrgGoogleSignIn = (orgId: string) => request<OrgGoogleSignIn>("GET", orgGooglePath(orgId));
-export const setOrgGoogleSignIn = (orgId: string, on: boolean | null, code: string) =>
-  request<OrgGoogleSignIn>("PUT", orgGooglePath(orgId), { on, code });
+/** Operator (#737): how many people are on company sign-in, moving the rest, and one person's setup email. */
+export const getSignInSummary = (orgId: string) =>
+  request<SignInSummary>("GET", `/operator/orgs/${encodeURIComponent(orgId)}/sign-in`);
+export const moveEveryone = (orgId: string) =>
+  request<MoveResult>("POST", `/operator/orgs/${encodeURIComponent(orgId)}/move-everyone`);
+export const resendOrgSetup = (orgId: string, userId: string) =>
+  request<ResultLine>("POST", `/operator/orgs/${encodeURIComponent(orgId)}/people/${encodeURIComponent(userId)}/resend-setup`);
 export const getGoogleSignIn = () => request<{ on: boolean }>("GET", "/operator/google-signin");
 export const setGoogleSignIn = (on: boolean, code: string) =>
   request<{ on: boolean }>("PUT", "/operator/google-signin", { on, code });

@@ -195,10 +195,10 @@ describe("the admin's People list", () => {
     expect(texts(user({ role: "admin", two_step_turned_off: true }))).toEqual(["Active", "Two-step: Off"]);
   });
 
-  it("labels mapped users as company-managed and omits local reset controls", () => {
+  it("labels mapped users as company-managed and offers Reset authenticator to members and reviewers (#737)", () => {
     const managed = user({ auth_authority: "keycloak", totp_enabled: true });
     expect(texts(managed)).toEqual(["Active", "Company-managed sign-in"]);
-    expect(userActions(managed, { isSelf: false, now: NOW }).reset2fa).toBe(false);
+    expect(userActions(managed, { isSelf: false, now: NOW }).reset2fa).toBe(true);
   });
 
   it("does not say an admin who turned it off sets it up at the next sign-in", () => {
@@ -214,12 +214,13 @@ describe("the admin's People list", () => {
     });
   });
 
-  it("offers Reset two-step code for anyone with codes on, never for yourself", () => {
+  it("offers Reset authenticator for members and reviewers, never for an admin or yourself (#737)", () => {
     expect(userActions(user({ totp_enabled: true }), { isSelf: false, now: NOW }).reset2fa).toBe(true);
-    expect(userActions(user({}), { isSelf: false, now: NOW }).reset2fa).toBe(false);
-    expect(userActions(user({ role: "admin", totp_enabled: true }), { isSelf: true, now: NOW }).reset2fa).toBe(
+    expect(userActions(user({}), { isSelf: false, now: NOW }).reset2fa).toBe(true);
+    expect(userActions(user({ role: "admin" }), { isSelf: false, now: NOW }).reset2fa).toBe(false);
+    expect(userActions(user({ role: "reviewer", totp_enabled: true }), { isSelf: true, now: NOW }).reset2fa).toBe(
       false,
     );
-    expect(read("components/admin/UsersPanel.tsx")).toContain('label: "Reset two-step code"');
+    expect(read("components/admin/UsersPanel.tsx")).toContain('label: "Reset authenticator"');
   });
 });

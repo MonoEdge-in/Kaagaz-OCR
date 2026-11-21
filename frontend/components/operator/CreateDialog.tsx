@@ -1,25 +1,19 @@
 "use client";
 
-// Create organisation (its name and its first admin's e-mail and name), or,
-// given an organisation, one more admin of it (e-mail, name and a fresh code:
-// the temporary password signs in as that organisation's admin, so it is a
-// step-up). The reply carries the admin's temporary password ONCE: it is shown
-// here with Copy and kept only in this dialog's memory (never stored, never
-// logged), so it is gone when the dialog closes. The admin must change it at
-// first sign-in.
-// So it cannot close while the request runs, and a shown password closes only
-// by Done or Close (canCloseDialog).
+// Create organisation (its name and its first admin's e-mail and name), or, given an
+// organisation, one more admin of it (e-mail, name and a fresh code: a step-up). There is no
+// password (#737): the admin gets a company sign-in account and an email with a link to set their
+// password and authenticator. The result line says whether the email went, and what to do if not.
+// It cannot close while the request runs.
 
 import { useCallback, useState } from "react";
 import type { FormEvent } from "react";
 import { CodeField } from "@/app/login/CodeField";
 import { normalizeCode } from "@/app/login/twoStep";
-import { CopyButton } from "@/components/admin/CopyButton";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { createAdmin, createOrg } from "@/lib/api";
 import type { Organisation } from "@/lib/types";
 import {
-  TEMPORARY_PASSWORD_NOTE,
   canCloseDialog,
   firstInvalidOrgField,
   isTakenEmail,
@@ -38,11 +32,11 @@ const IDS: Record<keyof NewOrgInput, string> = {
   code: "new-admin-code",
 };
 
-/** What the reply gave, while the dialog is open. */
+/** What the reply said, while the dialog is open. */
 interface Created {
   heading: string;
-  who: string;
-  password: string;
+  message: string;
+  problem: boolean;
 }
 
 export function CreateDialog({
@@ -80,13 +74,13 @@ export function CreateDialog({
     try {
       if (org) {
         const reply = await createAdmin(org.id, { email, name, code: normalizeCode(input.code ?? "") });
-        const who = `${reply.admin.name} (${reply.admin.email})`;
-        setCreated({ heading: `${reply.admin.name} is an admin now`, who, password: reply.temporary_password });
+
+        setCreated({ heading: `${reply.admin.name} is an admin now`, message: reply.message, problem: !reply.setup_email_sent });
         onCreated(`Created admin ${reply.admin.name}.`);
       } else {
         const reply = await createOrg({ name: input.name.trim(), admin_email: email, admin_name: name });
-        const who = `${reply.organisation.admin.name} (${reply.organisation.admin.email})`;
-        setCreated({ heading: `${reply.organisation.name} is ready`, who, password: reply.temporary_password });
+
+        setCreated({ heading: `${reply.organisation.name} is ready`, message: reply.message, problem: !reply.setup_email_sent });
         onCreated(`Created ${reply.organisation.name}.`);
       }
     } catch (caught) {
@@ -115,21 +109,16 @@ export function CreateDialog({
     <ActionDialog
       title={org ? `New admin of ${org.name}` : "Create organisation"}
       onClose={onClose}
-      canClose={(way) => canCloseDialog({ busy, secretShown: created !== null }, way)}
+      canClose={(way) => canCloseDialog({ busy }, way)}
     >
       {created ? (
         <section className={styles.dialogForm} aria-labelledby="created-heading">
           <h3 id="created-heading" ref={focusOnMount} tabIndex={-1} className={styles.resultHeading}>
             {created.heading}
           </h3>
-          <p>Temporary password for {created.who}. It is shown only this once.</p>
-          <div className={admin.secretRow}>
-            <code className={admin.secret} translate="no">
-              {created.password}
-            </code>
-            <CopyButton text={created.password} what="Password" buttonText="Copy password" />
-          </div>
-          <p>{TEMPORARY_PASSWORD_NOTE}</p>
+          <p className={created.problem ? "error-text" : undefined} role="status">
+            {created.message}
+          </p>
           <div className={styles.buttons}>
             <button type="button" className="btn btn-primary" onClick={onClose}>
               Done
@@ -151,7 +140,7 @@ export function CreateDialog({
               hint="Wait for a new code: the one you signed in with does not work again."
             />
           )}
-          <p className="muted">They get a temporary password, shown to you once.</p>
+          <p className="muted">They get an email with a link to set their password and authenticator.</p>
           {failure && (
             <p className="error-text" role="alert">
               {failure}

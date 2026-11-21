@@ -1,10 +1,10 @@
 "use client";
 
-// One organisation's admins, for the operator: name, e-mail, two-step on or
-// off, locked, disabled and the last sign-in. Never its members or reviewers
-// (the list shows them as counts). Create admin (a fresh code; the temporary
-// password is shown once), and per admin Disable or Enable, Unlock and Reset
-// two-step (a fresh code). No delete: admins are disabled instead. While the
+// One organisation's admins, for the operator: name, e-mail, locked,
+// disabled and the last sign-in. Never its members or reviewers
+// (the list shows them as counts). Create admin (a fresh code; they are emailed a link to set
+// their password and authenticator), and per admin Disable or Enable, Unlock, Resend setup email
+// and Reset authenticator (a fresh code). No delete: admins are disabled instead. While the
 // organisation is being deleted the list is read only, as the server. After a
 // change the focus goes to that admin's name, as their buttons may change.
 
@@ -20,7 +20,13 @@ import { CreateDialog } from "./CreateDialog";
 import { adminActions, adminFacts, afterDone, lastSignInText, operatorErrorMessage } from "./logic";
 import styles from "./Operator.module.css";
 
-const ACTION_LABELS = { disable: "Disable", enable: "Enable", unlock: "Unlock", "reset-2fa": "Reset two-step" };
+const ACTION_LABELS = {
+  disable: "Disable",
+  enable: "Enable",
+  unlock: "Unlock",
+  "resend-setup": "Resend setup email",
+  "reset-2fa": "Reset authenticator",
+};
 
 export function AdminsDialog({ org, onClose }: { org: Organisation; onClose(): void }) {
   const [attempt, setAttempt] = useState(0);
@@ -98,7 +104,7 @@ export function AdminsDialog({ org, onClose }: { org: Organisation; onClose(): v
                       <button
                         key={action}
                         type="button"
-                        className={action === "enable" || action === "unlock" ? "btn" : "btn btn-danger"}
+                        className={action === "disable" || action === "reset-2fa" ? "btn btn-danger" : "btn"}
                         onClick={() => setChanging(adminConfirm(org.id, admin, action))}
                         aria-label={`${ACTION_LABELS[action]} ${admin.name}`}
                       >

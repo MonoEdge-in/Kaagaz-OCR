@@ -94,10 +94,9 @@ export interface NewUserInput {
   email: string;
   display_name: string;
   role: Role;
-  password: string;
 }
 
-export type NewUserErrors = Partial<Record<"email" | "display_name" | "password", string>>;
+export type NewUserErrors = Partial<Record<"email" | "display_name", string>>;
 
 /** Messages per field; an empty object means the form may be sent. */
 export function validateNewUser(input: NewUserInput): NewUserErrors {
@@ -105,9 +104,6 @@ export function validateNewUser(input: NewUserInput): NewUserErrors {
   const email = input.email.trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = "Enter a valid e-mail address.";
   if (input.display_name.trim() === "") errors.display_name = "Enter a name.";
-  if (input.password.length < MIN_PASSWORD_LENGTH) {
-    errors.password = `Use at least ${MIN_PASSWORD_LENGTH} characters.`;
-  }
   return errors;
 }
 
@@ -115,12 +111,11 @@ export function validateNewUser(input: NewUserInput): NewUserErrors {
 export const NEW_USER_FIELD_IDS = {
   email: "new-user-email",
   display_name: "new-user-name",
-  password: "new-user-password",
 } as const;
 
 /** The first field (in screen order) with a problem, for focus; null if none. */
 export function firstInvalidField(errors: NewUserErrors): keyof NewUserErrors | null {
-  const order: (keyof NewUserErrors)[] = ["email", "display_name", "password"];
+  const order: (keyof NewUserErrors)[] = ["email", "display_name"];
   return order.find((key) => errors[key] !== undefined) ?? null;
 }
 
@@ -200,7 +195,7 @@ export function userActions(
     toggleDisabled: true,
     unlock: isLocked(user, now),
     resetPassword: true,
-    reset2fa: user.auth_authority !== "keycloak" && user.totp_enabled,
+    reset2fa: user.role !== "admin", // an admin's authenticator is the super admin's to reset
   };
 }
 
@@ -223,40 +218,14 @@ export function foreverControl(
   };
 }
 
-/**
- * A temporary password for a new user (UI audit AD3): `length` characters from letters
- * and digits that cannot be mistaken for each other (no 0/O, 1/l/I), drawn with the
- * browser's crypto. Rejection sampling, so every character is equally likely.
- */
-const PASSWORD_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
-
-export function generatePassword(length = 16, random: (bytes: Uint8Array) => Uint8Array = (b) => crypto.getRandomValues(b)): string {
-  const size = PASSWORD_ALPHABET.length;
-  const limit = 256 - (256 % size); // bytes at or over this would favour the first characters
-  let out = "";
-  while (out.length < length) {
-    for (const byte of random(new Uint8Array(length * 2))) {
-      if (byte < limit && out.length < length) out += PASSWORD_ALPHABET[byte % size];
-    }
-  }
-  return out;
-}
-
 /** AD7 (UI audit, 16 Oct 2026), with two-step required for admins (0035): what an admin without it sees. */
-/** The toast after Add user (#457): the invite went, or could not be sent (a problem: the typed
- * temporary password is the way in), or with email off the temporary password as before. */
-export function addedNotice(user: Pick<AddedUser, "display_name" | "email" | "invited">): {
+/** The toast after Add user (#737): the server's own result line, a problem when the setup email
+ * could not be sent (the person is added; Resend setup email finishes it). */
+export function addedNotice(user: Pick<AddedUser, "setup_email_sent" | "message">): {
   text: string;
   problem?: boolean;
 } {
-  const name = user.display_name;
-  if (user.invited === true) {
-    return { text: `Invite sent to ${user.email}. If it doesn't arrive, give ${name} the temporary password you typed.` };
-  }
-  if (user.invited === false) {
-    return { problem: true, text: `Couldn't send the invite email. Give ${name} the temporary password you typed.` };
-  }
-  return { text: `Added ${name}. They choose their own password when they first sign in.` };
+  return user.setup_email_sent ? { text: user.message } : { problem: true, text: user.message };
 }
 
 export function twoStepNote(): string {
@@ -379,17 +348,17 @@ export const SETTINGS_DRAFT = "admin:settings";
 export const aiSettingsDraft = (scope: "organisation" | "member") =>
   scope === "organisation" ? "admin:ai-settings" : "settings:ai";
 
-/** Add a user's draft: email, name and role, never the temporary password; null until something is typed. */
+/** Add a user's draft: email, name and role; null until something is typed. */
 export function newUserDraft(input: NewUserInput): Draft | null {
   if (input.email === "" && input.display_name === "") return null;
   return { email: input.email, display_name: input.display_name, role: input.role };
 }
 
-/** The form from a kept draft; a value of the wrong kind is the empty form's. The password is always empty. */
+/** The form from a kept draft; a value of the wrong kind is the empty form's. */
 export function newUserFromDraft(draft: Draft | null): NewUserInput {
   const role = ROLES.find((each) => each === draft?.role) ?? "member";
   const text = (value: unknown) => (typeof value === "string" ? value : "");
-  return { email: text(draft?.email), display_name: text(draft?.display_name), role, password: "" };
+  return { email: text(draft?.email), display_name: text(draft?.display_name), role };
 }
 
 /** Settings' draft: only the fields that differ from what is saved, so restoring it never undoes
@@ -759,6 +728,7 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.email_confirmed": "Confirmed their email",
   "auth.password_reset": "Reset their password from an email",
   "auth.invite_sent": "Sent an invite",
+  "auth.setup_email_sent": "Sent a setup email",
   "auth.invite_accepted": "Accepted an invite",
   "auth.logout_everywhere": "Signed out everywhere",
   // #457 phase 1: connected accounts.

@@ -9,6 +9,7 @@ import {
   changeAdmin,
   disableOrg,
   enableOrg,
+  resendOrgSetup,
   scheduleDelete,
   setOperatorModelEnabled,
   setOrgAutofile,
@@ -126,11 +127,12 @@ export function autofileConfirm(org: Organisation, allow: boolean): Confirm {
 /** The admin's name in the admins dialog, where the focus goes after a change. */
 export const adminFocusId = (id: string) => `admin-name-${id}`;
 
-export type AdminAction = "disable" | "enable" | "unlock" | "reset-2fa";
+export type AdminAction = "disable" | "enable" | "unlock" | "reset-2fa" | "resend-setup";
 
 export function adminConfirm(orgId: string, admin: OrgAdmin, change: AdminAction): Confirm {
   const name = admin.name;
-  const run = (code: string) => changeAdmin(orgId, admin.id, change, code);
+  const run = (code: string) =>
+    change === "resend-setup" ? resendOrgSetup(orgId, admin.id) : changeAdmin(orgId, admin.id, change, code);
   const focusId = adminFocusId(admin.id);
   switch (change) {
     case "disable":
@@ -168,12 +170,23 @@ export function adminConfirm(orgId: string, admin: OrgAdmin, change: AdminAction
       };
     case "reset-2fa":
       return {
-        title: `Reset two-step for ${name}?`,
-        effect: "Their two-step code is cleared and they are signed out. They set up a new code the next time they sign in.",
-        action: "Reset two-step",
-        done: `Two-step reset for ${name}.`,
+        title: `Reset the authenticator for ${name}?`,
+        effect: "Their authenticator is removed in company sign-in and they are signed out. They set up a new one at their next sign-in.",
+        action: "Reset authenticator",
+        done: `${name} will set up their authenticator again at their next sign-in.`,
         danger: true,
         stepUp: true,
+        run,
+        focusId,
+      };
+    case "resend-setup":
+      return {
+        title: `Email ${name} a new setup link?`,
+        effect: `${admin.email} gets a link to set their password and authenticator. It works for 12 hours.`,
+        action: "Resend setup email",
+        done: `Emailed a new setup link to ${name}.`,
+        danger: false,
+        stepUp: false,
         run,
         focusId,
       };

@@ -18,7 +18,6 @@ export const SEND_FAILED = "We couldn't send the email. Try again in a minute.";
 // What to do about a gone link, on each link's page (#457 review).
 const GONE_NEXT = {
   reset: "Ask for a new one from Forgot password.",
-  invite: "Ask your admin to send a new invite.",
   confirm: "Sign in to get a new link.",
 } as const;
 
