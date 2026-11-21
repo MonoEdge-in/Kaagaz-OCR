@@ -98,5 +98,5 @@ def test_downgrade_refuses_to_turn_a_mapped_user_back_into_legacy(fresh: tuple[s
     with pytest.raises(subprocess.CalledProcessError) as refused:
         base._downgrade(url, "0100")
     assert b"cannot downgrade while Keycloak users" in refused.value.stderr
-    with db.system() as conn:
+    with db.engine.begin() as conn:  # the owner: the app role may not read alembic_version
         assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0103"

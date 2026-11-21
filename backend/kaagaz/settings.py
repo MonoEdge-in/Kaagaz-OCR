@@ -506,7 +506,7 @@ class Settings:
     keycloak_client_secret: str | None = field(default=None, repr=False)
     keycloak_redirect_uri: str | None = None
     keycloak_required_acr: str | None = None
-    keycloak_provider_claim: str = "auth_provider"
+    keycloak_provider_claim: str = "authentication_provider"
     keycloak_flow_encryption_key: str | None = field(default=None, repr=False)
     # The WhatsApp worker can enforce MFA without receiving Keycloak client credentials.
     customer_mfa_required: bool = False
@@ -567,7 +567,7 @@ class Settings:
             raise SettingsError("TOTP_ENCRYPTION_KEY must differ from SESSION_SECRET")
         keycloak_issuer = keycloak_client_id = keycloak_redirect_uri = keycloak_required_acr = None
         keycloak_client_secret = None
-        keycloak_provider_claim = "auth_provider"
+        keycloak_provider_claim = "authentication_provider"
         keycloak_flow_key = None
         if keycloak_on:
             keycloak_issuer = _https_url(env.text("KEYCLOAK_ISSUER"), "KEYCLOAK_ISSUER")
@@ -581,7 +581,7 @@ class Settings:
             keycloak_required_acr = env.optional("KEYCLOAK_REQUIRED_ACR") or "1"
             if len(keycloak_required_acr) > 255 or any(ord(char) < 33 for char in keycloak_required_acr):
                 raise SettingsError("KEYCLOAK_REQUIRED_ACR must be a non-empty printable value")
-            keycloak_provider_claim = env.optional("KEYCLOAK_PROVIDER_CLAIM") or "auth_provider"
+            keycloak_provider_claim = env.optional("KEYCLOAK_PROVIDER_CLAIM") or "authentication_provider"
             keycloak_flow_key = env.secret("KEYCLOAK_FLOW_ENCRYPTION_KEY")
             if keycloak_flow_key in {session_secret, totp_encryption_key}:
                 raise SettingsError("KEYCLOAK_FLOW_ENCRYPTION_KEY must differ from other keys")
