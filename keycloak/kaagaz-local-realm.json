@@ -194,6 +194,43 @@
           "userSetupAllowed": false
         }
       ]
+    },
+    {
+      "alias": "kaagaz-reset",
+      "description": "Forgot password: email link, then the authenticator code, then a new password. Never the built-in step that deletes the OTP.",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "reset-credentials-choose-user",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "reset-credential-email",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "reset-password",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40,
+          "userSetupAllowed": false
+        }
+      ]
     }
   ],
   "authenticatorConfig": [
@@ -219,5 +256,6 @@
       }
     }
   ],
-  "browserFlow": "kaagaz-browser"
+  "browserFlow": "kaagaz-browser",
+  "resetCredentialsFlow": "kaagaz-reset"
 }

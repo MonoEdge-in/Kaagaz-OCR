@@ -97,6 +97,24 @@ class KeycloakLocalRealmTests(unittest.TestCase):
                 self.assertNotEqual("auth-cookie", step.get("authenticator"))
                 self.assertNotEqual("conditional-user-configured", step.get("authenticator"))
 
+    def test_forgot_password_keeps_the_authenticator_and_never_deletes_it(self) -> None:
+        """The built-in reset flow's reset-otp step deletes the user's OTP: a mailbox alone
+        would then be enough to take an account over (#737)."""
+        self.assertEqual("kaagaz-reset", REALM["resetCredentialsFlow"])
+        steps = self.flows["kaagaz-reset"]["authenticationExecutions"]
+        self.assertEqual(
+            [
+                ("reset-credentials-choose-user", "REQUIRED"),
+                ("reset-credential-email", "REQUIRED"),
+                ("auth-otp-form", "REQUIRED"),
+                ("reset-password", "REQUIRED"),
+            ],
+            [(step["authenticator"], step["requirement"]) for step in steps],
+        )
+        for flow in REALM["authenticationFlows"]:
+            for step in flow["authenticationExecutions"]:
+                self.assertNotEqual("reset-otp", step.get("authenticator"))
+
     def test_amr_comes_from_executed_authenticators_with_finite_max_age(self) -> None:
         mappers = {mapper["protocolMapper"]: mapper for mapper in self.client["protocolMappers"]}
         self.assertIn("oidc-amr-mapper", mappers)
