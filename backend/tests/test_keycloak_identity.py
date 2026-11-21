@@ -453,3 +453,26 @@ def test_settings_repr_does_not_include_confidential_keycloak_material() -> None
     assert "server-side-confidential-secret" not in rendered
     assert settings.keycloak_flow_encryption_key is not None
     assert settings.keycloak_flow_encryption_key not in rendered
+
+
+def test_logout_url_is_the_end_session_endpoint_with_only_the_login_page_of_the_app_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#737: RP-initiated logout. The client id and where to land, nothing else: no token is
+    kept server-side to hint with, and the landing page is the callback's origin plus /login."""
+    _install_fake_provider(monkeypatch, _key())
+    url = keycloak_oidc.logout_url(_settings())
+    parts = urlsplit(url)
+    assert f"{parts.scheme}://{parts.netloc}{parts.path}" == f"{ISSUER}/protocol/openid-connect/logout"
+    assert parse_qs(parts.query) == {
+        "client_id": [CLIENT_ID],
+        "post_logout_redirect_uri": ["https://app.example.test/login"],
+    }
+    assert "post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2Flogin" in parts.query  # encoded
+    other = _settings(keycloak_redirect_uri="https://app.example.test:8443/api/auth/keycloak/callback")
+    assert "https%3A%2F%2Fapp.example.test%3A8443%2Flogin" in keycloak_oidc.logout_url(other)
+
+
+def test_logout_url_refuses_untrusted_settings_before_discovery() -> None:
+    with pytest.raises(keycloak_oidc.OidcError, match="not_configured"):
+        keycloak_oidc.logout_url(_settings(keycloak_issuer="http://id.example.test/realms/kaagaz"))

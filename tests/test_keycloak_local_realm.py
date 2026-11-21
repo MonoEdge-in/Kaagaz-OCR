@@ -103,6 +103,8 @@ class KeycloakLocalRealmTests(unittest.TestCase):
         self.assertNotIn("secret", self.client)
         self.assertEqual("S256", self.client["attributes"]["pkce.code.challenge.method"])
         self.assertEqual("true", self.client["attributes"]["backchannel.logout.session.required"])
+        # #737: sign-out ends the Keycloak session and lands on /login (the server realm needs its own https URL)
+        self.assertEqual("http://localhost:3000/login", self.client["attributes"]["post.logout.redirect.uris"])
         self.assertEqual(
             "http://api:8000/api/auth/keycloak/backchannel-logout",
             self.client["attributes"]["backchannel.logout.url"],

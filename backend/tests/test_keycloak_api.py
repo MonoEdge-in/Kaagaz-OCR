@@ -356,3 +356,30 @@ def test_the_start_passes_only_an_allowed_account_action_to_keycloak(monkeypatch
         for refused in ("VERIFY_EMAIL", "update_password", "UPDATE_PASSWORD%20CONFIGURE_TOTP", ""):
             reply = client.get(f"/api/auth/keycloak/start?action={refused}")
             assert (reply.status_code, reply.json()["error"]["code"]) == (400, "bad_request"), refused
+
+
+def test_the_logout_url_is_given_to_the_page_and_needs_no_sign_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        keycloak_oidc, "logout_url", lambda settings: "https://id.example.test/logout?client_id=x"
+    )
+    with _client() as client:
+        response = client.get("/api/auth/keycloak/logout-url")
+    assert response.status_code == 200
+    assert response.json() == {"url": "https://id.example.test/logout?client_id=x"}
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_the_logout_url_is_not_found_while_company_sign_in_is_off() -> None:
+    with _client(settings=make_settings()) as client:
+        assert client.get("/api/auth/keycloak/logout-url").status_code == 404
+
+
+def test_the_logout_url_says_unavailable_when_keycloak_cannot_be_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def down(settings: object) -> str:
+        raise keycloak_oidc.OidcError("provider_unavailable")
+
+    monkeypatch.setattr(keycloak_oidc, "logout_url", down)
+    with _client() as client:
+        assert client.get("/api/auth/keycloak/logout-url").status_code == 502

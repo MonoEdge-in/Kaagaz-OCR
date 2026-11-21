@@ -11,6 +11,7 @@ import {
   signedOutMessage,
   signedOutPath,
   signInPath,
+  signOutDestination,
 } from "@/components/shell/gate";
 import { currentPageName, isCurrent, navLinks, reviewCountText, roleName } from "@/components/shell/nav";
 import { ShellMenu } from "@/components/shell/ShellMenu";
@@ -147,6 +148,15 @@ describe("where to sign in", () => {
     expect(signedOutMessage({ ended: "yes", other: "1" })).toBeNull();
   });
 
+  // #737: signing out also ends company sign-in, so the page leaves for Keycloak's sign-out address.
+  it("leaves for Keycloak's sign-out address when the server gave one, else the sign-in page", () => {
+    const keycloak = "https://id.example.test/realms/k/protocol/openid-connect/logout?client_id=a";
+    expect(signOutDestination("/documents", keycloak)).toBe(keycloak);
+    expect(signOutDestination("/documents", null)).toBe("/login?signed_out=1");
+    expect(signOutDestination("/documents", "javascript:alert(1)")).toBe("/login?signed_out=1");
+    expect(signOutDestination("/documents", "not an address")).toBe("/login?signed_out=1");
+  });
+
   it("loads a fresh page when a session existed, and keeps a quick redirect on a first visit", () => {
     const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
     // Changed on purpose (#468 review, SEC1): the path only, never its query.
@@ -159,7 +169,7 @@ describe("where to sign in", () => {
     for (const file of [["components", "shell", "AccountMenu.tsx"]]) {
       const text = readFileSync(join(__dirname, "..", ...file), "utf8");
       expect(text, file.join("/")).toContain("announceSession(null);");
-      expect(text, file.join("/")).toContain("leavePage(signedOutPath(pathname))");
+      expect(text, file.join("/")).toContain("leavePage(signOutDestination(pathname, keycloakUrl))");
     }
   });
 
