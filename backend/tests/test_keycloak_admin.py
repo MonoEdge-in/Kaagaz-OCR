@@ -244,3 +244,31 @@ def test_a_refused_call_logs_its_status_code_and_nothing_else(
         kc.find_user_by_email(SETTINGS, "a@x.test")
     assert "status 403" in caplog.text
     assert "a@x.test" not in caplog.text and SECRET not in caplog.text
+
+
+INTERNAL = "http://keycloak:8080/kc"
+INTERNAL_ADMIN = "http://keycloak:8080/kc/admin/realms/kaagaz-test"
+
+
+def test_with_an_admin_url_the_token_and_admin_calls_use_it_not_the_issuer(opener: _Opener) -> None:
+    settings = replace(SETTINGS, keycloak_admin_url=INTERNAL)
+    opener.routes[("POST", f"{INTERNAL}/realms/kaagaz-test/protocol/openid-connect/token")] = (
+        200,
+        {"access_token": "tok", "expires_in": 60},
+        {},
+    )
+    opener.routes[("GET", f"{INTERNAL_ADMIN}/users")] = (200, [], {})
+    assert kc.find_user_by_email(settings, "a@x.test") is None
+    assert [s[1].split("?")[0] for s in opener.sent] == [
+        f"{INTERNAL}/realms/kaagaz-test/protocol/openid-connect/token",
+        f"{INTERNAL_ADMIN}/users",
+    ]
+
+
+def test_without_an_admin_url_nothing_changes(opener: _Opener) -> None:
+    opener.routes[("GET", f"{ADMIN}/users")] = (200, [], {})
+    kc.find_user_by_email(SETTINGS, "a@x.test")
+    assert [s[1].split("?")[0] for s in opener.sent] == [
+        f"{ISSUER}/protocol/openid-connect/token",
+        f"{ADMIN}/users",
+    ]

@@ -153,6 +153,7 @@ _URL_MESSAGES = {
     "APP_URL": "APP_URL must be an https origin such as https://kaagaz.example.com" + _LOOPBACK_NOTE,
     "WHATSAPP_GRAPH_URL": "WHATSAPP_GRAPH_URL must be an https URL" + _LOOPBACK_NOTE,
     "KEYCLOAK_ISSUER": "KEYCLOAK_ISSUER must be an https URL or local http URL, including keycloak.localhost",
+    "KEYCLOAK_ADMIN_URL": "KEYCLOAK_ADMIN_URL must be an https URL, or http for keycloak (the Docker name)",
 }
 
 
@@ -170,7 +171,11 @@ def _https_url(value: str, name: str, path: str | None = None) -> str:
         ) from None
     secure = parts.scheme == "https" and bool(host)
     paths = {"", "/"} if path == "" else {path}
-    loopback_http = host in _LOOPBACK_HOSTS or (name == "KEYCLOAK_ISSUER" and host == "keycloak.localhost")
+    loopback_http = (
+        host in _LOOPBACK_HOSTS
+        or (name == "KEYCLOAK_ISSUER" and host == "keycloak.localhost")
+        or (name == "KEYCLOAK_ADMIN_URL" and host in {"keycloak", "keycloak.localhost"})
+    )
     if (
         parts.username is not None
         or parts.password is not None
@@ -496,6 +501,9 @@ class Settings:
     # The service account that makes company sign-in accounts (API only, like the client secret).
     keycloak_admin_client_id: str | None = None
     keycloak_admin_client_secret: str | None = field(default=None, repr=False)
+    # Where the admin client reaches Keycloak when that is not the public issuer (the server: its
+    # Docker address, since Caddy answers 404 under /kc/admin). None: derived from the issuer.
+    keycloak_admin_url: str | None = None
     # The WhatsApp worker can enforce MFA without receiving Keycloak client credentials.
     customer_mfa_required: bool = False
     # Mistral OCR, the second page reader the operator may choose per organisation (#473, Tushar,
@@ -554,7 +562,7 @@ class Settings:
             raise SettingsError("TOTP_ENCRYPTION_KEY must differ from SESSION_SECRET")
         keycloak_issuer = keycloak_client_id = keycloak_redirect_uri = keycloak_required_acr = None
         keycloak_client_secret = None
-        keycloak_admin_client_id = keycloak_admin_client_secret = None
+        keycloak_admin_client_id = keycloak_admin_client_secret = keycloak_admin_url = None
         keycloak_flow_key = None
         if keycloak_on:
             keycloak_issuer = _https_url(env.text("KEYCLOAK_ISSUER"), "KEYCLOAK_ISSUER")
@@ -571,6 +579,8 @@ class Settings:
             keycloak_flow_key = env.secret("KEYCLOAK_FLOW_ENCRYPTION_KEY")
             keycloak_admin_client_id = env.token("KEYCLOAK_ADMIN_CLIENT_ID")
             keycloak_admin_client_secret = env.secret("KEYCLOAK_ADMIN_CLIENT_SECRET")
+            admin_url = env.optional("KEYCLOAK_ADMIN_URL")
+            keycloak_admin_url = _https_url(admin_url, "KEYCLOAK_ADMIN_URL") if admin_url else None
             if keycloak_flow_key in {session_secret, totp_encryption_key}:
                 raise SettingsError("KEYCLOAK_FLOW_ENCRYPTION_KEY must differ from other keys")
         queue_lease_seconds = env.integer("QUEUE_LEASE_SECONDS")
@@ -881,6 +891,7 @@ class Settings:
             keycloak_flow_encryption_key=keycloak_flow_key,
             keycloak_admin_client_id=keycloak_admin_client_id,
             keycloak_admin_client_secret=keycloak_admin_client_secret,
+            keycloak_admin_url=keycloak_admin_url,
             customer_mfa_required=env.optional("CUSTOMER_MFA_REQUIRED") is not None
             and env.boolean("CUSTOMER_MFA_REQUIRED"),
             mistral_api_key=mistral_api_key,
