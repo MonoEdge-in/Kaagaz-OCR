@@ -1,7 +1,7 @@
 // A small DOM for rendering a component in node with react-dom's own createRoot and act()
 // (there is no DOM library here, and none is to be added): elements, text, attributes, focus,
 // "[attr=value]" lookups, and events that capture and bubble, enough for clicks, typing and
-// keys. Used by clean-copy-edit-527.test.ts and delete-forever-password-538.test.ts; install()
+// keys. Used by clean-copy-edit-527.test.ts; install()
 // stubs `document` and `window`, which must be in place before react-dom/client is first
 // imported (it looks for a DOM as it loads).
 // keys. Used by clean-copy-edit-527.test.ts and folder-delete-537.test.ts; install() stubs `document` and `window`, which must

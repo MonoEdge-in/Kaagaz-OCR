@@ -131,8 +131,8 @@ _TRASHED_ROUTES: list[tuple[str, str]] = [
 def test_every_trashed_folder_route_answers_a_hidden_one_as_one_that_never_was(
     db: Database, method: str, path: str
 ) -> None:
-    """Finance, with Salaries, in Trash: the plain reviewer (allowed to delete forever, password
-    typed) gets a random id's reply for both, and nothing in Trash changes."""
+    """Finance, with Salaries, in Trash: the plain reviewer (allowed to delete forever) gets a random id's
+    reply for both, and nothing in Trash changes."""
     org = _walled(Api(db))
     plain = org.people["plain"]
     assert _grant(org.people["admin"], plain.user_id) == (200, True)

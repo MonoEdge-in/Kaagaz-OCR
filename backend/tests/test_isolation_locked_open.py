@@ -281,9 +281,14 @@ def test_a_look_alike_token_of_another_purpose_never_opens_a_locked_file(db: Dat
         LOCKED_OPEN_COOKIE, _sign(payload, b"confirm", api.settings.session_secret), path="/api/documents"
     )
     assert _code(_page(given, org.locked)) == (403, "locked_open_required")
+    for purpose in (b"keycloak_action_proof", b"whatsapp_proof"):  # live purposes too
+        look_alike = _sign(payload, purpose, api.settings.session_secret)
+        given.client.cookies.set(LOCKED_OPEN_COOKIE, look_alike, path="/api/documents")
+        assert _code(_page(given, org.locked)) == (403, "locked_open_required"), purpose
     real = _sign(payload, b"locked_open", api.settings.session_secret)  # the same body, the right purpose
     given.client.cookies.set(LOCKED_OPEN_COOKIE, real, path="/api/documents")
-    assert _page(given, org.locked).status_code != 403
+    opened = _page(given, org.locked)
+    assert (opened.status_code, opened.content) == (200, PICTURE)
 
 
 # --- the company sign-in, the only way to open --------------------------------------------------

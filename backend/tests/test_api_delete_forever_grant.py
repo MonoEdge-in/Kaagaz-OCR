@@ -10,6 +10,7 @@ from typing import Any
 import httpx2 as httpx
 import pytest
 
+from kaagaz.api import keycloak_oidc
 from kaagaz.db.engine import Database
 from tests.settings_factory import make_settings
 from tests.test_api_support import ANY_ID, CSRF, Api, Signed
@@ -89,7 +90,7 @@ def test_admins_are_never_targets(db: Database) -> None:
     assert api.audit_actions(admin.customer_id)[-1] == "user.delete_forever_off"
 
 
-def test_delete_forever_is_no_company_sign_in_action(db: Database) -> None:
+def test_delete_forever_is_no_company_sign_in_action(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
     """#744: starting a fresh sign-in for it is refused (403 ``forbidden``), so nothing can set a proof
     for it; another action's start is not refused for that reason."""
     settings = make_settings(
@@ -100,6 +101,9 @@ def test_delete_forever_is_no_company_sign_in_action(db: Database) -> None:
         keycloak_redirect_uri="https://app.example.test/api/auth/keycloak/callback",
         keycloak_required_acr="1",
         keycloak_flow_encryption_key="distinct-route-test-encryption-key-material",
+    )
+    monkeypatch.setattr(
+        keycloak_oidc, "authorize_url", lambda *args, **kwargs: "https://id.example.test/auth"
     )
     api = Api(db, settings=settings)
     admin = api.new_admin()
@@ -112,4 +116,5 @@ def test_delete_forever_is_no_company_sign_in_action(db: Database) -> None:
 
     refused = start("delete_forever")
     assert (refused.status_code, refused.json()["error"]["code"]) == (403, "forbidden")
-    assert start("locks").status_code != 403
+    control = start("locks")  # a real action starts: the page is sent to the sign-in
+    assert (control.status_code, control.json()) == (200, {"url": "https://id.example.test/auth"})

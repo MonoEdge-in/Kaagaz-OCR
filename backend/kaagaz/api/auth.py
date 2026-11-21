@@ -804,10 +804,9 @@ AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 
 
 def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
-    """For what can't be undone (deleting a tag): an admin session whose admin has
-    two-step sign-in on, else 403
-    ``two_step_required``. ``current_user`` lets through only an admin with two-step
-    sign-in on or one who turned it off themselves (0061b), whom this refuses."""
+    """For what can't be undone (deleting a tag): an admin session whose admin has two-step
+    sign-in on, else 403 ``two_step_required``. ``current_user`` lets through only an admin with
+    two-step sign-in on or one who turned it off themselves (0061b), whom this refuses."""
     if user.auth_authority != "keycloak" and not user.totp_enabled:  # Keycloak asks for it at sign-in
         raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Account to do this.")
     return user
