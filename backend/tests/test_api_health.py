@@ -178,3 +178,17 @@ def test_an_unsafe_settings_alert_that_was_not_sent_says_so(caplog: pytest.LogCa
         sending.join(10)
     said = [r.getMessage() for r in caplog.records if getattr(r, "code", None) == "unsafe_config"]
     assert any("OPS_ALERT_EMAIL" in line for line in said)
+
+
+def test_the_start_warns_when_company_sign_in_is_off_and_not_when_it_is_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#737: a server with no .env.keycloak leaves only the super admin able to sign in."""
+    with caplog.at_level(logging.WARNING):
+        app_module.warn_if_company_sign_in_off(make_settings(keycloak_enabled=False))
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    assert "Company sign-in is off" in caplog.text and ".env.keycloak" in caplog.text
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        app_module.warn_if_company_sign_in_off(make_settings(keycloak_enabled=True))
+    assert caplog.records == []

@@ -148,6 +148,11 @@ services:
     cap_drop: [ALL]
     # A16: an answer being written (POST /api/chat/stream) finishes before api stops.
     stop_grace_period: 200s
+    # #737: the Keycloak secrets, api only (docker-compose.keycloak.yml does the same on a laptop).
+    # Compose adds this file to the base .env. Production has no such file, so nothing changes there.
+    env_file:
+      - path: .env.keycloak
+        required: false
     environment:
       <<: [*s3-env, *sqs-env]
       # The number of worker copies below, not docker-compose.yml's laptop "1".

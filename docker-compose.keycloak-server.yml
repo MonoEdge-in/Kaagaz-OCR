@@ -5,6 +5,8 @@
 # Production mode, its own Postgres database "keycloak". Caddy ends TLS and serves it at
 # https://<KAAGAZ_DOMAIN>/kc/ (infra/caddy/Caddyfile). Nothing is published on the host.
 # The admin console is not served from the internet; use kcadm.sh inside the container.
+# The API reads .env.keycloak (docker-compose.prod.yml gives it to api only) and, with KEYCLOAK_ADMIN_URL=http://keycloak:8080/kc,
+# makes its admin calls on the Docker network, since Caddy answers 404 under /kc/admin.
 services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.8.2

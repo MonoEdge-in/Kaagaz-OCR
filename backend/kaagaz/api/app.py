@@ -170,6 +170,7 @@ def create_app(
                 context.unsafe_config.extend(unsafe_config(settings, database))
                 check_login(settings, context.unsafe_config)
                 report_unsafe_config(settings, context.unsafe_config)
+                warn_if_company_sign_in_off(settings)
             yield
         finally:  # a refused start too: its connections are closed, never left to the collector
             if owns_db:
@@ -304,6 +305,15 @@ def check_login(settings: Settings, found: list[str]) -> None:
         said = "; ".join(UNSAFE_SAID[code] for code in refused)
         _log.critical("%s (DB_LOGIN_CHECK=refuse)", said, extra={"code": "login_refused"})
         raise RuntimeError(said)
+
+
+def warn_if_company_sign_in_off(settings: Settings) -> None:
+    """With company sign-in off only the super admin can sign in: say so once at the start."""
+    if not settings.keycloak_enabled:
+        _log.warning(
+            "Company sign-in is off (KEYCLOAK_ENABLED is not true): only the super admin can sign in. "
+            "On a server, check .env.keycloak."
+        )
 
 
 def report_unsafe_config(

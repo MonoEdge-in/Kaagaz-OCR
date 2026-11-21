@@ -685,3 +685,24 @@ def test_a_granted_member_needs_their_own_fresh_confirm_token(monkeypatch: pytes
     for stale in ({"exp": NOW}, {"uid": CID}, {"ver": 2}):  # expired, another user's, an older session's
         assert _forever(client, {**CONFIRM, **stale}) == (403, "keycloak_reauth_required")
     assert _forever(client, CONFIRM) == (200, None)
+
+
+def test_keycloak_admin_url_is_optional_checked_and_kept_without_a_trailing_slash() -> None:
+    assert Settings.from_env(_keycloak_env()).keycloak_admin_url is None
+    assert Settings.from_env(_keycloak_env(KEYCLOAK_ADMIN_URL="")).keycloak_admin_url is None
+    ok = Settings.from_env(_keycloak_env(KEYCLOAK_ADMIN_URL="http://keycloak:8080/kc/"))
+    assert ok.keycloak_admin_url == "http://keycloak:8080/kc"
+    assert Settings.from_env(
+        _keycloak_env(KEYCLOAK_ADMIN_URL="https://id.example.test/kc")
+    ).keycloak_admin_url
+    for bad in (
+        "http://evil.example/kc",
+        "http://keycloak.evil.example/kc",
+        "http://u:p@keycloak:8080/kc",
+        "http://keycloak:8080/kc?x=1",
+        "http://keycloak:8080/kc#f",
+    ):
+        with pytest.raises(SettingsError, match="KEYCLOAK_ADMIN_URL"):
+            Settings.from_env(_keycloak_env(KEYCLOAK_ADMIN_URL=bad))
+    off = Settings.from_env(_example_env(KEYCLOAK_ADMIN_URL="http://evil.example/kc"))  # off: not read
+    assert off.keycloak_admin_url is None

@@ -133,19 +133,35 @@ def _id(value: object) -> str:
     return text
 
 
-def _base(settings: Settings) -> str:
-    issuer = settings.keycloak_issuer or ""
-    head, marker, realm = issuer.partition("/realms/")
+def _realm(settings: Settings) -> str:
+    marker, realm = (settings.keycloak_issuer or "").partition("/realms/")[1:]
     if not configured(settings) or not marker or not realm or "/" in realm:
         raise KeycloakAdminError(NOT_SET_UP)
+    return realm
+
+
+def _base(settings: Settings) -> str:
+    realm = _realm(settings)
+    head = (settings.keycloak_issuer or "").partition("/realms/")[0]
+    if settings.keycloak_admin_url:
+        return f"{settings.keycloak_admin_url}/admin/realms/{realm}"
     return f"{head}/admin/realms/{realm}"
+
+
+def _token_url(settings: Settings) -> str:
+    """The issuer's token endpoint, or the same realm's at KEYCLOAK_ADMIN_URL (the server's Docker
+    address). The realm is checked by ``_realm``."""
+    if settings.keycloak_admin_url:
+        realm = _realm(settings)
+        return f"{settings.keycloak_admin_url}/realms/{realm}/protocol/openid-connect/token"
+    return f"{settings.keycloak_issuer}/protocol/openid-connect/token"
 
 
 def _access_token(settings: Settings) -> str:
     global _token
     if _token is not None and time.monotonic() < _token[0]:
         return _token[1]
-    url = f"{settings.keycloak_issuer}/protocol/openid-connect/token"
+    url = _token_url(settings)
     form = urllib.parse.urlencode(
         {
             "grant_type": "client_credentials",
@@ -190,7 +206,14 @@ def _call(
         try:
             reply, location = _send(request)
         except _Refused as refused:
-            logger.warning("keycloak admin call refused: %s status %s", method, refused.status)
+            if refused.status == 404 and not missing_ok and not settings.keycloak_admin_url:
+                logger.warning(
+                    "keycloak admin call refused: %s status 404 "
+                    "(is KEYCLOAK_ADMIN_URL set? Caddy blocks /kc/admin)",
+                    method,
+                )
+            else:
+                logger.warning("keycloak admin call refused: %s status %s", method, refused.status)
             if refused.status == 401 and attempt == 1:
                 _token = None  # an expired token: ask once more
                 continue

@@ -505,3 +505,16 @@ def test_caddy_serves_only_keycloak_sign_in_pages_never_master_or_admin() -> Non
     query = text[text.index("request>uri query {") : text.index("}", text.index("request>uri query {"))]
     for name in ["key", "session_code", "id_token_hint", "login_hint", "client_data"]:
         assert f"delete {name}\n" in query
+
+
+def test_only_api_gets_the_keycloak_secrets_file_on_the_server() -> None:
+    """#737: api reads .env.keycloak (optional) on top of .env; no other service does."""
+    assert re.search(
+        r"^    env_file:\n      - path: \.env\.keycloak\n        required: false\n",
+        service("api", PROD),
+        re.M,
+    )
+    for file in ("docker-compose.yml", PROD):
+        for name in services(file):
+            if name != "api":
+                assert ".env.keycloak" not in service(name, file), (file, name)
