@@ -91,3 +91,23 @@ def test_a_second_link_for_the_same_person_or_subject_is_refused(db: Database) -
         _linked(db, other, other_admin, shared)  # the subject belongs to someone else
     with pytest.raises(Exception, match="no active legacy user"):
         _linked(db, customer, admin, _subject())  # this person is already on Keycloak
+
+
+def test_linking_company_sign_in_clears_the_old_must_change_password_flag(db: Database) -> None:
+    """#737: a first admin made with a temporary password has no password step any more; the
+    link ends the flag, so nothing (WhatsApp chat, /me) waits on it."""
+    customer, admin = new_customer(db)
+
+    def flag() -> bool:
+        with db.customer(customer) as conn:
+            return bool(
+                conn.execute(
+                    text("SELECT must_change_password FROM users WHERE id = :u"), {"u": admin}
+                ).scalar_one()
+            )
+
+    with db.engine.begin() as conn:  # the owner: set it as the old create paths did
+        conn.execute(text("UPDATE users SET must_change_password = true WHERE id = :u"), {"u": admin})
+    assert flag() is True
+    _linked(db, customer, admin, _subject())
+    assert flag() is False

@@ -401,7 +401,15 @@ def link_account(
         )
     ).scalar_one()
     stage_link(conn, issuer, subject, now=now, expected_session_version=int(version))
-    return finalize_link(conn, issuer, subject, now=now, expected_session_version=int(version))
+    raised = finalize_link(conn, issuer, subject, now=now, expected_session_version=int(version))
+    # Company sign-in has no password step: a flag set by the old create paths ends here (#737).
+    conn.execute(
+        text(
+            "UPDATE public.users SET must_change_password = false"
+            " WHERE id = CAST(NULLIF(current_setting('kaagaz.user_id', true), '') AS uuid)"
+        )
+    )
+    return raised
 
 
 def people(conn: Connection, customer_id: str, issuer: str) -> list[Person]:
