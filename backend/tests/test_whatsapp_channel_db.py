@@ -14,6 +14,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -187,6 +188,29 @@ def test_one_persons_messages_are_answered_in_whatsapps_order(db: Database, fake
     world.run()
     assert [row[0] for row in world.messages(link)] == ["wamid.1", "wamid.2"]  # by reply_sent_at
     assert world.texts_to(number) == [PLACEHOLDER, PLACEHOLDER]
+
+
+def test_keycloak_coexistence_ends_unenrolled_legacy_whatsapp_channels(
+    db: Database, fake: WhatsAppFake
+) -> None:
+    world = _World(db, fake)
+    world.api = Api(db, settings=replace(world.api.settings, keycloak_enabled=True))
+    world.client = world.api.client()
+    world.channel = replace(
+        world.channel,
+        db=world.api.app_db,
+        keycloak_enabled=True,
+    )
+    customer, user, number, link = world.person()
+    world.send(number, message(number, world.api.clock(), "show files", wamid="wamid.mfa"))
+
+    world.run()
+
+    assert world.texts_to(number) == [NOT_CONNECTED]
+    assert world.link(link)[0] == "not_allowed"
+    assert world.messages(link) == [("wamid.mfa", "done", True, True, 0)]
+    with db.user(customer, user) as conn:
+        assert wa.mine(conn, customer, user) is None
 
 
 def test_a_person_is_handled_by_one_process_at_a_time_and_different_people_together(

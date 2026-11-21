@@ -7,7 +7,7 @@
 
 import styles from "@/app/login/twoStep.module.css";
 import admin from "@/components/admin/Admin.module.css";
-import { REQUIRED_TEXT, mayTurnOff, twoStepView } from "@/components/shell/twoStepAccount";
+import { mayTurnOff, requiredText, twoStepView } from "@/components/shell/twoStepAccount";
 import { useSession } from "@/lib/session";
 
 export const TWO_STEP_ON =
@@ -20,6 +20,14 @@ export const LOST_PHONE =
 
 export function TwoStepPanel() {
   const { me } = useSession();
+  if (me.user.auth_authority === "keycloak") {
+    return (
+      <section className="card stack" aria-labelledby="two-step-heading">
+        <h2 id="two-step-heading" className={admin.sectionHeading}>Company sign-in</h2>
+        <p className={styles.twoStepText}>Your organization manages sign-in and multi-factor authentication.</p>
+      </section>
+    );
+  }
   const on = twoStepView(me) === "on";
   return (
     <section className="card stack" aria-labelledby="two-step-heading">
@@ -29,7 +37,7 @@ export function TwoStepPanel() {
       <p className={styles.twoStepText}>
         Your two-step sign-in: <strong>{on ? "On" : "Off"}</strong>. {on ? TWO_STEP_ON : TWO_STEP_OFF}{" "}
         {/* QA U5: while the organisation requires it (#481) there is nothing to turn off. */}
-        {on && !mayTurnOff(me) ? REQUIRED_TEXT : CHANGE_IN_ACCOUNT}
+        {on && !mayTurnOff(me) ? requiredText(me) : CHANGE_IN_ACCOUNT}
       </p>
       {on && <p className={styles.note}>{LOST_PHONE}</p>}
     </section>

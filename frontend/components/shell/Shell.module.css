@@ -681,6 +681,19 @@
   margin: 0;
 }
 
+.reauthNotice {
+  margin: var(--space-3) var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--k-r-3);
+  background: var(--review-bg);
+  color: var(--text-primary);
+}
+
+.reauthError {
+  border-color: var(--critical);
+}
+
 .stillLoading {
   display: flex;
   flex-wrap: wrap;

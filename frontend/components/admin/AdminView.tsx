@@ -47,10 +47,10 @@ import { WhatsAppPanel } from "./WhatsAppPanel";
 import styles from "./Admin.module.css";
 
 /** `tab`: the ?tab= the page was opened with (/admin?tab=departments, PRD 7 lead decision 12). */
-export function AdminView({ twoStep, tab }: { twoStep: ReactNode; tab?: string }) {
+export function AdminView({ twoStep, tab, reauth }: { twoStep: ReactNode; tab?: string; reauth?: string }) {
   return (
     <AdminGate>
-      <AdminTabs twoStep={twoStep} tab={tab} />
+      <AdminTabs twoStep={twoStep} tab={tab} reauth={reauth} />
     </AdminGate>
   );
 }
@@ -96,7 +96,7 @@ export function AdminGate({ children }: { children: ReactNode }) {
   return children;
 }
 
-function AdminTabs({ twoStep, tab }: { twoStep: ReactNode; tab?: string }) {
+function AdminTabs({ twoStep, tab, reauth }: { twoStep: ReactNode; tab?: string; reauth?: string }) {
   const { me } = useSession();
   const [active, setActive] = useState<TabId>(() => tabFrom(tab));
   const [unsaved, setUnsaved] = useState(false); // the open Settings or AI settings tab has changes not saved
@@ -131,15 +131,16 @@ function AdminTabs({ twoStep, tab }: { twoStep: ReactNode; tab?: string }) {
         {active === "users" && (
           <UsersPanel
             currentUserId={me.user.id}
-            adminTwoStep={me.user.totp_enabled}
+            adminTwoStep={me.user.auth_authority === "keycloak" || me.user.totp_enabled}
             providers={me.providers}
             whatsapp={me.whatsapp === true}
+            reauth={reauth}
           />
         )}
         {active === "settings" && (
           <div className={styles.panelStack}>
             <SettingsPanel providers={me.providers} onUnsaved={setUnsaved} />
-            {me.whatsapp === true && <WhatsAppPanel organisation={me.customer.name} />}
+            {me.whatsapp === true && <WhatsAppPanel organisation={me.customer.name} reauth={reauth} />}
             {twoStep}
           </div>
         )}

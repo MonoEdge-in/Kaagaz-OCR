@@ -135,12 +135,16 @@ def _password_given(context: AppContext, user: CurrentUser, password: str | None
     whether or not this write turns out to need it (an Admin opening a wall to themselves is known
     only under the tree lock)."""
     if password is not None:
-        prove_password(context, user, password)
+        prove_password(context, user, password, action="access")
 
 
-def _self_grant(user: CurrentUser, password: str | None) -> None:
+def _self_grant(user: CurrentUser, password: str | None, *, action: str = "access") -> None:
     """The Admin gives themselves access: the password must have come (checked by
     ``_password_given``), else 403."""
+    if user.auth_authority == "keycloak":
+        if user.reauth_action != action:
+            raise ApiError(403, "keycloak_reauth_required")
+        return
     if password is None:
         raise ApiError(403, "password_required", SELF_GRANT)
 

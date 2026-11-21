@@ -197,7 +197,7 @@ describe("one spelling (#457 review)", () => {
         .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line));
       expect(code.filter((line) => /e-mail/i.test(line)), path).toEqual([]);
     }
-    expect(read("app/login/SignInForm.tsx")).toContain(">Email</label>");
+    expect(read("app/login/SignInForm.tsx")).toContain('"Email (temporary legacy sign-in)"');
   });
 });
 

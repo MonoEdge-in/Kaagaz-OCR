@@ -98,6 +98,7 @@ from kaagaz.api.routers.auth import (
     _prove,
     _prove_code,
     _succeeded,
+    prove_password,
 )
 from kaagaz.api.routers.oidc import CONNECTS_PER_HOUR, WHATSAPP_PAGE, _new_flow
 from kaagaz.api.routers.whatsapp import require_whatsapp
@@ -205,6 +206,8 @@ def my_whatsapp(user: User, context: Context) -> dict[str, Any]:
 
 @router.post("/whatsapp/prove")
 def prove(body: ProveBody, user: User, context: Context) -> JSONResponse:
+    if user.auth_authority == "keycloak":
+        raise ApiError(403, "legacy_auth_disabled")
     _prove(context, user, body.password, body.code)
     response = JSONResponse({"proved": True})
     set_whatsapp_proof_cookie(response, user, context.settings, now=unix(context.clock()))
@@ -213,6 +216,8 @@ def prove(body: ProveBody, user: User, context: Context) -> JSONResponse:
 
 @router.post("/whatsapp/prove/google")
 def prove_with_google(body: GoogleProveBody, user: User, context: Context) -> JSONResponse:
+    if user.auth_authority == "keycloak":
+        raise ApiError(403, "legacy_auth_disabled")
     if not _google_only(context, user):
         raise ApiError(403, "not_google_only", NOT_GOOGLE_ONLY)
     with context.db.user(user.customer_id, user.user_id) as conn:
@@ -350,6 +355,8 @@ def _google_only(context: AppContext, user: CurrentUser) -> bool:
 
 def _require_proof(request: Request, user: CurrentUser, context: AppContext) -> None:
     proof = request.cookies.get(WHATSAPP_PROOF_COOKIE) or ""
+    if user.auth_authority == "keycloak" and user.reauth_action != "whatsapp":
+        raise ApiError(403, "proof_needed", PROOF_NEEDED)
     if not whatsapp_proved(proof, user, context.settings.session_secret, unix(context.clock())):
         raise ApiError(403, "proof_needed", PROOF_NEEDED)
 
@@ -484,11 +491,16 @@ def save_whatsapp(
         if not body.rules_confirmed:
             raise ApiError(400, "bad_request", RULES_NOT_CONFIRMED)
     if turned_on or ticked:
-        if body.password is None:
-            raise ApiError(400, "bad_request", ON_NEEDS_PROOF if turned_on else TICK_NEEDS_PROOF)
-        _succeeded(
-            context, _check_current_password(context, user, body.password, context.clock()), signed_in=True
-        )
+        if user.auth_authority == "keycloak":
+            prove_password(context, user, body.password, action="whatsapp")
+        else:
+            if body.password is None:
+                raise ApiError(400, "bad_request", ON_NEEDS_PROOF if turned_on else TICK_NEEDS_PROOF)
+            _succeeded(
+                context,
+                _check_current_password(context, user, body.password, context.clock()),
+                signed_in=True,
+            )
     wanted = {
         "enabled": body.enabled,
         "management": body.management,

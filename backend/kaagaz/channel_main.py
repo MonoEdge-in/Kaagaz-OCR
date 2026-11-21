@@ -1,7 +1,9 @@
 """The WhatsApp channel process (#603, PRD 7 section 15): ``python -m kaagaz.channel_main``, the
 ``whatsapp`` service (docker-compose.yml, ``--profile whatsapp``), from the API's image.
 
-It refuses to start unless WHATSAPP_ENABLED is true. It is never the document worker, whose role
+It refuses to start unless WHATSAPP_ENABLED is true. During Keycloak coexistence it also checks local
+MFA enrollment on every message, so an old channel cannot preserve access for an unenrolled legacy
+account. It is never the document worker, whose role
 sees nothing through PRD 7's views: its Database takes ``db_app_role`` (the API's) and its login is
 the API's (DATABASE_URL), so every person transaction is held to the views and the rule exactly as
 a browser's (tests/test_whatsapp_guard.py). W4: the chat gets the API's own context on that one
@@ -120,6 +122,7 @@ def main() -> None:
         number_key=settings.whatsapp_number_key,
         clock=_utc_now,
         chat=Chat(headless_context(settings, database)),  # W4: Ask and search as the person
+        keycloak_enabled=settings.keycloak_enabled or settings.customer_mfa_required,
     )
     stop = threading.Event()
     install_stop_handlers(stop)

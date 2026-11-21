@@ -18,8 +18,11 @@ import { TwoStepDialog } from "@/components/shell/TwoStepDialog";
 import {
   LOST_CODE,
   OFF_WARNING,
+  REQUIRED_TEXT,
   TURNED_OFF,
   TURNED_ON,
+  mayTurnOff,
+  requiredText,
   twoStepError,
   twoStepView,
 } from "@/components/shell/twoStepAccount";
@@ -99,6 +102,27 @@ describe("Account, Two-step sign-in", () => {
     expect(html).toContain(LOST_CODE);
   });
 
+  it("shows managed MFA ownership without local TOTP or password controls", () => {
+    const managed = {
+      ...me("admin", true),
+      keycloak_enabled: true,
+      user: { ...me("admin", true).user, auth_authority: "keycloak" as const },
+    };
+    const html = dialog(managed);
+    expect(html).toContain("Your organization manages sign-in and multi-factor authentication.");
+    expect(html).not.toContain("Current password");
+    expect(html).not.toContain("6-digit code");
+    expect(html).not.toContain("Turn off");
+    expect(mayTurnOff(managed)).toBe(false);
+  });
+
+  it("keeps legacy MFA required while company sign-in is enabled", () => {
+    const migrating = { ...me("member", true), keycloak_enabled: true };
+    expect(mayTurnOff(migrating)).toBe(false);
+    expect(requiredText(migrating)).toContain("required for legacy accounts");
+    expect(requiredText(me("member", true))).toBe(REQUIRED_TEXT);
+  });
+
   it("uses the shared set-up step and the new routes", () => {
     const source = read("components/shell/TwoStepDialog.tsx");
     expect(source).toContain("<EnrolStep");
@@ -171,9 +195,15 @@ describe("the admin's People list", () => {
     expect(texts(user({ role: "admin", two_step_turned_off: true }))).toEqual(["Active", "Two-step: Off"]);
   });
 
+  it("labels mapped users as company-managed and omits local reset controls", () => {
+    const managed = user({ auth_authority: "keycloak", totp_enabled: true });
+    expect(texts(managed)).toEqual(["Active", "Company-managed sign-in"]);
+    expect(userActions(managed, { isSelf: false, now: NOW }).reset2fa).toBe(false);
+  });
+
   it("does not say an admin who turned it off sets it up at the next sign-in", () => {
     expect(read("components/admin/UsersPanel.tsx")).toContain(
-      'users?.some((user) => user.role === "admin" && !user.totp_enabled && !user.two_step_turned_off)',
+      'users?.some((user) => user.auth_authority !== "keycloak" && user.role === "admin" && !user.totp_enabled && !user.two_step_turned_off)',
     );
   });
 

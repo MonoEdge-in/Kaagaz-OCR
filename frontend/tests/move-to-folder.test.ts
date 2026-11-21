@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { DocumentSummary, Folder, Me } from "@/lib/types";
 
-vi.mock("@/lib/session", () => ({ useSession: () => ({ refresh: () => undefined }) }));
+vi.mock("@/lib/session", () => ({ useSession: () => ({ refresh: () => undefined }), useOptionalSession: () => null }));
 
 const { MoveForm } = await import("@/components/documents/DocumentActions");
 const { DocumentsTable } = await import("@/components/documents/DocumentsTable");

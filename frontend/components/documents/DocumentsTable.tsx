@@ -73,6 +73,7 @@ import { useSession } from "@/lib/session";
 import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative } from "@/lib/format";
 import type { DocumentSummary, FilePlaced, FolderBack, FolderRestored, Me, Tag, TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
+import { beginKeycloakReauth, isKeycloakManaged, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { LockDialog } from "./LockDialog";
 import { DOCUMENT_DRAG } from "./FolderNav";
@@ -378,6 +379,26 @@ export function DocumentsTable({
     setDeleteProgress({ done: 0, total: ids.length });
     setError(null);
     const typed = action === "forever" && askPassword ? password : null;
+    if (action === "forever" && me.user.auth_authority === "keycloak") {
+      try {
+        await confirmPassword();
+      } catch (caught) {
+        setBusy(false);
+        setBusyAction(null);
+        setDeleteProgress(null);
+        if (isKeycloakReauthRequired(caught)) {
+          try {
+            await beginKeycloakReauth("delete_forever", window.location.pathname);
+            return;
+          } catch (failed) {
+            setError(keycloakStartFailure(failed));
+            return;
+          }
+        }
+        setError(errorText(caught));
+        return;
+      }
+    }
     // #542: a restore that put a folder somewhere else, or brought folders back with a file, says so,
     // and then has no Undo (Undo would send the files back alone).
     const notes: string[] = [];
@@ -678,6 +699,9 @@ export function DocumentsTable({
                     ? bulkReadQuestion(readableIds.length)
                     : bulkTrashQuestion(restorableIds.length)}
               </span>
+              {confirming === "forever" && me.user.auth_authority === "keycloak" && (
+                <span className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; return, reselect items if needed, and confirm again.</span>
+              )}
               {confirming === "forever" && askPassword && (
                 <PasswordField
                   id="bulk-forever-password"
@@ -994,6 +1018,17 @@ const DocumentRow = memo(function DocumentRow({
         typeof undo === "function" ? undo() : undo,
       );
     } catch (caught) {
+      if (confirming === "forever" && isKeycloakManaged(me) && isKeycloakReauthRequired(caught)) {
+        checkingPassword.current = false;
+        try {
+          await beginKeycloakReauth("delete_forever", window.location.pathname);
+          return;
+        } catch (failed) {
+          setError(keycloakStartFailure(failed));
+          setBusy(false);
+          return;
+        }
+      }
       if (lostTheRight(caught)) {
         refresh();
         setPasswordAsked(false); // the fresh me decides who types a password
@@ -1022,9 +1057,9 @@ const DocumentRow = memo(function DocumentRow({
       setPassword("");
       void act(
         async (id) => {
-          if (typed !== null) {
+          if (typed !== null || isKeycloakManaged(me)) {
             checkingPassword.current = true;
-            await confirmPassword(typed);
+            await confirmPassword(typed ?? undefined);
             checkingPassword.current = false;
           }
           await deleteDocumentForever(id);
@@ -1326,6 +1361,9 @@ const DocumentRow = memo(function DocumentRow({
           >
             <div className={library.dialogForm}>
               <p>{question}</p>
+              {confirming === "forever" && isKeycloakManaged(me) && (
+                <p className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; reopen this item and confirm again after returning.</p>
+              )}
               {confirming === "forever" && needsPassword && (
                 <PasswordField
                   id={`forever-password-${document.id}`}

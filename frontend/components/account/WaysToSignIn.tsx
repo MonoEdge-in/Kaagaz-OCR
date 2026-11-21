@@ -19,10 +19,12 @@ import { CodeField } from "@/app/login/CodeField";
 import { codeError, normalizeCode } from "@/app/login/twoStep";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { proofField } from "@/components/shell/twoStepAccount";
+import { LimitedMfaEnrollment } from "@/app/login/LimitedMfaEnrollment";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { ApiError, connectProvider, identities, removeIdentity } from "@/lib/api";
 import { useSession } from "@/lib/session";
+import { isKeycloakManaged } from "@/lib/keycloak";
 import type { ConnectedIdentity, WaysToSignIn as Ways } from "@/lib/types";
 import {
   disconnectQuestion,
@@ -36,6 +38,7 @@ import {
   waysLoadText,
 } from "./signInWays";
 import styles from "./WaysToSignIn.module.css";
+import { KeycloakLinkPanel } from "./KeycloakLinkPanel";
 
 type Asking = { kind: "connect"; provider: string } | { kind: "remove"; provider: string; identity: ConnectedIdentity };
 
@@ -46,11 +49,13 @@ const CODE_ID = "ways-code";
 /** The line under the page's title, naming only the providers that are on (#457 review). */
 export function WaysIntro() {
   const { me } = useSession();
+  if (isKeycloakManaged(me)) return <p className="hint">Your organization manages company sign-in and multi-factor authentication.</p>;
+  if (me.user.auth_source === "legacy_limited") return <p className="hint">Two-step sign-in must be set up before you can use Kaagaz.</p>;
   const text = introText(me.providers);
   return text ? <p className="hint">{text}</p> : null;
 }
 
-export function WaysToSignIn({ params }: { params: Record<string, string | undefined> }) {
+export function WaysToSignIn({ params, next = "/dashboard" }: { params: Record<string, string | undefined>; next?: string }) {
   const { me } = useSession();
   const [ways, setWays] = useState<Ways | null>(null);
   // Issue 468: why the list did not load, with Try again (not when Google is switched off).
@@ -58,8 +63,11 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
   const [attempt, setAttempt] = useState(0);
   const [asking, setAsking] = useState<Asking | null>(null);
   const [said, setSaid] = useState<string | null>(null);
+  const managed = isKeycloakManaged(me);
+  const limited = me.user.auth_source === "legacy_limited";
 
   useEffect(() => {
+    if (managed || limited) return;
     let live = true;
     identities().then(
       (reply) => {
@@ -74,7 +82,19 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
     return () => {
       live = false;
     };
-  }, [attempt]);
+  }, [attempt, limited, managed]);
+
+  if (limited) {
+    return <LimitedMfaEnrollment next={next} />;
+  }
+
+  if (managed) {
+    return (
+      <section className={styles.ways} aria-label="Ways to sign in">
+        <KeycloakLinkPanel me={me} callbackError={params.keycloak_error ?? null} linked={params.keycloak === "linked"} />
+      </section>
+    );
+  }
 
   const rules = ways ? rulesText(ways.rules, me.user.google_link_required === true) : null;
   const connected = params.connected ? ways?.identities.find((row) => row.provider === params.connected) : undefined;
@@ -138,6 +158,9 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
             </button>
           )}
         </div>
+      )}
+      {me.keycloak_enabled && (
+        <KeycloakLinkPanel me={me} callbackError={params.keycloak_error ?? null} linked={params.keycloak === "linked"} />
       )}
       {asking && (
         <PasswordDialog

@@ -262,7 +262,7 @@ describe("load errors with a cause and Try again (A5)", () => {
     const ways = read("components/account/WaysToSignIn.tsx");
     expect(ways).toContain("setFailure(off ? { text: OFF, retry: false } : { text: waysLoadText(caught), retry: true });");
     expect(ways).toMatch(/\{failure\.retry && \([\s\S]*setAttempt\(\(n\) => n \+ 1\);[\s\S]*Try again/);
-    expect(ways).toContain("}, [attempt]);");
+    expect(ways).toContain("}, [attempt, limited, managed]);");
   });
 });
 

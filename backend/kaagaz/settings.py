@@ -159,6 +159,7 @@ _URL_MESSAGES = {
     "OPENROUTER_BASE_URL": "OPENROUTER_BASE_URL must be an https URL" + _LOOPBACK_NOTE,
     "APP_URL": "APP_URL must be an https origin such as https://kaagaz.example.com" + _LOOPBACK_NOTE,
     "WHATSAPP_GRAPH_URL": "WHATSAPP_GRAPH_URL must be an https URL" + _LOOPBACK_NOTE,
+    "KEYCLOAK_ISSUER": "KEYCLOAK_ISSUER must be an https URL or local http URL, including keycloak.localhost",
 }
 
 
@@ -166,17 +167,25 @@ def _https_url(value: str, name: str, path: str | None = None) -> str:
     """``value`` when it is https (http only on a loopback host) with no user, password, query
     or fragment and, when ``path`` is given, exactly that path (``""``: an origin, "/" too);
     kept without a trailing slash. Else ``SettingsError`` in ``name``'s own words."""
-    parts = urllib.parse.urlsplit(value)
-    host = parts.hostname or ""
+    try:
+        parts = urllib.parse.urlsplit(value)
+        host = parts.hostname or ""
+        port = parts.port
+    except ValueError:
+        raise SettingsError(
+            _URL_MESSAGES.get(name) or f"{name} must be an https URL ending {path}" + _LOOPBACK_NOTE
+        ) from None
     secure = parts.scheme == "https" and bool(host)
     paths = {"", "/"} if path == "" else {path}
+    loopback_http = host in _LOOPBACK_HOSTS or (name == "KEYCLOAK_ISSUER" and host == "keycloak.localhost")
     if (
         parts.username is not None
         or parts.password is not None
         or parts.query
         or parts.fragment
+        or (port is not None and not 1 <= port <= 65535)
         or (path is not None and parts.path not in paths)
-        or not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS))
+        or not (secure or (parts.scheme == "http" and loopback_http))
     ):
         raise SettingsError(
             _URL_MESSAGES.get(name) or f"{name} must be an https URL ending {path}" + _LOOPBACK_NOTE
@@ -490,6 +499,17 @@ class Settings:
     google_client_id: str | None = None
     google_client_secret: str | None = field(default=None, repr=False)
     google_redirect_uri: str | None = None
+    # Keycloak is a configured, trusted OIDC authority; there is no user provisioning by claims.
+    keycloak_enabled: bool = False
+    keycloak_issuer: str | None = None
+    keycloak_client_id: str | None = None
+    keycloak_client_secret: str | None = field(default=None, repr=False)
+    keycloak_redirect_uri: str | None = None
+    keycloak_required_acr: str | None = None
+    keycloak_provider_claim: str = "auth_provider"
+    keycloak_flow_encryption_key: str | None = field(default=None, repr=False)
+    # The WhatsApp worker can enforce MFA without receiving Keycloak client credentials.
+    customer_mfa_required: bool = False
     # Mistral OCR, the second page reader the operator may choose per organisation (#473, Tushar,
     # 2 Nov 2026). Optional: unset, Mistral can't be chosen. The key is a secret repr never shows,
     # checked as OPENROUTER_API_KEY is. mistral_zdr_approved: zero data retention confirmed with
@@ -541,9 +561,30 @@ class Settings:
         # Off unless set to true, as SELF_SIGNUP_ENABLED.
         email_enabled = env.optional("EMAIL_ENABLED") is not None and env.boolean("EMAIL_ENABLED")
         google_on = env.optional("GOOGLE_SIGNIN_ENABLED") is not None and env.boolean("GOOGLE_SIGNIN_ENABLED")
+        keycloak_on = env.optional("KEYCLOAK_ENABLED") is not None and env.boolean("KEYCLOAK_ENABLED")
         totp_encryption_key = env.secret("TOTP_ENCRYPTION_KEY")
         if totp_encryption_key == session_secret:
             raise SettingsError("TOTP_ENCRYPTION_KEY must differ from SESSION_SECRET")
+        keycloak_issuer = keycloak_client_id = keycloak_redirect_uri = keycloak_required_acr = None
+        keycloak_client_secret = None
+        keycloak_provider_claim = "auth_provider"
+        keycloak_flow_key = None
+        if keycloak_on:
+            keycloak_issuer = _https_url(env.text("KEYCLOAK_ISSUER"), "KEYCLOAK_ISSUER")
+            keycloak_client_id = env.token("KEYCLOAK_CLIENT_ID")
+            keycloak_client_secret = env.secret("KEYCLOAK_CLIENT_SECRET")
+            keycloak_redirect_uri = _https_url(
+                env.text("KEYCLOAK_REDIRECT_URI"),
+                "KEYCLOAK_REDIRECT_URI",
+                "/api/auth/keycloak/callback",
+            )
+            keycloak_required_acr = env.optional("KEYCLOAK_REQUIRED_ACR") or "1"
+            if len(keycloak_required_acr) > 255 or any(ord(char) < 33 for char in keycloak_required_acr):
+                raise SettingsError("KEYCLOAK_REQUIRED_ACR must be a non-empty printable value")
+            keycloak_provider_claim = env.optional("KEYCLOAK_PROVIDER_CLAIM") or "auth_provider"
+            keycloak_flow_key = env.secret("KEYCLOAK_FLOW_ENCRYPTION_KEY")
+            if keycloak_flow_key in {session_secret, totp_encryption_key}:
+                raise SettingsError("KEYCLOAK_FLOW_ENCRYPTION_KEY must differ from other keys")
         queue_lease_seconds = env.integer("QUEUE_LEASE_SECONDS")
         ocr_timeout_seconds = env.number("OCR_TIMEOUT_SECONDS")
         if not (math.isfinite(ocr_timeout_seconds) and ocr_timeout_seconds > 0):
@@ -851,6 +892,16 @@ class Settings:
             google_redirect_uri=_redirect_uri(env.text("GOOGLE_REDIRECT_URI"), "google")
             if google_on
             else env.optional("GOOGLE_REDIRECT_URI"),
+            keycloak_enabled=keycloak_on,
+            keycloak_issuer=keycloak_issuer,
+            keycloak_client_id=keycloak_client_id,
+            keycloak_client_secret=keycloak_client_secret,
+            keycloak_redirect_uri=keycloak_redirect_uri,
+            keycloak_required_acr=keycloak_required_acr,
+            keycloak_provider_claim=keycloak_provider_claim,
+            keycloak_flow_encryption_key=keycloak_flow_key,
+            customer_mfa_required=env.optional("CUSTOMER_MFA_REQUIRED") is not None
+            and env.boolean("CUSTOMER_MFA_REQUIRED"),
             mistral_api_key=mistral_api_key,
             mistral_zdr_approved=env.optional("MISTRAL_ZDR_APPROVED") is not None
             and env.boolean("MISTRAL_ZDR_APPROVED"),

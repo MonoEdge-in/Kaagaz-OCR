@@ -7,6 +7,11 @@ const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  logging: {
+    incomingRequests: {
+      ignore: [/\/api\/auth\/keycloak(?:\/|$)/],
+    },
+  },
   experimental: {
     // How long the /api rewrite waits for the backend. Next's default is 30 s,
     // and 0 does not switch it off (it means the default): a chat answer on a
@@ -41,6 +46,11 @@ const nextConfig: NextConfig = {
         // The provider sign-in's routes (#457 phase 1): the callback's address holds Google's
         // one-time code and state, so no referrer leaves it either.
         source: "/api/auth/oidc/:path*",
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      },
+      {
+        // Keycloak callbacks carry one-time authorization data in their query string.
+        source: "/api/auth/keycloak/:path*",
         headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
       },
       {

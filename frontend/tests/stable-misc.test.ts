@@ -190,7 +190,7 @@ describe("the sign-in page's server-side calls, after the reviews", () => {
     const { signInOptions } = await import("@/app/login/signInOptions");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const busy = (async () => new Response("{}", { status: 503 })) as typeof fetch;
-    expect(await signInOptions(busy)).toEqual({ providers: [], emailOn: false });
+    expect(await signInOptions(busy)).toEqual({ providers: [], emailOn: false, keycloakEnabled: false });
     expect(warn.mock.calls.map((call) => String(call[0]))).toEqual(
       expect.arrayContaining([expect.stringContaining("/auth/session"), expect.stringContaining("503")]),
     );

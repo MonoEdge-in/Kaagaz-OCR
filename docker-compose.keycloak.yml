@@ -1,0 +1,45 @@
+# Local-only Keycloak overlay. It is opt-in and is never used by production.
+# The published listener stays on this laptop; the Docker network alias lets
+# the API fetch metadata and tokens through the same issuer the browser sees.
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    profiles: ["keycloak"]
+    command: ["start-dev", "--import-realm", "--http-port=8081"]
+    environment:
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: "8081"
+      KC_HOSTNAME: http://keycloak.localhost:8081
+      KC_HOSTNAME_STRICT: "true"
+    env_file:
+      - path: .env.keycloak-admin
+        required: false
+    ports:
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+      - ./keycloak/kaagaz-local-realm.json:/opt/keycloak/data/import/kaagaz-local-realm.json:ro
+    networks:
+      edge:
+        aliases:
+          - keycloak.localhost
+
+  # The secret env file is scoped to the API. It is not added to the shared
+  # compose anchor used by migration, worker, messaging or operator services.
+  api:
+    environment:
+      CUSTOMER_MFA_REQUIRED: "true"
+    env_file:
+      - path: .env.keycloak
+        required: false
+
+  worker:
+    environment:
+      CUSTOMER_MFA_REQUIRED: "true"
+
+  whatsapp:
+    environment:
+      CUSTOMER_MFA_REQUIRED: "true"
+
+volumes:
+  keycloak-data:

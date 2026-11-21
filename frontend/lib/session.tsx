@@ -26,6 +26,7 @@ import type { ReactNode } from "react";
 import {
   appGate,
   endedPath,
+  mfaEnrollmentPath,
   pageAfterSessionChange,
   SEARCH_DRAFT,
   searchToKeep,
@@ -34,6 +35,7 @@ import {
   WAYS_PATH,
 } from "@/components/shell/gate";
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
+import { KeycloakReauthNotice } from "@/components/shell/KeycloakReauthNotice";
 import styles from "@/components/shell/Shell.module.css";
 import { ApiError, currentSession, logout, onGoogleLinkRequired, onSessionEnded } from "./api";
 import { clearDrafts, flushDrafts, keepDraftsOf, saveDraft } from "./drafts";
@@ -181,11 +183,19 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     router.replace(WAYS_PATH);
   }, [gate, pathname, router]);
 
+  useEffect(() => {
+    if (gate !== "mfa_enrol" || pathname === WAYS_PATH) return;
+    router.replace(mfaEnrollmentPath(pathname));
+  }, [gate, pathname, router]);
+
   // Any other page waits for the move: its screen would only be refused.
-  const leaving = gate === "set_two_step" || (gate === "connect_google" && pathname !== WAYS_PATH);
+  const leaving =
+    gate === "set_two_step" ||
+    ((gate === "connect_google" || gate === "mfa_enrol") && pathname !== WAYS_PATH);
   if (session && !leaving) {
     return (
       <SessionContext.Provider value={session}>
+        <KeycloakReauthNotice />
         {appGate(session.me) === "set_password" ? (
           <SetPasswordScreen me={session.me} onChanged={session.refresh} />
         ) : (
@@ -225,6 +235,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         <span className="spinner" aria-hidden="true" />
         {gate === "set_two_step"
           ? "Taking you to set up two-step sign-in…"
+          : gate === "mfa_enrol"
+            ? "Taking you to finish required two-step setup…"
           : gate === "connect_google"
             ? "Taking you to Ways to sign in…"
             : state.kind === "signed_out"
@@ -251,4 +263,9 @@ export function useSession(): Session {
   const session = useContext(SessionContext);
   if (!session) throw new Error("useSession must be used inside SessionProvider");
   return session;
+}
+
+/** Read the session when a reusable dialog is rendered without the app provider. */
+export function useOptionalSession(): Session | null {
+  return useContext(SessionContext);
 }

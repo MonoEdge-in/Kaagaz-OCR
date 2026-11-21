@@ -823,11 +823,11 @@ def test_the_password_is_proved_with_no_connection_held(
     held: list[int] = []
     proved = prove_password  # the one access.py calls, imported from auth.py
 
-    def watched(context: Any, user: Any, password: str) -> None:
+    def watched(context: Any, user: Any, password: str, *, action: str) -> None:
         pool = db.engine.pool
         assert isinstance(pool, QueuePool)
         held.append(pool.checkedout())
-        proved(context, user, password)
+        proved(context, user, password, action=action)
 
     monkeypatch.setattr(access_router, "prove_password", watched)
     with db.customer(org.c) as conn:

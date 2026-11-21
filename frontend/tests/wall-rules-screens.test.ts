@@ -44,6 +44,7 @@ vi.mock("@/lib/session", () => ({
     },
     refresh: () => undefined,
   }),
+  useOptionalSession: () => null,
 }));
 
 const folder = (id: string, name: string, parent_id: string | null = null): Folder => ({

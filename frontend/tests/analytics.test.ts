@@ -300,8 +300,8 @@ describe("where it is mounted", () => {
 
   it("is off on the test server: .env.example leaves the id empty and commented", () => {
     const env = readFileSync(join(root, "..", ".env.example"), "utf8");
-    expect(env).toMatch(/^# NEXT_PUBLIC_GA_ID=$/m);
-    expect(env).not.toMatch(/^NEXT_PUBLIC_GA_ID=/m);
+    expect(/^# NEXT_PUBLIC_GA_ID=$/m.test(env)).toBe(true);
+    expect(/^NEXT_PUBLIC_GA_ID=/m.test(env)).toBe(false);
   });
 
   it("reaches the build, which is where Next.js reads a NEXT_PUBLIC_ value", () => {

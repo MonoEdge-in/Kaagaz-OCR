@@ -76,7 +76,7 @@ class LockBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     open_to: OpenTo = None  # left out: the Admin who locks it (p2:30)
-    password: TypedPassword
+    password: TypedPassword | None = None
 
 
 class BulkLockBody(LockBody):
@@ -86,7 +86,7 @@ class BulkLockBody(LockBody):
 class UnlockBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    password: TypedPassword
+    password: TypedPassword | None = None
 
 
 class BulkUnlockBody(UnlockBody):
@@ -236,7 +236,7 @@ def lock_files(body: BulkLockBody, user: User, context: Context) -> dict[str, in
     documents = list(dict.fromkeys(str(each) for each in body.document_ids))
     with context.db.user(user.customer_id, user.user_id) as conn:
         _found(conn, user, documents)
-    prove_password(context, user, body.password)
+    prove_password(context, user, body.password, action="locks")
     outcome = _lock(context, user, documents, body.open_to, batch=True)
     return {"locked": len({version.document_id for version in outcome.versions})}
 
@@ -248,7 +248,7 @@ def unlock_files(body: BulkUnlockBody, user: User, context: Context) -> dict[str
     documents = list(dict.fromkeys(str(each) for each in body.document_ids))
     with context.db.user(user.customer_id, user.user_id) as conn:
         _found(conn, user, documents)
-    prove_password(context, user, body.password)
+    prove_password(context, user, body.password, action="locks")
     outcome = _unlock(context, user, documents, batch=True)
     return {"unlocked": len({version.document_id for version in outcome.versions})}
 
@@ -259,7 +259,7 @@ def lock_file(document_id: uuid.UUID, body: LockBody, user: User, context: Conte
     target = str(document_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
         _found(conn, user, [target])
-    prove_password(context, user, body.password)
+    prove_password(context, user, body.password, action="locks")
     outcome = _lock(context, user, [target], body.open_to, batch=False)
     people = 1 if body.open_to is None else len(set(body.open_to))
     return {"locked": True, "versions": len(outcome.versions), "open_to": people}
@@ -271,7 +271,7 @@ def unlock_file(document_id: uuid.UUID, body: UnlockBody, user: User, context: C
     target = str(document_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
         _found(conn, user, [target])
-    prove_password(context, user, body.password)
+    prove_password(context, user, body.password, action="locks")
     outcome = _unlock(context, user, [target], batch=False)
     return {"unlocked": True, "reading": any(version.queue for version in outcome.versions)}
 
@@ -315,12 +315,12 @@ def grant_lock(
     with context.db.user(customer_id, user.user_id) as conn:
         _admin_document(conn, user, target)
     if body.password is not None:
-        prove_password(context, user, body.password)
+        prove_password(context, user, body.password, action="locks")
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         found = _enabled(conn, user, person)
         if mine:
-            _self_grant(user, body.password)
+            _self_grant(user, body.password, action="locks")
         outcome = locks_sql.grant(conn, target, person)
         if outcome == "not_found":
             raise ApiError(404, "not_found")

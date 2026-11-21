@@ -10,6 +10,12 @@ export default async function AdminPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const { tab } = await searchParams;
-  return <AdminView twoStep={<TwoStepPanel />} tab={typeof tab === "string" ? tab : undefined} />;
+  const { tab, reauth } = await searchParams;
+  return (
+    <AdminView
+      twoStep={<TwoStepPanel />}
+      tab={typeof tab === "string" ? tab : undefined}
+      reauth={typeof reauth === "string" ? reauth : undefined}
+    />
+  );
 }

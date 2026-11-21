@@ -70,6 +70,7 @@ class AttemptRow:
     customer_id: str
     password_hash: str
     role: str
+    auth_authority: str
     disabled: bool
     session_version: int
     must_change_password: bool
@@ -240,7 +241,7 @@ _GOOGLE_COLUMNS = (
 # What a sign-in needs, with whether the customer is active or a pending sign-up (0014, 0061).
 # "Turned off" counts only while the organisation does not require two-step for admins (0068).
 _ATTEMPT_COLUMNS = (
-    " u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"  # noqa: S608 - fixed fragments
+    " u.id, u.customer_id, u.password_hash, u.role, u.auth_authority, u.disabled, u.session_version,"  # noqa: S608 - fixed fragments
     " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
     " CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.id = u.customer_id"
     " AND c.admin_two_step_required) THEN NULL ELSE u.totp_off_at END AS totp_off_at,"
@@ -268,6 +269,7 @@ def _attempt(row: RowMapping) -> AttemptRow:
         customer_id=str(row["customer_id"]),
         password_hash=str(row["password_hash"]),
         role=str(row["role"]),
+        auth_authority=str(row["auth_authority"]),
         disabled=bool(row["disabled"]),
         session_version=int(row["session_version"]),
         must_change_password=bool(row["must_change_password"]),
@@ -402,6 +404,7 @@ def set_password(
                 "UPDATE users AS u SET password_hash = :hash, must_change_password = :must_change,"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
                 " session_version = u.session_version + 1"
                 " WHERE u.customer_id = :c AND u.id = :u"
+                " AND u.auth_authority = 'legacy'"
                 " RETURNING" + _ADMIN_COLUMNS
             ),
             {"c": customer_id, "u": user_id, "hash": password_hash, "must_change": must_change},
@@ -434,6 +437,7 @@ def enrol_totp(
             "UPDATE users AS u SET totp_secret_enc = :enc, totp_enabled_at = :now, totp_last_step = :step,"
             " totp_off_at = NULL"
             " WHERE u.customer_id = :c AND u.id = :u"
+            " AND u.auth_authority = 'legacy'"
             " AND u.totp_enabled_at IS NULL AND u.session_version = :ver"
             " AND NOT u.disabled AND NOT u.must_change_password"
             " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
@@ -468,7 +472,7 @@ def reset_totp(conn: Connection, customer_id: str, user_id: str) -> RowMapping |
             text(
                 "UPDATE users AS u SET totp_secret_enc = NULL, totp_enabled_at = NULL,"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
                 " totp_last_step = NULL, totp_off_at = NULL, session_version = u.session_version + 1"
-                " WHERE u.customer_id = :c AND u.id = :u"
+                " WHERE u.customer_id = :c AND u.id = :u AND u.auth_authority = 'legacy'"
                 " RETURNING" + _ADMIN_COLUMNS
             ),
             {"c": customer_id, "u": user_id},
@@ -490,7 +494,8 @@ def turn_off_totp(conn: Connection, customer_id: str, user_id: str, *, now: date
             "UPDATE users AS u SET totp_secret_enc = NULL, totp_enabled_at = NULL, totp_last_step = NULL,"
             " totp_off_at = CASE WHEN u.role = 'admin' THEN CAST(:now AS timestamptz) ELSE NULL END,"
             " session_version = u.session_version + 1"
-            " WHERE u.customer_id = :c AND u.id = :u AND u.totp_enabled_at IS NOT NULL"
+            " WHERE u.customer_id = :c AND u.id = :u AND u.auth_authority = 'legacy'"
+            " AND u.totp_enabled_at IS NOT NULL"
             " RETURNING u.session_version"
         ),
         {"c": customer_id, "u": user_id, "now": now},
@@ -529,7 +534,7 @@ def session_user(
     return (
         conn.execute(
             text(
-                "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"  # noqa: S608 - fixed fragments, _GOOGLE_COLUMNS
+                "SELECT u.id, u.email, u.display_name, u.role, u.auth_authority, u.disabled,"  # noqa: S608 - fixed fragments, _GOOGLE_COLUMNS
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
                 " u.totp_off_at IS NOT NULL AND NOT c.admin_two_step_required AS two_step_turned_off,"
                 " c.admin_two_step_required AS two_step_required,"
@@ -711,6 +716,7 @@ def update_user(
                 "   WHEN CAST(:role AS text) IS NOT NULL AND CAST(:role AS text) <> u.role THEN NULL"
                 "   ELSE u.delete_forever_allowed_at END"
                 " WHERE u.customer_id = :c AND u.id = :u"
+                " AND (CAST(:hash AS text) IS NULL OR u.auth_authority = 'legacy')"
                 " RETURNING" + _ADMIN_COLUMNS
             ),
             {
@@ -771,3 +777,12 @@ def role_of(conn: Connection, customer_id: str, user_id: str) -> str | None:
         text("SELECT role FROM users WHERE customer_id = :c AND id = :u"), {"c": customer_id, "u": user_id}
     ).scalar()
     return None if role is None else str(role)
+
+
+def auth_authority(conn: Connection, customer_id: str, user_id: str) -> str | None:
+    """Read one user's explicit sign-in authority inside their customer transaction."""
+    authority: object = conn.execute(
+        text("SELECT auth_authority FROM users WHERE customer_id = :c AND id = :u"),
+        {"c": customer_id, "u": user_id},
+    ).scalar_one_or_none()
+    return None if authority is None else str(authority)

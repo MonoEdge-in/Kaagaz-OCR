@@ -139,6 +139,8 @@ _CHECK = text(
     " CASE WHEN l.ended_at IS NOT NULL THEN l.end_reason"
     "  WHEN u.disabled OR c.status <> 'active' THEN 'account'"
     "  WHEN u.session_version <> l.session_version THEN 'session'"
+    "  WHEN :keycloak_enabled AND u.auth_authority = 'legacy' AND u.totp_enabled_at IS NULL"
+    "    THEN 'not_allowed'"
     f"  WHEN {_OFF} OR {_ROLE_REFUSED} THEN 'not_allowed'"
     f"  WHEN coalesce(l.last_used_at, l.linked_at) < now() - interval '{SILENT_DAYS} days' THEN 'silent' END"
     " FROM whatsapp_links l"
@@ -281,8 +283,11 @@ def next_message(conn: Connection, linked: Linked) -> Waiting | None:
     return Waiting(str(row[0]), str(row[1]), row[2], row[3], str(row[4]), row[5], document, bool(row[7]))
 
 
-def check(conn: Connection, linked: Linked) -> Check:
-    row = conn.execute(_CHECK, {"c": linked.customer_id, "l": linked.link_id}).first()
+def check(conn: Connection, linked: Linked, *, keycloak_enabled: bool = False) -> Check:
+    row = conn.execute(
+        _CHECK,
+        {"c": linked.customer_id, "l": linked.link_id, "keycloak_enabled": keycloak_enabled},
+    ).first()
     if row is None:  # not this person's organisation's: nothing to answer
         return Check(None, "account")
     return Check(row[0], row[1])

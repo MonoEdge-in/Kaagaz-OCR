@@ -11,6 +11,7 @@ import { useState } from "react";
 import type { FormEvent } from "react";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { confirmWithGoogle, openLocked } from "@/lib/api";
+import { beginKeycloakReauth, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import type { LockedOpen } from "@/lib/types";
 import { LOCKED_TEXT, openErrorText, openFailure } from "./locked";
 import styles from "./Locked.module.css";
@@ -33,9 +34,19 @@ export function LockedOpenPrompt({ via, next, openError, onOpened }: LockedOpenP
     setBusy(true);
     setError(null);
     try {
-      const state = await openLocked(password);
+      const state = await openLocked(via === "keycloak" ? undefined : password);
       onOpened(state);
     } catch (caught) {
+      if (via === "keycloak" && isKeycloakReauthRequired(caught)) {
+        try {
+          await beginKeycloakReauth("locked_open", next);
+          return;
+        } catch (failed) {
+          setError(keycloakStartFailure(failed));
+          setBusy(false);
+          return;
+        }
+      }
       const failure = openFailure(caught);
       setGoogle(failure.google);
       setError(failure.message || null);
@@ -56,11 +67,27 @@ export function LockedOpenPrompt({ via, next, openError, onOpened }: LockedOpenP
     }
   }
 
+  const keycloak = via === "keycloak";
+
   const alert = error && (
     <p className="error-text" role="alert">
       {error}
     </p>
   );
+  if (keycloak) {
+    return (
+      <form className={styles.prompt} onSubmit={(event) => void open(event)}>
+        <h2>{LOCKED_TEXT.heading}</h2>
+        <p>Verify with company sign-in to open locked files. After returning, choose Open again; verification does not open the file by itself.</p>
+        {alert}
+        <div>
+          <button type="submit" className="btn btn-primary" disabled={busy}>
+            {busy ? "Checking…" : "Open"}
+          </button>
+        </div>
+      </form>
+    );
+  }
   if (google) {
     return (
       <div className={styles.prompt}>

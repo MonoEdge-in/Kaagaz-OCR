@@ -24,20 +24,28 @@ export function mustChangePassword(me: Me): boolean {
  * have no Google account that passes its rules yet; the server refuses every route but Ways to
  * sign in (WAYS_PATH), so the app shows only that page. Only true counts.
  */
-export type AppGate = "set_password" | "set_two_step" | "connect_google" | "app";
+export type AppGate = "set_password" | "set_two_step" | "mfa_enrol" | "connect_google" | "app";
 
 /** Account, Ways to sign in. */
 export const WAYS_PATH = "/settings/sign-in";
 
+/** Where an MFA-limited session goes; only the path is carried through enrollment. */
+export function mfaEnrollmentPath(pathname: string): string {
+  const next = pathname === WAYS_PATH ? "/dashboard" : safeNextPath(pathname) ?? "/dashboard";
+  return `${WAYS_PATH}?next=${encodeURIComponent(next)}`;
+}
+
 /** The app's links, search and Upload show: not in the limited session (#507 review), where the
  * server refuses them all and only Ways to sign in and the account menu remain. */
 export function appChrome(me: Me): boolean {
-  return me.user.google_link_required !== true;
+  return me.user.google_link_required !== true && me.user.auth_source !== "legacy_limited";
 }
 
 export function appGate(me: Me): AppGate {
   if (mustChangePassword(me)) return "set_password";
-  const needsTwoStep = me.user.totp_enabled !== true && me.user.two_step_turned_off !== true;
+  if (me.user.auth_source === "legacy_limited") return "mfa_enrol";
+  const needsTwoStep =
+    me.user.auth_authority !== "keycloak" && me.user.totp_enabled !== true && me.user.two_step_turned_off !== true;
   if (me.user.role === "admin" && needsTwoStep) return "set_two_step";
   return me.user.google_link_required === true ? "connect_google" : "app";
 }

@@ -9,10 +9,11 @@ import { useEffect, useState } from "react";
 import { signUpOpen } from "@/lib/api";
 import styles from "./login.module.css";
 
-export function SignUpLink() {
+export function SignUpLink({ keycloakEnabled = false }: { keycloakEnabled?: boolean }) {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
+    if (keycloakEnabled) return;
     let live = true;
     signUpOpen()
       .then((reply) => {
@@ -22,9 +23,9 @@ export function SignUpLink() {
     return () => {
       live = false;
     };
-  }, []);
+  }, [keycloakEnabled]);
 
-  if (!open) return null;
+  if (!open || keycloakEnabled) return null;
   return (
     <p className={styles.switch}>
       New to Kaagaz? <Link href="/signup">Create an account</Link>

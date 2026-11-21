@@ -125,6 +125,28 @@ Open http://localhost:3000.
 * Stop with `docker compose stop` (the worker finishes the job in hand).
   `docker compose down -v` also deletes the data volumes.
 
+### Optional local Keycloak sign-in
+
+The regular `docker compose up --build` path is unchanged: Keycloak stays off and needs no credentials. The opt-in overlay pins Keycloak 26.8.2 and imports [`keycloak/kaagaz-local-realm.json`](../keycloak/kaagaz-local-realm.json). It has no users or external providers; Google Workspace and Microsoft 365 remain disabled pending provider credentials and tenant setup.
+
+Local password sign-in always requires password and OTP. The first sign-in enrolls an authenticator, but does not report OTP as executed; after enrollment, sign out and immediately complete one fresh password-plus-OTP sign-in. The API fails closed unless the token reports executed `pwd` and `otp` and has a fresh `auth_time`; `acr=1` alone is not MFA proof.
+
+Keycloak imports the file only when the `kaagaz-local` realm is absent; apply later edits in the Admin Console or reset only the local Keycloak data volume.
+
+1. Copy `keycloak/admin.env.example` to `.env.keycloak-admin`, set a unique `KC_BOOTSTRAP_ADMIN_PASSWORD`, then start the local profile:
+
+   ```
+   docker compose --profile keycloak -f docker-compose.yml -f docker-compose.keycloak.yml up --build
+   ```
+
+2. In the Keycloak admin console at `http://keycloak.localhost:8081`, copy the `kaagaz-web` client secret. Copy `keycloak/api.env.example` to `.env.keycloak`, set that secret, and generate a separate `KEYCLOAK_FLOW_ENCRYPTION_KEY` with `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Keep `KEYCLOAK_ENABLED=false` here during setup. The API alone receives this file; Keycloak alone receives the admin file.
+
+3. The issuer is `http://keycloak.localhost:8081/realms/kaagaz-local` and the exact redirect is `http://localhost:3000/api/auth/keycloak/callback`; the overlay routes that issuer to Keycloak for the API. Keep `KEYCLOAK_ENABLED=false` in shared `.env`; after setup, change it to `true` only in API-only `.env.keycloak`, then recreate the API with `docker compose --profile keycloak -f docker-compose.yml -f docker-compose.keycloak.yml up -d --no-deps api`.
+
+4. Provision each pilot user in Kaagaz and Keycloak, then explicitly link the accounts from the authenticated Kaagaz flow. An unlinked Keycloak subject cannot enter Kaagaz.
+
+The official Keycloak 26.8.2 image imported this realm and completed local password sign-in, OTP enrollment and code exchange. Rerun token validation after realm edits. Full Docker Compose, database integration and broker tests have not been run. Keycloak imports the JSON only when the realm is absent from its data volume; update the realm explicitly or reset only the local Keycloak data volume to apply later edits.
+
 ## 2b. No Docker for the app
 
 Start only the stand-ins in Docker:

@@ -3,6 +3,7 @@
 
 import { WaysIntro, WaysToSignIn } from "@/components/account/WaysToSignIn";
 import { TITLE } from "@/components/account/signInWays";
+import { safeNextPath } from "@/components/shell/gate";
 
 export const metadata = { title: TITLE };
 
@@ -13,17 +14,18 @@ export default async function WaysToSignInPage({
 }) {
   const query = await searchParams;
   const params: Record<string, string | undefined> = {};
-  for (const key of ["connected", "waiting", "error"]) {
+  for (const key of ["connected", "waiting", "error", "keycloak_error", "keycloak"]) {
     const value = query[key];
     if (typeof value === "string") params[key] = value;
   }
+  const next = safeNextPath(query.next) ?? "/dashboard";
   return (
     <div className="page">
       <header className="page-header">
         <h1>{TITLE}</h1>
         <WaysIntro />
       </header>
-      <WaysToSignIn params={params} />
+      <WaysToSignIn params={params} next={next} />
     </div>
   );
 }

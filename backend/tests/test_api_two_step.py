@@ -17,6 +17,7 @@ from sqlalchemy import text
 
 from kaagaz.adapters.email import MemoryMailer
 from kaagaz.api import totp
+from kaagaz.api.auth import SESSION_COOKIE
 from kaagaz.db.engine import Database
 from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, PASSWORD, Api, TestClient, wrong_code
@@ -186,14 +187,105 @@ def test_a_members_code_works_once(db: Database) -> None:
     assert api.user_state(customer_id, member.user_id)["failed_logins"] == 1
 
 
-def test_a_reviewer_without_codes_signs_in_as_before(db: Database) -> None:
-    api = Api(db)
+def test_a_reviewer_without_codes_signs_in_when_coexistence_is_disabled(db: Database) -> None:
+    api = Api(db, settings=make_settings(keycloak_enabled=False))
     customer_id, _ = api.customer()
     _, email = api.add_user(customer_id, "reviewer")
     reply = api.admin_login(api.client(), email)
     assert reply.status_code == 200, reply.text
     assert reply.json()["session"] == {"scope": "app"}
     assert reply.json()["user"]["totp_enabled"] is False
+
+
+@pytest.mark.parametrize("role", ["member", "reviewer", "admin"])
+def test_keycloak_coexistence_requires_mfa_before_customer_app_access(db: Database, role: str) -> None:
+    api = Api(db, settings=make_settings(keycloak_enabled=True))
+    customer_id, _ = api.customer()
+    _, email = api.add_user(customer_id, role)
+    client = api.client()
+
+    refused = api.admin_login(client, email)
+
+    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "mfa_enrol_required")
+    assert client.get("/api/documents").status_code == 401
+    limited = client.get("/api/auth/me")
+    assert limited.status_code == 200
+    assert limited.json()["access"] == {
+        "management": False,
+        "heads": [],
+        "in_department": False,
+        "walled": False,
+    }
+    assert "whatsapp" not in limited.json()
+
+    offer = refused.json()["error"]["details"]
+    secret = base64.b32decode(offer["secret"].replace(" ", ""))
+    enrolled = _post(
+        client,
+        "/api/auth/admin/enrol",
+        {"enrol_token": offer["enrol_token"], "code": api.code(secret)},
+    )
+    assert enrolled.status_code == 200, enrolled.text
+    assert enrolled.json()["user"]["auth_source"] == "legacy_mfa"
+    assert client.get("/api/documents").status_code == 200
+
+    cannot_turn_off = _post(client, "/api/auth/2fa/off", {"password": PASSWORD, "code": api.code(secret)})
+    assert (cannot_turn_off.status_code, cannot_turn_off.json()["error"]["code"]) == (
+        409,
+        "two_step_required",
+    )
+
+
+def test_existing_password_only_cookie_is_rejected_during_coexistence(db: Database) -> None:
+    legacy_api = Api(db)
+    customer_id, _ = legacy_api.customer()
+    signed = legacy_api.sign_in(customer_id, "member")
+    coexistence_api = Api(db, settings=make_settings(keycloak_enabled=True))
+    client = coexistence_api.client()
+    token = signed.client.cookies.get(SESSION_COOKIE)
+    assert token is not None
+    client.cookies.set(SESSION_COOKIE, token)
+
+    assert client.get("/api/documents").status_code == 401
+
+
+def test_temporary_password_recovery_stays_limited_until_legacy_mfa_enrollment(db: Database) -> None:
+    api = Api(db, settings=make_settings(keycloak_enabled=True))
+    admin = api.new_admin()
+    member_id, email = api.add_user(admin.customer_id, "member")
+    reset = _post(admin.client, f"/api/admin/users/{member_id}/reset-password")
+    assert reset.status_code == 200, reset.text
+    temporary = reset.json()["temporary_password"]
+
+    client = api.client()
+    signed = api.admin_login(client, email, password=temporary)
+    assert signed.status_code == 200, signed.text
+    assert signed.json()["user"]["must_change_password"] is True
+    assert signed.json()["access"]["heads"] == []
+    assert "whatsapp" not in signed.json()
+    assert client.get("/api/documents").status_code == 401
+
+    changed = _post(
+        client,
+        "/api/auth/password",
+        {"current_password": temporary, "new_password": NEW_PASSWORD},
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["user"]["must_change_password"] is False
+    assert changed.json()["access"]["heads"] == []
+    assert "whatsapp" not in changed.json()
+    assert client.get("/api/documents").status_code == 401
+
+    offer = _post(client, "/api/auth/2fa/start", {"password": NEW_PASSWORD})
+    assert offer.status_code == 200, offer.text
+    secret = base64.b32decode(offer.json()["secret"].replace(" ", ""))
+    enrolled = _post(
+        client,
+        "/api/auth/admin/enrol",
+        {"enrol_token": offer.json()["enrol_token"], "code": api.code(secret)},
+    )
+    assert enrolled.status_code == 200, enrolled.text
+    assert client.get("/api/documents").status_code == 200
 
 
 def test_change_password_needs_the_code_for_a_member_with_codes(db: Database) -> None:

@@ -65,6 +65,13 @@ describe("providerButtons", () => {
     expect(providerButtons(["google"], "/admin")).toEqual([
       { provider: "google", label: "Continue with Google", href: "/api/auth/oidc/google/start?next=%2Fadmin" },
     ]);
+    expect(providerButtons(["google"], "/admin", true)).toEqual([
+      {
+        provider: "google",
+        label: "Continue with Google (existing Kaagaz sign-in)",
+        href: "/api/auth/oidc/google/start?next=%2Fadmin",
+      },
+    ]);
   });
 });
 
@@ -72,7 +79,10 @@ describe("the pages", () => {
   it("shows the buttons and the divider above the sign-in form", () => {
     const form = source("app/login/SignInForm.tsx");
     expect(form).toContain("<ProviderButtons");
-    expect(source("app/login/ProviderButtons.tsx")).toContain("or use your email");
+    const buttons = source("app/login/ProviderButtons.tsx");
+    expect(buttons).toContain("or use your existing Kaagaz sign-in");
+    expect(buttons).toContain("Sign in securely with your company account. Multi-factor authentication is required.");
+    expect(buttons).not.toContain("Google Workspace or Microsoft 365");
   });
 
   it("never offers a provider on the operator's sign-in page", () => {
@@ -108,7 +118,7 @@ describe("no layout jump on /login (#457 review)", () => {
       asked.push({ url, cache: init?.cache });
       return url.endsWith("/auth/session") ? json({ signed_in: false, providers: ["google"] }) : json({ enabled: true });
     }) as typeof fetch;
-    expect(await signInOptions(get)).toEqual({ providers: ["google"], emailOn: true });
+    expect(await signInOptions(get)).toEqual({ providers: ["google"], emailOn: true, keycloakEnabled: false });
     expect(asked.map((a) => a.url.replace(/^https?:\/\/[^/]+/, "")).sort()).toEqual(["/api/auth/email", "/api/auth/session"]);
     expect(asked.every((a) => a.cache === "no-store")).toBe(true);
   });
@@ -116,11 +126,16 @@ describe("no layout jump on /login (#457 review)", () => {
   it("shows neither while email is off (404), nothing is on, or the backend does not answer", async () => {
     const off = (async (url: string) =>
       url.endsWith("/auth/session") ? json({ signed_in: false }) : json({ error: { code: "not_found" } }, 404)) as typeof fetch;
-    expect(await signInOptions(off)).toEqual({ providers: [], emailOn: false });
+    expect(await signInOptions(off)).toEqual({ providers: [], emailOn: false, keycloakEnabled: false });
+    const migration = (async (url: string) =>
+      url.endsWith("/auth/session")
+        ? json({ signed_in: false, providers: ["google"], keycloak_enabled: true })
+        : json({ enabled: true })) as typeof fetch;
+    expect(await signInOptions(migration)).toEqual({ providers: ["google"], emailOn: true, keycloakEnabled: true });
     const down = (async () => {
       throw new TypeError("fetch failed");
     }) as typeof fetch;
-    expect(await signInOptions(down)).toEqual({ providers: [], emailOn: false });
+    expect(await signInOptions(down)).toEqual({ providers: [], emailOn: false, keycloakEnabled: false });
   });
 
   it("passes them to the form as props: no request from the browser for them", () => {
@@ -129,7 +144,9 @@ describe("no layout jump on /login (#457 review)", () => {
     expect(page).toContain("providers={options.providers}");
     expect(page).toContain("emailOn={options.emailOn}");
     const form = source("app/login/SignInForm.tsx");
-    expect(form).toContain("<ProviderButtons next={next} error={oidcError} providers={providers} />");
+    expect(form).toContain("<ProviderButtons");
+    expect(form).toContain("keycloakEnabled={keycloakEnabled}");
+    expect(source("app/login/page.tsx")).toContain("keycloakEnabled={options.keycloakEnabled}");
     expect(form).toContain("<ForgotPasswordLink open={emailOn} />");
     expect(source("app/login/ProviderButtons.tsx")).not.toContain("currentSession");
     const forgot = source("app/login/ForgotPasswordLink.tsx");

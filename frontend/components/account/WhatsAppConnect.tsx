@@ -31,6 +31,8 @@ import {
   whatsappMe,
 } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
+import { useSession } from "@/lib/session";
+import { beginKeycloakReauth, isKeycloakManaged, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import type { WhatsAppCode, WhatsAppMe } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import {
@@ -60,6 +62,9 @@ function said(caught: unknown): string {
 }
 
 export function WhatsAppConnect({ params }: { params: Record<string, string | undefined> }) {
+  const { me: sessionMe } = useSession();
+  const managed = isKeycloakManaged(sessionMe);
+  const reauthAvailable = managed && params.reauth === "whatsapp";
   const notice = pageNotice(params);
   const [me, setMe] = useState<WhatsAppMe | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
@@ -90,10 +95,24 @@ export function WhatsAppConnect({ params }: { params: Record<string, string | un
     setBusy(true);
     setError(null);
     try {
+      if (managed && !reauthAvailable) {
+        await beginKeycloakReauth("whatsapp", window.location.pathname);
+        return;
+      }
       setMe(await disconnectWhatsApp());
       setAsking(false);
       setDone("WhatsApp disconnected.");
     } catch (caught) {
+      if (managed && isKeycloakReauthRequired(caught)) {
+        try {
+          await beginKeycloakReauth("whatsapp", window.location.pathname);
+          return;
+        } catch (failed) {
+          setError(keycloakStartFailure(failed));
+          setBusy(false);
+          return;
+        }
+      }
       setError(said(caught));
     } finally {
       setBusy(false);
@@ -130,7 +149,9 @@ export function WhatsAppConnect({ params }: { params: Record<string, string | un
           )}
         </div>
       )}
-      {step.kind === "prove" && <Prove me={me} onProved={() => setStep({ kind: "number" })} />}
+      {step.kind === "prove" && (
+        <Prove me={me} managed={managed} reauthAvailable={reauthAvailable} onProved={() => setStep({ kind: "number" })} />
+      )}
       {step.kind === "number" && (
         <NumberStep
           onSent={(number, reply) =>
@@ -162,7 +183,7 @@ export function WhatsAppConnect({ params }: { params: Record<string, string | un
 }
 
 /** Step 1: the password (and the code), or Google for one who signs in with Google only. */
-function Prove({ me, onProved }: { me: WhatsAppMe; onProved(): void }) {
+function Prove({ me, managed, reauthAvailable, onProved }: { me: WhatsAppMe; managed: boolean; reauthAvailable: boolean; onProved(): void }) {
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [problems, setProblems] = useState<{ password: string | null; code: string | null }>({ password: null, code: null });
@@ -173,15 +194,28 @@ function Prove({ me, onProved }: { me: WhatsAppMe; onProved(): void }) {
     event.preventDefault();
     if (busy) return;
     const found = {
-      password: !me.google && password === "" ? "Enter your password." : null,
-      code: me.totp ? codeError(code) : null,
+      password: !managed && !me.google && password === "" ? "Enter your password." : null,
+      code: !managed && me.totp ? codeError(code) : null,
     };
     setProblems(found);
     setFailure(null);
     if (found.password || found.code) return;
     setBusy(true);
-    const given = me.totp ? normalizeCode(code) : undefined;
+    const given = !managed && me.totp ? normalizeCode(code) : undefined;
     try {
+      if (managed) {
+        if (reauthAvailable) {
+          onProved();
+          return;
+        }
+        try {
+          await beginKeycloakReauth("whatsapp", window.location.pathname);
+        } catch (failed) {
+          setFailure(keycloakStartFailure(failed));
+          setBusy(false);
+        }
+        return;
+      }
       if (me.google) {
         window.location.href = (await proveWithGoogle(given)).url; // back here with ?proved=google
         return;
@@ -189,6 +223,16 @@ function Prove({ me, onProved }: { me: WhatsAppMe; onProved(): void }) {
       await proveForWhatsApp(password, given);
       onProved();
     } catch (caught) {
+      if (managed && isKeycloakReauthRequired(caught)) {
+        try {
+          await beginKeycloakReauth("whatsapp", window.location.pathname);
+          return;
+        } catch (failed) {
+          setFailure(keycloakStartFailure(failed));
+          setBusy(false);
+          return;
+        }
+      }
       const field = proofField(caught);
       setCode(""); // a code works once
       setBusy(false);
@@ -199,8 +243,8 @@ function Prove({ me, onProved }: { me: WhatsAppMe; onProved(): void }) {
 
   return (
     <form className="stack" method="post" noValidate onSubmit={submit}>
-      <p>{me.google ? "Confirm it's you with Google to continue." : "Type your Kaagaz password to continue."}</p>
-      {!me.google && (
+      <p>{managed ? "Verify with company sign-in to continue. Nothing changes until you return and repeat the action." : me.google ? "Confirm it's you with Google to continue." : "Type your Kaagaz password to continue."}</p>
+      {!managed && !me.google && (
         <PasswordField
           id="whatsapp-password"
           label="Kaagaz password"
@@ -211,7 +255,7 @@ function Prove({ me, onProved }: { me: WhatsAppMe; onProved(): void }) {
           error={problems.password}
         />
       )}
-      {me.totp && (
+      {!managed && me.totp && (
         <CodeField
           id="whatsapp-two-step"
           label="6-digit code"
@@ -229,7 +273,7 @@ function Prove({ me, onProved }: { me: WhatsAppMe; onProved(): void }) {
       )}
       <div className="actions">
         <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined}>
-          {me.google ? "Confirm with Google" : "Continue"}
+          {managed ? "Verify with company sign-in" : me.google ? "Confirm with Google" : "Continue"}
         </button>
       </div>
     </form>

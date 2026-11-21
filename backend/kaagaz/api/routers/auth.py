@@ -134,6 +134,7 @@ from kaagaz.api.auth import (
     User,
     UserAllowGoogleLink,
     UserAllowPasswordChange,
+    UserMfaEnrollment,
     clear_locked_open_cookie,
     clear_session_cookie,
     clear_whatsapp_proof_cookie,
@@ -155,7 +156,7 @@ from kaagaz.api.auth import (
 )
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.emails import email_on, new_link, send
-from kaagaz.api.errors import ApiError
+from kaagaz.api.errors import ApiError, error_response
 from kaagaz.api.middleware import AddressLocks, RateLimiter, client_address
 from kaagaz.api.names import ORG_NAME_PROBLEM, org_name_ok
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD, valid_email
@@ -228,6 +229,12 @@ class CurrentPasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: str = Field(min_length=1, max_length=MAX_PASSWORD)
+
+
+class ConfirmPasswordBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str | None = Field(default=None, max_length=MAX_PASSWORD)
 
 
 class TurnOffBody(BaseModel):
@@ -323,7 +330,12 @@ def admin_enrol(body: EnrolBody, background: BackgroundTasks, context: Context) 
     who = (context, customer_id, user_id)
     emails.after(background, "two_step_on", emails.notify, *who, "two_step_on", emails.two_step_on)
     return _start_session(
-        context, attempt.customer_id, attempt.user_id, scope=_scope(attempt), action="auth.login"
+        context,
+        attempt.customer_id,
+        attempt.user_id,
+        scope=_scope(attempt),
+        action="auth.login",
+        auth_source="legacy_mfa",
     )
 
 
@@ -334,12 +346,16 @@ def signup_open(context: Context) -> dict[str, bool]:
 
 def _signup_on(context: AppContext) -> bool:
     """SELF_SIGNUP_ENABLED and the super admin's Self sign-up switch (0038)."""
-    return context.settings.self_signup_enabled and feature_on(context, "self_signup")
+    return (
+        context.settings.self_signup_enabled
+        and not context.settings.keycloak_enabled
+        and feature_on(context, "self_signup")
+    )
 
 
 @router.post("/auth/signup", status_code=201)
 def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse:
-    if not context.settings.self_signup_enabled:
+    if not context.settings.self_signup_enabled or context.settings.keycloak_enabled:
         raise ApiError(404, "not_found")
     if not signup_limits.allow(client_address(request)):
         raise ApiError(429, "rate_limited", TOO_MANY_SIGNUPS, headers={"Retry-After": "3600"})
@@ -386,7 +402,7 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
 
 
 @router.post("/auth/2fa/start")
-def turn_on_two_step(body: CurrentPasswordBody, user: User, context: Context) -> dict[str, str]:
+def turn_on_two_step(body: CurrentPasswordBody, user: UserMfaEnrollment, context: Context) -> dict[str, str]:
     if user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
     now = context.clock()
@@ -403,6 +419,12 @@ def turn_off_two_step(
     should it be required a moment after this check, the admin sets it up at the next request)."""
     if not user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already off.")
+    if context.settings.keycloak_enabled and user.auth_authority == "legacy":
+        raise ApiError(
+            409, "two_step_required", "Two-step sign-in is required while Keycloak cutover is enabled."
+        )
+    if user.auth_authority == "keycloak":
+        raise ApiError(403, "legacy_auth_disabled")
     if user.role == "admin" and user.two_step_required:
         raise ApiError(409, "two_step_required", TWO_STEP_REQUIRED)
     now = context.clock()
@@ -430,6 +452,8 @@ def change_password(
     background: BackgroundTasks,
     context: Context,
 ) -> JSONResponse:
+    if user.auth_authority == "keycloak":
+        raise ApiError(403, "legacy_auth_disabled")
     if needs_google_link(user, context.settings.google_signin_enabled) and not user.must_change_password:
         raise ApiError(403, "google_link_required", GOOGLE_LINK_REQUIRED)
     if body.new_password == body.current_password:
@@ -455,14 +479,19 @@ def change_password(
 
 
 @router.post("/auth/confirm-password", status_code=204)
-def confirm_password(body: CurrentPasswordBody, user: User, request: Request, context: Context) -> Response:
+def confirm_password(body: ConfirmPasswordBody, user: User, request: Request, context: Context) -> Response:
     if not deletes_forever_by_password(user):
         raise ApiError(403, "forbidden")  # nothing is counted
     now = context.clock()
     claims = session_claims(request, context.settings, _unix(now))
     if claims is None:  # never: ``user`` was read from these claims
         raise ApiError(401, "not_signed_in")
-    _succeeded(context, _check_current_password(context, user, body.password, now), signed_in=True)
+    if user.auth_authority == "keycloak":
+        prove_password(context, user, body.password, action="delete_forever")
+    else:
+        if body.password is None:
+            raise ApiError(400, "bad_request", "Your current password is required.")
+        _succeeded(context, _check_current_password(context, user, body.password, now), signed_in=True)
     response = Response(status_code=204)
     set_confirm_cookie(response, user, context.settings, now=_unix(now), session_id=claims.session_id)
     return response
@@ -474,6 +503,10 @@ def logout(request: Request, user: UserAllowPasswordChange, context: Context) ->
     with context.db.user(user.customer_id, user.user_id) as conn:
         if claims is not None:  # always: ``user`` was read from these claims
             ends = datetime.fromtimestamp(claims.expires_at, UTC)
+            if user.auth_authority == "keycloak":
+                from kaagaz.db import keycloak as keycloak_sql
+
+                keycloak_sql.revoke_session(conn, claims.session_id, now=context.clock())
             users_sql.end_session(conn, user.customer_id, user.user_id, claims.session_id, expires_at=ends)
         _record(conn, user.customer_id, "auth.logout", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
@@ -486,6 +519,10 @@ def logout(request: Request, user: UserAllowPasswordChange, context: Context) ->
 @router.post("/auth/logout-everywhere", status_code=204)
 def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response:  # also the limited session
     with context.db.user(user.customer_id, user.user_id) as conn:
+        if user.auth_authority == "keycloak":
+            from kaagaz.db import keycloak as keycloak_sql
+
+            keycloak_sql.revoke_all_sessions(conn, now=context.clock())
         users_sql.bump_session_version(conn, user.customer_id, user.user_id)
         _record(conn, user.customer_id, "auth.logout_everywhere", actor=user.user_id, target=user.user_id)
     response = Response(status_code=204)
@@ -497,14 +534,16 @@ def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response: 
 
 @router.get("/auth/me")
 def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
-    recent, access = _recent_connections(context, user)
+    limited = user.auth_source == "legacy_limited"
+    recent, access = ([], (False, [], False, False)) if limited else _recent_connections(context, user)
     return me_json(
         user,
         email_on=email_on(context),
         providers=oidc.enabled_providers(context.settings),
         recent_connections=recent,
         access=access,
-        whatsapp=context.settings.whatsapp_enabled,
+        whatsapp=context.settings.whatsapp_enabled and not limited,
+        keycloak_enabled=context.settings.keycloak_enabled,
     )
 
 
@@ -520,10 +559,12 @@ def session(request: Request) -> dict[str, Any]:
             return {
                 "signed_in": False,
                 "providers": oidc.enabled_providers(settings),
+                "keycloak_enabled": settings.keycloak_enabled,
             }
         raise
     context = get_context(request)
-    recent, access = _recent_connections(context, user)
+    limited = user.auth_source == "legacy_limited"
+    recent, access = ([], (False, [], False, False)) if limited else _recent_connections(context, user)
     providers = oidc.enabled_providers(context.settings)
     me = me_json(
         user,
@@ -531,7 +572,8 @@ def session(request: Request) -> dict[str, Any]:
         providers=providers,
         recent_connections=recent,
         access=access,
-        whatsapp=context.settings.whatsapp_enabled,
+        whatsapp=context.settings.whatsapp_enabled and not limited,
+        keycloak_enabled=context.settings.keycloak_enabled,
     )
     return {"signed_in": True, "me": me}
 
@@ -541,6 +583,13 @@ def _access(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bo
     live department and whether walls are set (``access_sql.me``)."""
     with context.db.user(user.customer_id, user.user_id) as conn:
         return access_sql.me(conn)
+
+
+def _access_for_session(context: AppContext, user: CurrentUser) -> tuple[bool, list[str], bool, bool]:
+    """A limited password-change/MFA-enrollment session receives no app entitlements."""
+    if user.auth_source == "legacy_limited":
+        return False, [], False, False
+    return _access(context, user)
 
 
 # --- the steps they share ----------------------------------------------------------------
@@ -677,6 +726,8 @@ def _check_current_password(
 ) -> AttemptRow:
     """The signed-in user's own password, counted like a sign-in (so wrong ones
     lead to the lockout), else a 400 that says what is wrong. The counted attempt."""
+    if user.auth_authority == "keycloak":
+        raise ApiError(403, "keycloak_reauth_required")
     attempt = _begin_signed_in(context, user, now)
     if not verify_password(password, attempt.password_hash):
         _failed(context, attempt, "wrong_password", signed_in=True)
@@ -701,10 +752,18 @@ def _begin_signed_in(context: AppContext, user: CurrentUser, now: datetime) -> A
     return attempt
 
 
-def prove_password(context: AppContext, user: CurrentUser, password: str) -> None:
-    """An Admin giving themselves access (PRD 7, #601): their own password, counted like a sign-in
-    (``_check_current_password``), with its own codes: 400 ``password_locked`` while the sign-in
-    lock is on, 400 ``wrong_password``; then the count starts again."""
+def prove_password(context: AppContext, user: CurrentUser, password: str | None, *, action: str) -> None:
+    """Prove a sensitive action with the legacy password or a fresh action-bound Keycloak proof.
+
+    Legacy attempts are counted like sign-in attempts and retain the lockout behavior. A mapped
+    user must first complete the Keycloak reauthentication flow for this exact ``action``.
+    """
+    if user.auth_authority == "keycloak":
+        if user.reauth_action != action:
+            raise ApiError(403, "keycloak_reauth_required")
+        return
+    if password is None:
+        raise ApiError(400, "bad_request", "Your password is required.")
     attempt = _begin(context, user.customer_id, user.user_id, context.clock(), signed_in=True)
     if attempt is None:
         raise password_locked(context)
@@ -783,17 +842,46 @@ def _finish_second_step(
     """
     scope = _scope(attempt)
     if attempt.totp_enabled_at is None:
-        if attempt.role != "admin" or attempt.must_change_password or attempt.totp_off_at is not None:
+        mandatory = context.settings.keycloak_enabled or (
+            attempt.role == "admin" and attempt.totp_off_at is None
+        )
+        if context.settings.keycloak_enabled and not attempt.must_change_password:
+            user, claims = _open_session(
+                context,
+                attempt.customer_id,
+                attempt.user_id,
+                scope=scope,
+                action="auth.login",
+                details=details,
+                auth_source="legacy_limited",
+            )
+            response = error_response(
+                403, "mfa_enrol_required", ENROL_FIRST, details=_enrol_offer(context, user)
+            )
+            set_session_cookie(response, claims, context.settings, now=_unix(context.clock()))
+            return response
+        if not mandatory or attempt.must_change_password:
             # An admin's set-new-password screen first (current_user keeps every other route
-            # shut); the next sign-in then sets up the code. Or turned off by the admin.
+            # shut); the next sign-in then sets up the code. During coexistence this is the
+            # only temporary-password recovery scope for every customer role.
             return _start_session(
-                context, attempt.customer_id, attempt.user_id, scope=scope, action="auth.login"
+                context,
+                attempt.customer_id,
+                attempt.user_id,
+                scope=scope,
+                action="auth.login",
+                auth_source="legacy_limited" if mandatory else "legacy_password",
             )
         _succeeded(context, attempt)  # the password was right; no session until a code is set up
-        user = load_user(context.db, attempt.customer_id, attempt.user_id, scope=scope)
-        if user is None:  # disabled in the meantime
+        current = load_user(context.db, attempt.customer_id, attempt.user_id, scope=scope)
+        if current is None:  # disabled in the meantime
             raise _refused(context)
-        raise ApiError(403, "mfa_enrol_required", ENROL_FIRST, details=_enrol_offer(context, user))
+        raise ApiError(
+            403,
+            "mfa_enrol_required",
+            ENROL_FIRST,
+            details=_enrol_offer(context, current),
+        )
     problem = _code_problem(context, attempt, code)
     if problem is not None:
         _failed(context, attempt, problem)  # counted: a wrong code next can't reset it
@@ -801,7 +889,13 @@ def _finish_second_step(
             raise ApiError(401, "code_required", CODE_REQUIRED)
         raise _refused(context)
     return _start_session(
-        context, attempt.customer_id, attempt.user_id, scope=scope, action="auth.login", details=details
+        context,
+        attempt.customer_id,
+        attempt.user_id,
+        scope=scope,
+        action="auth.login",
+        details=details,
+        auth_source="legacy_mfa",
     )
 
 
@@ -850,8 +944,9 @@ def _keep_this_browser(
             user,
             email_on=email_on(context),
             providers=providers,
-            access=_access(context, user),
-            whatsapp=context.settings.whatsapp_enabled,
+            access=_access_for_session(context, user),
+            whatsapp=context.settings.whatsapp_enabled and user.auth_source != "legacy_limited",
+            keycloak_enabled=context.settings.keycloak_enabled,
         )
     )
     set_session_cookie(response, renewed, context.settings, now=_unix(now))
@@ -866,17 +961,29 @@ def _start_session(
     scope: str,
     action: str,
     details: dict[str, audit.DetailValue] | None = None,
+    auth_source: str = "legacy_password",
+    assurance: str | None = None,
 ) -> JSONResponse:
     """The ``Me`` reply and a new session cookie of this scope; clears the count."""
-    user, claims = _open_session(context, customer_id, user_id, scope=scope, action=action, details=details)
+    user, claims = _open_session(
+        context,
+        customer_id,
+        user_id,
+        scope=scope,
+        action=action,
+        details=details,
+        auth_source=auth_source,
+        assurance=assurance,
+    )
     providers = oidc.enabled_providers(context.settings)
     response = JSONResponse(
         me_json(
             user,
             email_on=email_on(context),
             providers=providers,
-            access=_access(context, user),
-            whatsapp=context.settings.whatsapp_enabled,
+            access=_access_for_session(context, user),
+            whatsapp=context.settings.whatsapp_enabled and user.auth_source != "legacy_limited",
+            keycloak_enabled=context.settings.keycloak_enabled,
         )
     )
     set_session_cookie(response, claims, context.settings, now=_unix(context.clock()))
@@ -891,6 +998,8 @@ def _open_session(
     scope: str,
     action: str,
     details: dict[str, audit.DetailValue] | None = None,
+    auth_source: str = "legacy_password",
+    assurance: str | None = None,
 ) -> tuple[CurrentUser, SessionClaims]:
     """A new session of this scope for an enabled user: clears the count, audits ``action``,
     and gives the claims for the caller's reply (``_start_session``'s, or a provider sign-in's
@@ -911,8 +1020,10 @@ def _open_session(
         settings=context.settings,
         now=_unix(now),
         idle_hours=user.idle_hours,  # set: 24 hours, the idle timeout ends it (0040)
+        auth_source=auth_source,
+        assurance=assurance,
     )
-    return user, claims
+    return dataclasses.replace(user, auth_source=auth_source, assurance=assurance), claims
 
 
 def _enrol_offer(context: AppContext, user: CurrentUser) -> dict[str, str]:
