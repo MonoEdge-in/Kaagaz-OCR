@@ -121,7 +121,6 @@ def _settings(**overrides: object) -> Settings:
         "keycloak_client_secret": "server-side-confidential-secret",
         "keycloak_redirect_uri": "https://app.example.test/api/auth/keycloak/callback",
         "keycloak_required_acr": ACR,
-        "keycloak_provider_claim": "authentication_provider",
         "keycloak_flow_encryption_key": "a-distinct-keycloak-flow-encryption-secret-value",
     }
     values.update(overrides)
