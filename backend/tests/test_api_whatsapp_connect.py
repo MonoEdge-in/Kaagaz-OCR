@@ -811,6 +811,33 @@ def test_the_admins_disconnect_holds_when_the_number_no_longer_opens(
     assert [getattr(record, "code", None) for record in caplog.records] == ["number_sealed"]
 
 
+def test_the_code_steps_need_only_the_ten_minute_whatsapp_proof_not_the_five_minute_one(
+    db: Database, fake: WhatsAppFake
+) -> None:
+    """Asking for a code needs the sign-in just now (5 minutes) and its WhatsApp cookie (10);
+    typing the code and confirming the phone way only the cookie, so a slow typist keeps going."""
+    world = _World(db, fake)
+    member = world.person()
+    number = new_number()
+    world.proved_ask(member, number)
+    world.api.clock.advance(6 * 60)  # the five-minute check is over, the ten-minute proof is not
+    assert _error(world.ask(member, number))[:2] == (403, "proof_needed")
+    assert world.verify(member, world.fake.code_to(number)).status_code == 200
+
+
+def test_a_person_not_on_the_company_sign_in_may_not_connect_whatsapp(
+    db: Database, fake: WhatsAppFake
+) -> None:
+    world = _World(db, fake)
+    customer, _ = world.api.customer()
+    _on(db, customer, ("member",), False)
+    signed = world.person("member", customer)
+    assert world.me(signed)["state"] == "none"
+    _owner(db, "UPDATE users SET auth_authority = 'legacy' WHERE id = :u", {"u": signed.user_id})
+    with db.user(customer, signed.user_id) as conn:
+        assert wa.refused(conn, customer, signed.user_id) == "not_allowed"
+
+
 def test_signing_out_ends_the_proof_and_the_code_steps_need_it(db: Database, fake: WhatsAppFake) -> None:
     world = _World(db, fake)
     member = world.person()

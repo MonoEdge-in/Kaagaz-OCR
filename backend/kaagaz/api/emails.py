@@ -5,7 +5,7 @@ told a person's name, their organisation's name or a link, never a document, its
 its content, and never an id (tests/test_email.py checks every one). A link email goes to an
 address nobody has proven yet, so it is never told a name (anyone can type one at sign-up).
 
-* A link email (confirm, invite, reset) carries a link of 32 random bytes, stored only as
+* A link email (confirm) carries a link of 32 random bytes, stored only as
   its SHA-256 hash (``email_links``, 0061), with a purpose, an expiry and a used time. The
   token travels in the URL fragment (``#t=``), so it never reaches a server or proxy log;
   the page reads it and posts it. A new link of one purpose for one user ends the older ones.
@@ -40,8 +40,8 @@ from kaagaz.db import users as users_sql
 log = logging.getLogger("kaagaz.api.emails")
 
 # How long each link works, and the page it opens.
-LIFETIMES = {"confirm": timedelta(hours=24), "reset": timedelta(minutes=30)}
-PAGES = {"confirm": "/email/confirm", "reset": "/reset-password"}
+LIFETIMES = {"confirm": timedelta(hours=24)}
+PAGES = {"confirm": "/email/confirm"}
 TOKEN_BYTES = 32
 
 Message = tuple[str, str]

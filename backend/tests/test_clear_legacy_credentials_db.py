@@ -49,12 +49,18 @@ def test_it_clears_linked_people_and_prints_the_counts(db: Database) -> None:
 
     code, said = _clear(db, customer)
 
-    assert (code, said) == (0, f"customer {customer}: 3 passwords and 1 two-step codes cleared\n")
+    assert (code, said) == (
+        0,
+        f"customer {customer}: old credentials blanked for 3 people (1 had a two-step code)\n",
+    )
     for user, row in _rows(db, customer).items():
         assert row["password_hash"] == NO_PASSWORD, user
         assert (row["totp_secret_enc"], row["totp_enabled_at"]) == (None, None)
         assert not verify_password("correct horse battery", row["password_hash"])
-    assert _clear(db, customer) == (0, f"customer {customer}: 0 passwords and 0 two-step codes cleared\n")
+    assert _clear(db, customer) == (
+        0,
+        f"customer {customer}: old credentials blanked for 0 people (0 had a two-step code)\n",
+    )
     with db.engine.begin() as conn:
         actions = conn.execute(
             text("SELECT action FROM platform_audit WHERE subject_customer_id = :c ORDER BY id"),
@@ -89,7 +95,7 @@ def test_a_disabled_person_who_never_linked_does_not_stop_it(db: Database) -> No
 
     code, said = _clear(db, customer)
 
-    assert code == 0 and "1 passwords" in said
+    assert code == 0 and "for 1 people" in said
     assert _rows(db, customer)[gone_id] == before  # not linked, so not touched
 
 

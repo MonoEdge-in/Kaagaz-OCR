@@ -1282,8 +1282,9 @@ def admin_user(
     now: datetime,
 ) -> dict[str, Any]:
     """``AdminUser``. ``locked_until`` is null once the lock has passed, so the
-    screen never shows a lock that no longer holds. ``company_sign_in``: ``waiting`` (for setup) until
-    the person is linked to a company sign-in account and has signed in once, else ``connected``."""
+    screen never shows a lock that no longer holds. ``company_sign_in``: ``not_moved`` (not linked
+    to a company sign-in account yet), ``waiting`` (linked, no sign-in since the link: linking clears
+    ``last_login_at``) or ``connected``."""
     locked_until: datetime | None = row["locked_until"]
     return {
         "id": str(row["id"]),
@@ -1296,7 +1297,7 @@ def admin_user(
         "totp_enabled": row["totp_enabled_at"] is not None,
         "two_step_turned_off": row["totp_off_at"] is not None and not row["two_step_required"],
         "must_change_password": bool(row["must_change_password"]),
-        "company_sign_in": "waiting" if row["setup_waiting"] else "connected",
+        "company_sign_in": str(row["company_state"]),
         "can_delete_forever": row["delete_forever_allowed_at"] is not None and row["role"] != "admin",
         "management": bool(row["management"]),  # PRD 7 (#601)
     }

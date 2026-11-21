@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ApiError, saveAdminWhatsApp } from "@/lib/api";
+import { needsProof } from "@/components/account/WhatsAppConnect";
 import {
   beginKeycloakReauth,
   isKeycloakAction,
@@ -100,6 +101,16 @@ describe("company verification messages", () => {
   });
 });
 
+describe("WhatsApp's lost proof", () => {
+  it("treats 403 proof_needed like keycloak_reauth_required, and nothing else", () => {
+    expect(needsProof(new ApiError(403, "proof_needed", "x"))).toBe(true);
+    expect(needsProof(new ApiError(403, "keycloak_reauth_required", "x"))).toBe(true);
+    expect(needsProof(new ApiError(400, "proof_needed", "x"))).toBe(false);
+    expect(needsProof(new ApiError(403, "forbidden", "x"))).toBe(false);
+    expect(needsProof(new TypeError("offline"))).toBe(false);
+  });
+});
+
 describe("mapped proof requests", () => {
   it("omits Kaagaz passwords from the WhatsApp settings proof", async () => {
     const bodies: unknown[] = [];
@@ -118,7 +129,8 @@ describe("mapped proof requests", () => {
 
   it("wires fresh verification into the mapped account, admin and document flows", () => {
     const whatsapp = source("components/account/WhatsAppConnect.tsx");
-    expect(whatsapp).toContain("if (!reauthAvailable)");
+    expect(whatsapp).toContain('params.reauth === "whatsapp" && !params.reauth_error');
+    expect(whatsapp).not.toContain("if (!reauthAvailable)"); // Disconnect asks for no sign-in
     expect(whatsapp).toContain('beginKeycloakReauth("whatsapp"');
     expect(whatsapp).toContain("if (reauthAvailable)");
     expect(whatsapp).not.toContain("proveForWhatsApp");

@@ -2,6 +2,7 @@
 outcome writes exactly one ``platform_audit`` row (``actions``); sessions never cross."""
 
 import base64
+import threading
 import uuid
 from typing import Any
 
@@ -197,6 +198,42 @@ def test_a_flood_from_one_address_never_locks_the_operator_out_of_their_own(db: 
     _refused(operator.login(attacker))
     assert operator.actions() == [FAILED] * 4 + [(False, "operator.locked")]  # the fifth locks
     assert operator.login(TestClient(api.app, client=("198.51.100.9", 50000))).status_code == 200
+
+
+def test_a_burst_of_parallel_guesses_from_one_address_counts_only_up_to_the_limit(db: Database) -> None:
+    """A2 review (ported from the deleted test_api_lockout.py): the address's count is taken before
+    the check, in one step, so 30 guesses sent at once can't all slip past it."""
+    api = Api(db)
+    operator = _Operator(api)
+    attacker = TestClient(api.app, client=("203.0.113.7", 50000))
+    threads = [
+        threading.Thread(target=operator.login, args=(attacker,), kwargs={"password": WRONG})
+        for _ in range(30)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    failed = [row for row in operator.actions() if row == FAILED]
+    assert (
+        len(failed) == api.settings.login_max_failures - 1
+    )  # the limit's attempt is the lock, not a failure
+    assert operator.login(TestClient(api.app, client=("198.51.100.9", 50000))).status_code == 200
+
+
+def test_one_ipv6_network_is_one_address(db: Database) -> None:
+    """A2 review (ported from the deleted test_api_lockout.py): anyone holding a /64 has endless
+    IPv6 addresses, so its addresses count as one."""
+    api = Api(db)
+    operator = _Operator(api)
+    for n in range(api.settings.login_max_failures):
+        _refused(
+            operator.login(TestClient(api.app, client=(f"2001:db8:1:2::{n + 1}", 50000)), password=WRONG)
+        )
+    _refused(operator.login(TestClient(api.app, client=("2001:db8:1:2::99", 50000))))  # the same /64
+    assert (
+        operator.login(TestClient(api.app, client=("2001:db8:1:3::1", 50000))).status_code == 200
+    )  # another
 
 
 def test_disabling_signing_out_and_30_minutes_end_a_session(db: Database) -> None:

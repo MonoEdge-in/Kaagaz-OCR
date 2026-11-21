@@ -4,7 +4,7 @@ Keycloak is the only sign-in for company users (21 Nov 2026): ``routers/keycloak
 receives it and ends it. What stays here:
 
 * ``POST /auth/logout`` ends this browser's session; ``POST /auth/logout-everywhere`` ends all of
-  the person's sessions, and Keycloak's too.
+  the person's Kaagaz sessions only (it does not sign them out of Keycloak itself).
 * ``GET /auth/me`` is the signed-in user (401 when nobody is); ``GET /auth/session`` is the same
   with no session a 200 ``{signed_in: false, keycloak_enabled}``, for the sign-in page.
 * The risky actions (locked files, delete forever, access, locks, WhatsApp) are proved only by a

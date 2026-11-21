@@ -305,6 +305,17 @@ def test_opening_needs_a_fresh_company_sign_in_for_this_action_and_no_password_c
     assert _code(org.given.client.post(OPEN, headers=CSRF)) == (403, "keycloak_reauth_required")
 
 
+def test_the_proof_alone_opens_nothing_only_the_post_does_and_it_is_audited(db: Database) -> None:
+    """The company sign-in's return sets no locked-open cookie (so no audit or rate limit is skipped)."""
+    api = Api(db)
+    org = _org(api)
+    api.prove(org.given, "locked_open")
+    assert _page(org.given, org.locked).status_code >= 400
+    assert _actions(api, org.c) == []
+    assert org.given.client.post(OPEN, headers=CSRF).status_code == 200
+    assert _actions(api, org.c)[-1] == ("lock.open", org.given.user_id, {"via": "keycloak"})
+
+
 def test_more_than_thirty_opens_an_hour_are_refused(db: Database) -> None:
     api = Api(db)
     org = _org(api)

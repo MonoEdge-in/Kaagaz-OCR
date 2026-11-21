@@ -228,12 +228,15 @@ def test_a_disabled_customer_s_sessions_end_while_b_goes_on(db: Database) -> Non
         assert client.get(path).status_code == 401, path
     assert admin.client.get("/api/admin/users").status_code == 401
     assert b_member.client.get("/api/auth/me").status_code == 200
-    # Keycloak's callback refuses a disabled organisation's people (routers/keycloak.py ``_login``).
+    # Keycloak's callback refusing a disabled organisation, and letting it in again once enabled, runs
+    # the REAL ``_login`` in tests/test_keycloak_callback_db.py; here only the session side is checked.
     assert api.user_state(a, member.user_id)["session_version"] == version + 1
 
     assert _cli(db, "enable-customer", a) == (0, f"customer {a}: enabled\n")
     assert member.client.get("/api/auth/me").status_code == 401  # ended for good
-    assert api.admin_login(api.client(), reviewer_email).status_code == 200  # a new sign-in works
+    assert (
+        api.admin_login(api.client(), reviewer_email).status_code == 200
+    )  # a new session can be minted (the real callback: test_keycloak_callback_db)
 
 
 # --- the worker and the sweeps -------------------------------------------------------------

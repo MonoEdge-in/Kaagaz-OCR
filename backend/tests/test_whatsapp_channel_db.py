@@ -14,7 +14,6 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable, Iterator
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -104,11 +103,20 @@ class _World:
             chat=Echo(),
         )
 
-    def person(self, customer: str | None = None, role: str = "member") -> tuple[str, str, str, str]:
-        """(customer, person, number, link) of a newly connected person."""
+    def person(
+        self, customer: str | None = None, role: str = "member", *, legacy: bool = False
+    ) -> tuple[str, str, str, str]:
+        """(customer, person, number, link) of a newly connected person, on the company sign-in
+        (``legacy``: still on Kaagaz's old sign-in, which no longer may use WhatsApp)."""
         if customer is None:
             customer, _ = self.api.customer()
         person, _ = self.api.add_user(customer, role)
+        if not legacy:
+            _owner(
+                self.db,
+                "UPDATE users SET auth_authority = 'keycloak' WHERE customer_id = :c AND id = :u",
+                {"c": customer, "u": person},
+            )
         number = new_number()
         return customer, person, number, connect(self.db, customer, person, number)
 
@@ -190,18 +198,11 @@ def test_one_persons_messages_are_answered_in_whatsapps_order(db: Database, fake
     assert world.texts_to(number) == [PLACEHOLDER, PLACEHOLDER]
 
 
-def test_keycloak_coexistence_ends_unenrolled_legacy_whatsapp_channels(
+def test_a_person_not_on_the_company_sign_in_loses_their_whatsapp_channel(
     db: Database, fake: WhatsAppFake
 ) -> None:
     world = _World(db, fake)
-    world.api = Api(db, settings=replace(world.api.settings, keycloak_enabled=True))
-    world.client = world.api.client()
-    world.channel = replace(
-        world.channel,
-        db=world.api.app_db,
-        keycloak_enabled=True,
-    )
-    customer, user, number, link = world.person()
+    customer, user, number, link = world.person(legacy=True)
     world.send(number, message(number, world.api.clock(), "show files", wamid="wamid.mfa"))
 
     world.run()

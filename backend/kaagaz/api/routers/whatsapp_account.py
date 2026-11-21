@@ -22,7 +22,8 @@ Account, WhatsApp (signed in, any role). The bot messages first:
     the last 10 minutes, still their newest (else 409 ``send_first``; decision 9): the second way.
   The second way: a code for that number shown here, the link opening WhatsApp with "Link <code>" to
   Kaagaz's number. The webhook confirms it when that number sends it (``kaagaz_whatsapp_phone_code``).
-* ``POST /whatsapp/codes/verify`` {code}: with the proof still on; the newest code only (a newer one
+* ``POST /whatsapp/codes/verify`` {code}: with the ten-minute WhatsApp proof still on (not also the
+  five-minute check, which only asking for a code needs); the newest code only (a newer one
   replaces the older ones), sent this way, unexpired, under 5 wrong tries; the code is hashed with
   the number it was sent to, so only that number connects. Wrong: one try counted (400, how many are
   left).
@@ -221,7 +222,7 @@ def _second_way(
 def verify_code(
     body: VerifyBody, user: User, request: Request, background: BackgroundTasks, context: Context
 ) -> dict[str, Any]:
-    _require_proof(request, user, context)
+    _require_proof(request, user, context, fresh=False)
     key = context.settings.whatsapp_number_key or ""
     wrong, link_id = None, None
     with context.db.user(user.customer_id, user.user_id) as conn:
@@ -252,7 +253,7 @@ def phone_code_state(user: User, context: Context) -> dict[str, str]:
 def confirm_phone_code(
     user: User, request: Request, background: BackgroundTasks, context: Context
 ) -> dict[str, Any]:
-    _require_proof(request, user, context)
+    _require_proof(request, user, context, fresh=False)
     with context.db.user(user.customer_id, user.user_id) as conn:
         code, number = _live_code(conn, context, user, "phone")
         if not code.confirmed:
@@ -271,10 +272,13 @@ def disconnect(user: User, context: Context) -> dict[str, Any]:
     return my_whatsapp(user, context)
 
 
-def _require_proof(request: Request, user: CurrentUser, context: AppContext) -> None:
+def _require_proof(request: Request, user: CurrentUser, context: AppContext, *, fresh: bool = True) -> None:
+    """Asking for a code needs the company sign-in just now (the five-minute proof) and its ten-minute
+    WhatsApp cookie; the steps after it (the code typed, the phone way confirmed) only the ten-minute
+    cookie, so a slow typist is not sent back to the sign-in in the middle of connecting."""
     proof = request.cookies.get(WHATSAPP_PROOF_COOKIE) or ""
     secret, now = context.settings.session_secret, unix(context.clock())
-    if user.reauth_action != "whatsapp" or not whatsapp_proved(proof, user, secret, now):
+    if (fresh and user.reauth_action != "whatsapp") or not whatsapp_proved(proof, user, secret, now):
         raise ApiError(403, "proof_needed", PROOF_NEEDED)
 
 

@@ -38,7 +38,9 @@
   end; they set it up again at their next sign-in. It needs no password:
   whoever runs it already has the server.
 * ``clear-legacy-credentials --customer-id ID``: the password hashes and two-step secrets of that
-  organisation's people who are linked to Keycloak (the only sign-in now), counts printed. It
+  organisation's people who are linked to Keycloak (the only sign-in now); it prints how many
+  people had something blanked (a person made on Keycloak holds a random unusable hash, so this is
+  not a count of real old passwords) and how many had a two-step code. It
   refuses, changing nothing, while any active person there is not linked yet. Owner login only,
   like disable-customer; one ``platform_audit`` row with no operator.
 * ``measure --file PATH [--truth DIR] [--engine gemini|rapidocr]``: read one local
@@ -352,7 +354,8 @@ def _parser() -> argparse.ArgumentParser:
     enable.add_argument("--customer-id", required=True)
 
     clear = commands.add_parser(
-        "clear-legacy-credentials", help="clear old passwords and two-step codes once all are on Keycloak"
+        "clear-legacy-credentials",
+        help="blank the old password hashes and two-step codes once all are on Keycloak",
     )
     clear.add_argument("--customer-id", required=True)
 
@@ -650,7 +653,9 @@ def _clear_legacy_credentials(db: Database, customer_id: str) -> str:
         if waiting:
             raise CliError(f"{waiting} active people are not linked to Keycloak yet; nothing was changed")
         linked = [row for row in rows if row["auth_authority"] == "keycloak"]
-        passwords = sum(1 for row in linked if row["has_password"])
+        # A person made on Keycloak holds a random unusable hash, which looks like any other, so the
+        # number is people whose stored credentials were blanked, not "real old passwords".
+        people = sum(1 for row in linked if row["has_password"] or row["has_totp"])
         codes = sum(1 for row in linked if row["has_totp"])
         conn.execute(
             text(
@@ -667,7 +672,9 @@ def _clear_legacy_credentials(db: Database, customer_id: str) -> str:
             target_id=customer_id,
             subject_customer_id=customer_id,
         )
-    return f"customer {customer_id}: {passwords} passwords and {codes} two-step codes cleared"
+    return (
+        f"customer {customer_id}: old credentials blanked for {people} people ({codes} had a two-step code)"
+    )
 
 
 def _set_customer_status(db: Database, command: str, customer_id: str, now: datetime) -> str:

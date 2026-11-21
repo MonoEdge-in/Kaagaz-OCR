@@ -262,7 +262,6 @@ def update_user(
     user_id: uuid.UUID,
     body: UserChangesBody,
     user: AdminSession,
-    background: BackgroundTasks,
     context: Context,
 ) -> dict[str, Any]:
     target = str(user_id)

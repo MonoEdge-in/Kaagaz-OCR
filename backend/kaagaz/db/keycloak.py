@@ -401,7 +401,17 @@ def link_account(
         )
     ).scalar_one()
     stage_link(conn, issuer, subject, now=now, expected_session_version=int(version))
-    return finalize_link(conn, issuer, subject, now=now, expected_session_version=int(version))
+    raised = finalize_link(conn, issuer, subject, now=now, expected_session_version=int(version))
+    # A person moved from Kaagaz's own old sign-in keeps an old last_login_at; clearing it makes
+    # "signed in once" mean "since the link", which is what the People list's "Waiting for setup"
+    # (and Resend setup email) rests on. The raised session_version signed them out anyway.
+    conn.execute(
+        text(
+            "UPDATE public.users SET last_login_at = NULL"
+            " WHERE id = CAST(NULLIF(current_setting('kaagaz.user_id', true), '') AS uuid)"
+        )
+    )
+    return raised
 
 
 def people(conn: Connection, customer_id: str, issuer: str) -> list[Person]:

@@ -122,7 +122,6 @@ def main() -> None:
         number_key=settings.whatsapp_number_key,
         clock=_utc_now,
         chat=Chat(headless_context(settings, database)),  # W4: Ask and search as the person
-        keycloak_enabled=settings.keycloak_enabled or settings.customer_mfa_required,
     )
     stop = threading.Event()
     install_stop_handlers(stop)

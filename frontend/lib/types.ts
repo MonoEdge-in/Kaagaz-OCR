@@ -1423,7 +1423,7 @@ export interface AdminUser {
   must_change_password: boolean;
   can_delete_forever: boolean; // an admin allowed Delete forever (never set for an admin)
   // Whether the person is linked to a company sign-in account yet (Connected), or waits for setup.
-  company_sign_in: "connected" | "waiting";
+  company_sign_in: "connected" | "waiting" | "not_moved";
   // PRD 7 (#601): sees every file. The list also sends their departments (head: they head it).
   management?: boolean;
   departments?: { id: string; name: string; head: boolean }[];

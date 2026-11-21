@@ -93,6 +93,7 @@ describe("userStatus", () => {
   it("says whether the company sign-in is connected, or waiting for setup", () => {
     expect(companySignIn(user())).toBe("Connected");
     expect(companySignIn(user({ company_sign_in: "waiting" }))).toBe("Waiting for setup");
+    expect(companySignIn(user({ company_sign_in: "not_moved" }))).toBe("Not moved yet");
   });
 });
 

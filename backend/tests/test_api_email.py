@@ -6,8 +6,11 @@ are read back from the sent text (``#t=`` in the fragment). The first test needs
 database; the rest (marked ``db``) run against a real PostgreSQL.
 """
 
+import logging
 import re
+import uuid
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 
 import httpx2 as httpx
@@ -17,10 +20,13 @@ from sqlalchemy import text
 
 from kaagaz.adapters.email import MemoryMailer
 from kaagaz.api.app import create_app
+from kaagaz.api.emails import token_hash
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers import email as email_router
+from kaagaz.db import email_links as links_sql
 from kaagaz.db.engine import Database, make_engine
 from tests.settings_factory import make_settings
+from tests.test_api_admin import KEYCLOAK_ON, _Keycloak
 from tests.test_api_support import (
     CSRF,
     EMAIL_ROUTES,
@@ -167,6 +173,186 @@ def test_send_again_is_three_an_hour(db: Database) -> None:
     refused = _post(member.client, "/api/auth/email/send-confirm")
     assert (refused.status_code, refused.json()["error"]["code"]) == (429, "rate_limited")
     assert len(_to(mailer, member.email)) == 3
+
+
+@pytest.mark.db
+def test_a_wrong_link_or_a_link_for_something_else_says_so(db: Database) -> None:
+    api, _ = _email_api(db)
+    member = api.new_signed("member")
+    client = api.client()
+    token = "made-up-other-purpose-token-" + uuid.uuid4().hex
+    with db.customer(member.customer_id) as conn:  # a link for something else than confirming
+        links_sql.add(
+            conn,
+            member.customer_id,
+            member.user_id,
+            "reset",
+            token_hash(token),
+            now=api.clock(),
+            expires_at=api.clock() + timedelta(minutes=30),
+        )
+    for body in ({"token": "x" * 43}, {"token": token}):  # unknown, and for something else
+        reply = _post(client, "/api/auth/email/confirm", body)
+        assert (reply.status_code, reply.json()) == (400, LINK_GONE), body
+    assert _email_confirmed(db, member.customer_id, member.user_id) is False
+
+
+# --- "Send the link again" for a sign-up's admin (no session) ------------------------------------
+
+
+def _pending_sign_up(api: Api) -> str:
+    """The email of an unconfirmed admin whose organisation is waiting for an operator."""
+    customer_id, _ = api.customer()
+    with api.db.engine.begin() as conn:
+        conn.execute(text("UPDATE customers SET status = 'pending' WHERE id = :c"), {"c": customer_id})
+        return str(
+            conn.execute(
+                text("SELECT email FROM users WHERE customer_id = :c AND role = 'admin'"), {"c": customer_id}
+            ).scalar_one()
+        )
+
+
+@pytest.mark.db
+def test_send_again_without_signing_in_sends_only_to_a_pending_unconfirmed_admin(db: Database) -> None:
+    """A pending organisation's admin cannot sign in, so "Send the link again" needs no session.
+    The reply is the same whoever is asked for, so it never shows who is waiting."""
+    api, mailer = _email_api(db)
+    pending = _pending_sign_up(api)
+    member = api.new_signed("member")  # unconfirmed, but its organisation is active
+    confirmed = _pending_sign_up(api)
+    with api.db.engine.begin() as conn:
+        conn.execute(text("UPDATE users SET email_verified_at = now() WHERE email = :e"), {"e": confirmed})
+    client = api.client()
+
+    replies = [
+        _post(client, "/api/auth/email/resend-confirm", {"email": address})
+        for address in (pending.upper(), member.email, confirmed, "nobody@example.com")
+    ]
+    assert {(reply.status_code, str(reply.json())) for reply in replies} == {(202, str(RESEND_REPLY))}
+    assert [sent.to for sent in mailer.sent] == [pending]
+    first = _token(mailer, pending, "/email/confirm")
+    assert _post(client, "/api/auth/email/confirm", {"token": first}).json() == {"ok": True, "pending": True}
+    assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).status_code == 202
+    assert len(mailer.sent) == 1  # confirmed now: nothing more is sent
+
+
+@pytest.mark.db
+def test_send_again_without_signing_in_replies_first_and_is_limited_by_email(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, mailer = _email_api(db)
+    pending = _pending_sign_up(api)
+    client = api.client()
+    for _ in range(4):  # the fourth is answered the same, and sends nothing
+        assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).status_code == 202
+    assert len(_to(mailer, pending)) == 3
+
+    later: list[str] = []
+    monkeypatch.setattr(email_router, "_send_link", lambda context, email, *_: later.append(email))
+    assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).json() == RESEND_REPLY
+    assert later == [pending]  # the lookup happens after the reply
+
+
+@pytest.mark.db
+def test_send_again_is_ten_an_hour_a_visitor_and_fifteen_hundred_for_the_site() -> None:
+    """Changed on purpose (A1, 7 Nov 2026): each visitor has their own address now (uvicorn takes
+    it from Caddy's X-Forwarded-For), so the per-visitor cap does the work and the site's is 5x."""
+    assert email_router.resend_site_limits._capacity == email_router.LINKS_PER_HOUR_SITE == 1500
+    assert email_router.link_address_limits._capacity == email_router.LINKS_PER_HOUR_ADDRESS == 10
+
+
+@pytest.mark.db
+def test_send_again_is_limited_per_visitor(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A1: one visitor address; another visitor has their own allowance."""
+    api, _ = _email_api(db)
+    monkeypatch.setattr(email_router, "link_address_limits", RateLimiter(2, window_seconds=3600))
+    visitor, other = (
+        TestClient(api.app, client=(address, 50000)) for address in ("203.0.113.7", "198.51.100.9")
+    )
+    replies = [
+        _post(visitor, "/api/auth/email/resend-confirm", {"email": f"n-{uuid.uuid4().hex[:8]}@example.com"})
+        for _ in range(3)
+    ]
+    assert [reply.status_code for reply in replies] == [202, 202, 429]
+    assert replies[-1].json()["error"]["code"] == "rate_limited"
+    assert _post(other, "/api/auth/email/resend-confirm", {"email": "n@example.com"}).status_code == 202
+
+
+@pytest.mark.db
+def test_one_visitor_cannot_use_up_someone_elses_links(db: Database) -> None:
+    """A1: the per-e-mail cap is per e-mail and address, so a stranger asking for a person's
+    link again and again never stops that person getting their own."""
+    api, mailer = _email_api(db)
+    pending = _pending_sign_up(api)
+    stranger = TestClient(api.app, client=("203.0.113.7", 50000))
+    for _ in range(4):
+        assert _post(stranger, "/api/auth/email/resend-confirm", {"email": pending}).status_code == 202
+    assert len(_to(mailer, pending)) == 3
+    elsewhere = TestClient(api.app, client=("198.51.100.9", 50000))
+    _post(elsewhere, "/api/auth/email/resend-confirm", {"email": pending})
+    assert len(_to(mailer, pending)) == 4
+
+
+@pytest.mark.db
+def test_send_again_is_limited_for_the_whole_site(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    api, _ = _email_api(db)
+    monkeypatch.setattr(email_router, "resend_site_limits", RateLimiter(2, window_seconds=3600))
+    replies = [
+        _post(
+            api.client(), "/api/auth/email/resend-confirm", {"email": f"n-{uuid.uuid4().hex[:8]}@example.com"}
+        )
+        for _ in range(3)
+    ]
+    assert [reply.status_code for reply in replies] == [202, 202, 429]
+    assert replies[-1].json()["error"]["code"] == "rate_limited"
+
+
+@pytest.mark.db
+def test_send_again_logs_a_task_that_breaks_after_the_reply(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    working, _ = _email_api(db)
+    email = _pending_sign_up(working)
+    api, _ = _email_api(db, BrokenMailer())
+    caplog.set_level(logging.ERROR, logger="kaagaz.api.emails")
+    assert _post(api.client(), "/api/auth/email/resend-confirm", {"email": email}).status_code == 202
+    assert _task_failed("confirm") in caplog.messages
+
+
+@pytest.mark.db
+def test_a_link_that_could_not_be_sent_says_so(db: Database) -> None:
+    """Send link says ``sent: false`` when the email failed, so the screen offers to send it again."""
+    api, _ = _email_api(db, FailingMailer())
+    member = api.new_signed("member")
+    assert _post(member.client, "/api/auth/email/send-confirm").json() == {"ok": True, "sent": False}
+
+
+# --- an email that breaks never breaks the action -----------------------------------------------
+
+
+@pytest.mark.db
+def test_a_notice_that_breaks_never_breaks_the_finished_action(
+    db: Database, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The authenticator-reset notice is sent after the reply; a mailer failure there is logged
+    (its type only, never the address) and the finished reset keeps its success."""
+    settings = make_settings(**KEYCLOAK_ON, email_enabled=True, email_from=SENDER, app_url=SITE)
+    api = Api(db, settings=settings, mailer=BrokenMailer())
+    _Keycloak(monkeypatch)
+    admin = api.new_admin()
+    address = f"m-{admin.user_id[:8]}@example.test"
+    member = admin.client.post(
+        "/api/admin/users",
+        json={"email": address, "display_name": "Mira Rao", "role": "member"},
+        headers=CSRF,
+    ).json()
+    caplog.set_level(logging.ERROR, logger="kaagaz.api.emails")
+
+    reset = _post(admin.client, f"/api/admin/users/{member['id']}/reset-2fa")
+
+    assert reset.status_code == 200, reset.text
+    assert _task_failed("two_step_reset") in caplog.messages
+    assert address not in caplog.text
 
 
 # --- forgot password ----------------------------------------------------------------------------

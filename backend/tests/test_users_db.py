@@ -47,7 +47,7 @@ ADMIN_COLUMNS = {
     "totp_enabled_at",
     "totp_off_at",
     "must_change_password",
-    "setup_waiting",  # Changed on purpose (21 Nov 2026): the People list says connected or waiting for setup
+    "company_state",  # Changed on purpose (21 Nov 2026): not moved, waiting for setup, connected
     "session_version",
     "delete_forever_allowed_at",
     "two_step_required",  # 0068, #481

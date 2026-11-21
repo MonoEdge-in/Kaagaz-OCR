@@ -199,8 +199,10 @@ export function addedNotice(user: Pick<AddedUser, "setup_email_sent" | "message"
   return user.setup_email_sent ? { text: user.message } : { problem: true, text: user.message };
 }
 
-/** What the People list says about the company sign-in account: made and linked, or not yet. */
+/** What the People list says about the company sign-in account: not moved yet, linked and waiting
+ * for the person to set it up, or connected. */
 export function companySignIn(user: Pick<AdminUser, "company_sign_in">): string {
+  if (user.company_sign_in === "not_moved") return "Not moved yet";
   return user.company_sign_in === "connected" ? "Connected" : "Waiting for setup";
 }
 

@@ -15,7 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from kaagaz.api import keycloak_oidc
 from kaagaz.api.auth import (
     KEYCLOAK_PROOF_ACTIONS,
-    LOCKED_OPEN_SECONDS,
     CurrentUser,
     SessionClaims,
     User,
@@ -23,7 +22,6 @@ from kaagaz.api.auth import (
     session_claims,
     set_confirm_cookie,
     set_keycloak_proof_cookie,
-    set_locked_open_cookie,
     set_session_cookie,
     set_whatsapp_proof_cookie,
 )
@@ -326,15 +324,9 @@ def _reauth(
         settings=context.settings,
         now=now,
     )
-    if flow.action == "locked_open":
-        set_locked_open_cookie(
-            response,
-            user,
-            claims.session_id,
-            context.settings,
-            until=now + LOCKED_OPEN_SECONDS,
-        )
-    elif flow.action == "delete_forever":
+    # No locked-open cookie here: the proof only lets POST /documents/locked-open set it, which
+    # audits ``lock.open`` and counts against OPENS_PER_HOUR.
+    if flow.action == "delete_forever":
         set_confirm_cookie(response, user, context.settings, now=now, session_id=claims.session_id)
     elif flow.action == "whatsapp":
         set_whatsapp_proof_cookie(response, user, context.settings, now=now)

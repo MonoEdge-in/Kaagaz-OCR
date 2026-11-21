@@ -58,7 +58,7 @@ def test_lookup_calls_only_the_exact_issuer_subject_function() -> None:
     assert parameters == {"issuer": "https://id.example.test/realm", "subject": "opaque-subject"}
 
 
-def test_whatsapp_channel_check_passes_coexistence_mfa_guard_to_sql() -> None:
+def test_whatsapp_channel_check_refuses_anyone_not_on_keycloak_in_sql() -> None:
     connection = cast(Connection, Mock(spec=Connection))
     execute = cast(Mock, connection.execute)
     execute.return_value.first.return_value = ("sealed-number", "not_allowed")
@@ -70,13 +70,12 @@ def test_whatsapp_channel_check_passes_coexistence_mfa_guard_to_sql() -> None:
             user_id="11111111-1111-4111-8111-111111111111",
             link_id="33333333-3333-4333-8333-333333333333",
         ),
-        keycloak_enabled=True,
     )
 
     assert result.refused == "not_allowed"
     statement, parameters = execute.call_args.args
-    assert ":keycloak_enabled" in str(statement)
-    assert parameters["keycloak_enabled"] is True
+    assert "u.auth_authority <> 'keycloak'" in str(statement)
+    assert set(parameters) == {"c", "l"}  # no policy switch: the company sign-in is the only one
 
 
 def test_finalize_call_has_no_caller_selected_user_or_customer() -> None:

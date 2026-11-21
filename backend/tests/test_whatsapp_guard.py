@@ -66,11 +66,10 @@ def test_the_channel_process_builds_its_database_in_the_apps_role() -> None:
     assert [ast.unparse(node.args[1]) for node in databases] == ["settings.db_app_role"]
 
 
-def test_the_channel_mfa_guard_needs_no_keycloak_client_credentials() -> None:
+def test_the_channel_has_no_sign_in_policy_switch_the_company_sign_in_is_the_only_one() -> None:
     tree = ast.parse((PACKAGE / "channel_main.py").read_text(encoding="utf-8"))
     channels = [
         node for node in ast.walk(tree) if isinstance(node, ast.Call) and ast.unparse(node.func) == "Channel"
     ]
     assert len(channels) == 1
-    policy = next(keyword.value for keyword in channels[0].keywords if keyword.arg == "keycloak_enabled")
-    assert ast.unparse(policy) == "settings.keycloak_enabled or settings.customer_mfa_required"
+    assert "keycloak_enabled" not in {keyword.arg for keyword in channels[0].keywords}

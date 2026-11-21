@@ -625,25 +625,28 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
 
 
 @pytest.mark.db
-def test_company_sign_in_is_waiting_until_linked_and_signed_in_once(db: Database) -> None:
-    """The People list's `company_sign_in` drives Resend: waiting until the person is linked to
-    Keycloak AND has signed in once, then connected."""
+def test_company_sign_in_is_not_moved_then_waiting_then_connected(db: Database) -> None:
+    """The People list's `company_sign_in`: not moved (not linked), waiting for setup (linked, no
+    sign-in since the link) and connected. A person moved with an OLD last_login_at (Move
+    everyone) is waiting, not connected: linking clears it."""
     api = Api(db)
     admin = api.new_admin()
     member_id, _ = api.add_user(admin.customer_id, "member")  # made, never linked
+    with db.engine.begin() as conn:  # they signed in with the old password sign-in last week
+        conn.execute(
+            text("UPDATE users SET last_login_at = :t WHERE customer_id = :c AND id = :u"),
+            {"t": api.clock() - timedelta(days=7), "c": admin.customer_id, "u": member_id},
+        )
 
     def state() -> str:
         items = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
         return str(items[member_id]["company_sign_in"])
 
-    assert state() == "waiting"
-    with db.engine.begin() as conn:  # linked, but never signed in
-        conn.execute(
-            text("UPDATE users SET auth_authority = 'keycloak' WHERE customer_id = :c AND id = :u"),
-            {"c": admin.customer_id, "u": member_id},
-        )
-    assert state() == "waiting"
-    api.mint_session(api.client(), admin.customer_id, member_id)  # their first sign-in
+    assert state() == "not_moved"
+    with db.user(admin.customer_id, member_id) as conn:  # Move everyone links them
+        keycloak_sql.link_account(conn, ISSUER, f"subject-{uuid.uuid4().hex}", now=api.clock())
+    assert state() == "waiting"  # the old last_login_at does not count
+    api.mint_session(api.client(), admin.customer_id, member_id)  # their first sign-in since
     assert state() == "connected"
 
 
