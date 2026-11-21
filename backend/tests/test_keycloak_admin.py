@@ -4,13 +4,14 @@ failure is one plain error with no secret, token or reply in it."""
 import json
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from typing import Any
 
 import pytest
 
 from kaagaz.api import keycloak_admin as kc
+from kaagaz.api.keycloak_oidc import TIMEOUT_SECONDS
 from tests.settings_factory import make_settings
 
 ISSUER = "https://id.example.test/realms/kaagaz-test"
@@ -57,7 +58,7 @@ class _Opener:
         }
 
     def open(self, request: urllib.request.Request, timeout: float) -> _Response:
-        assert timeout == kc.TIMEOUT_SECONDS
+        assert timeout == TIMEOUT_SECONDS
         url = request.full_url
         data = request.data
         body = data.decode() if isinstance(data, bytes) else None
@@ -170,7 +171,7 @@ def test_enable_disable_delete_and_unlock_use_the_right_calls(opener: _Opener) -
 
 
 def test_an_expired_token_is_asked_for_once_more(opener: _Opener) -> None:
-    answers = iter([(401, None, {}), (200, [], {})])
+    answers: Iterator[Reply] = iter([(401, None, {}), (200, [], {})])
     opener.routes[("GET", f"{ADMIN}/users")] = lambda: next(answers)
     assert kc.find_user_by_email(SETTINGS, "a@x.test") is None
     assert len([s for s in opener.sent if s[1].endswith("/token")]) == 2

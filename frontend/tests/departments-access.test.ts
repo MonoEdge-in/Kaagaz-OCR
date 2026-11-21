@@ -70,7 +70,6 @@ describe("the Department only dialog", () => {
     renderToStaticMarkup(
       createElement(DepartmentOnlyView, {
         department,
-        myId: "me",
         preview,
         failed,
         onRetry: nothing,
@@ -120,9 +119,10 @@ describe("the Department only dialog", () => {
     expect(html).not.toContain("Add people");
   });
 
-  it("asks for the password first when the admin is among those who gain the files", () => {
+  it("confirms with no password: the panel's change starts the company sign-in when the server asks", () => {
     const dialog = readFileSync(join(__dirname, "..", "components/admin/DepartmentOnlyDialog.tsx"), "utf8");
-    expect(dialog).toContain("onConfirm(asksFirst({ myId, gaining: preview.gaining }))"); // values: access-password-step
+    expect(dialog).toContain("onConfirm()");
+    expect(dialog).not.toContain("asksFirst");
   });
 });
 

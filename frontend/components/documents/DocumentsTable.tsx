@@ -725,7 +725,6 @@ export function DocumentsTable({
       {givingMany && (
         <GiveAccessDialog
           files={movable}
-          myId={me.user.id}
           onClose={() => setGivingMany(false)}
           onGiven={(message) => {
             setGivingMany(false);
@@ -1246,7 +1245,6 @@ const DocumentRow = memo(function DocumentRow({
         {sharing === "give" && (
           <GiveAccessDialog
             files={[document]}
-            myId={me.user.id}
             onClose={() => setSharing(null)}
             onClosed={() => actionsButton.current?.focus()}
             onGiven={(message) => {

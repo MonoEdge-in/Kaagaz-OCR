@@ -11,18 +11,17 @@
 // reorder, until the person picks one).
 // 3, Check and link: the server's preview says which file Ask will answer from, where the files
 // will be kept and who would lose access (V15). An Admin whose link opens a file to themselves
-// types their password (403 password_required), as a folder move asks.
+// signs in again with the company account first (403 keycloak_reauth_required), as a folder move asks.
 // Linked, the caller says so in its toast, with Undo (V16).
 
 import { useEffect, useId, useMemo, useState } from "react";
 import type { DragEvent, FormEvent, ReactNode } from "react";
-import { flushSync } from "react-dom";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import library from "@/components/documents/Library.module.css";
 import { buildTree, pathLabel } from "@/components/documents/folderTree";
 import type { FolderTree } from "@/components/documents/folderTree";
 import { Icon as KIcon } from "@/components/ui/Icon/Icon";
-import { PasswordField } from "@/components/ui/PasswordField";
+import { withProof } from "@/components/access/proofStep";
 import { listDocuments, listFolders, linkVersions, previewLinkVersions } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { DocumentSummary, LinkPreview } from "@/lib/types";
@@ -37,7 +36,6 @@ import {
   linkErrorText,
   moved,
   movedTo,
-  needsPassword,
   newestUpload,
   undoLink,
 } from "./link";
@@ -77,7 +75,6 @@ export function LinkDialog({
   const [reordered, setReordered] = useState(false);
   const latest = picked ?? (reordered ? order.at(-1) : newestUpload(chosen)?.id) ?? null;
   const [preview, setPreview] = useState<LinkPreview | null>(null);
-  const [password, setPassword] = useState<string | null>(null); // null: not asked for
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const body = linkBody(order, latest);
@@ -109,7 +106,8 @@ export function LinkDialog({
     setBusy(true);
     setError(null);
     try {
-      await linkVersions(body, password ?? undefined);
+      const done = await withProof(() => linkVersions(body));
+      if (done === null) return; // the company sign-in was started: nothing was linked
       const current = body.current_id;
       onLinked({
         message: LINK_TEXT.linked(body.document_ids.length, preview.latest.name),
@@ -118,11 +116,6 @@ export function LinkDialog({
     } catch (caught) {
       setError(linkErrorText(caught));
       setBusy(false);
-      if (needsPassword(caught) && password === null) {
-        // The password box appears with the server's words, and takes the focus (review of #659).
-        flushSync(() => setPassword(""));
-        document.getElementById("link-versions-password")?.focus();
-      }
     }
   }
 
@@ -130,12 +123,11 @@ export function LinkDialog({
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (step === 2) void toConfirm();
-    else if (step === 3 && password !== "") void link();
+    else if (step === 3) void link();
   }
 
   const back = (to: Step) => {
     setError(null);
-    setPassword(null);
     setStep(to);
   };
 
@@ -160,7 +152,7 @@ export function LinkDialog({
           />
         )}
         {step === 3 && preview && (
-          <ConfirmStep preview={preview} files={order.length} password={password} onPassword={setPassword} />
+          <ConfirmStep preview={preview} files={order.length} />
         )}
         {error && (
           <p className="error-text" role="alert">
@@ -193,7 +185,7 @@ export function LinkDialog({
             </button>
           )}
           {step === 3 && (
-            <button type="submit" className="btn btn-primary" disabled={busy || password === ""}>
+            <button type="submit" className="btn btn-primary" disabled={busy}>
               {busy ? LINK_TEXT.linking : LINK_TEXT.link}
             </button>
           )}
@@ -456,17 +448,13 @@ export function OrderStep({
   );
 }
 
-/** Step 3: the plain summary, and the password when the server asked for it. Exported for the render test. */
+/** Step 3: the plain summary. Exported for the render test. */
 export function ConfirmStep({
   preview,
   files,
-  password,
-  onPassword,
 }: {
   preview: LinkPreview;
   files: number;
-  password: string | null;
-  onPassword(password: string): void;
 }) {
   return (
     <>
@@ -475,16 +463,6 @@ export function ConfirmStep({
           <li key={line}>{line}</li>
         ))}
       </ul>
-      {password !== null && (
-        <PasswordField
-          id="link-versions-password"
-          label={LINK_TEXT.password}
-          hint={LINK_TEXT.passwordNote}
-          autoComplete="current-password"
-          value={password}
-          onChange={onPassword}
-        />
-      )}
     </>
   );
 }

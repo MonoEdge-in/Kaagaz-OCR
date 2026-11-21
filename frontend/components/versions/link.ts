@@ -4,6 +4,7 @@
 // confirm step names people) and Management see them; the server checks every rule again.
 
 import { ApiError, undoLinkVersions } from "@/lib/api";
+import { isKeycloakReauthRequired } from "@/lib/keycloak";
 import type {
   DocumentSummary,
   LinkPreview,
@@ -39,8 +40,6 @@ export const LINK_TEXT = {
   link: "Link as versions",
   linking: "Linking…",
   checking: "Checking…",
-  passwordNote: "Type your password to go on.",
-  password: "Your password",
   linked: (n: number, name: string) => `Linked ${n} files as versions. Ask answers from "${name}".`,
   undone: "Undone. The files are back as they were.",
   undoInTab: "To undo this, open the file and use Undo linking in its Versions tab.",
@@ -246,16 +245,13 @@ export function linkErrorText(caught: unknown): string {
   return caught instanceof ApiError ? caught.message : LINK_TEXT.connection;
 }
 
-/** A refusal that asks for the person's password (an Admin opening a file to themselves). */
-export const needsPassword = (caught: unknown) => caught instanceof ApiError && caught.code === "password_required";
-
-/** The toast's Undo of a link (V16): the Versions tab asks for a password, so a refusal that wants
- * one sends the person there (review of #659); any other says the server's words. */
+/** The toast's Undo of a link (V16): the Versions tab starts the company sign-in, so a refusal that
+ * wants one sends the person there (review of #659); any other says the server's words. */
 export async function undoLink(id: string): Promise<unknown> {
   try {
     return await undoLinkVersions(id);
   } catch (caught) {
-    if (needsPassword(caught)) throw new ApiError(403, "password_required", LINK_TEXT.undoInTab);
+    if (isKeycloakReauthRequired(caught)) throw new ApiError(403, "keycloak_reauth_required", LINK_TEXT.undoInTab);
     throw caught;
   }
 }

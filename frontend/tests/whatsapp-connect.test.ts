@@ -20,7 +20,6 @@ import {
   TURN_ON_TEXT,
   formChanged,
   formOf,
-  tickNeedsPassword,
   turnOnTitle,
   whatsappCellState,
   withRole,
@@ -53,7 +52,7 @@ describe("the Connect screen", () => {
   it("says the privacy text and asks for the tick in the spec's words", () => {
     expect(PRIVACY_TEXT).toBe(
       "Your questions, voice notes and answers pass through WhatsApp (Meta) and stay in your chat, on your phone, " +
-        "its backups and WhatsApp Web. Files are never sent on WhatsApp; you open them in Kaagaz with your password. " +
+        "its backups and WhatsApp Web. Files are never sent on WhatsApp; you open them in Kaagaz after signing in. " +
         "Kaagaz cannot delete them later. Anyone who can open WhatsApp on this phone can ask about your files. " +
         "Keep your phone locked.",
     );
@@ -103,15 +102,6 @@ describe("the Admin's switches", () => {
     const form = formOf(SAVED);
     expect(withRole(form, "admin", true).roles).toEqual(["member", "reviewer", "admin"]);
     expect(withRole(withRole(form, "admin", true), "member", false).roles).toEqual(["reviewer", "admin"]);
-  });
-
-  it("ask for the password when Admins or Management are newly ticked", () => {
-    const form = formOf(SAVED);
-    expect(tickNeedsPassword(SAVED, form)).toBe(false);
-    expect(tickNeedsPassword(SAVED, withRole(form, "admin", true))).toBe(true);
-    expect(tickNeedsPassword(SAVED, { ...form, management: true })).toBe(true);
-    expect(tickNeedsPassword({ ...SAVED, management: true }, { ...form, management: true })).toBe(false);
-    expect(tickNeedsPassword(SAVED, { ...form, voice: false })).toBe(false);
   });
 
   it("know when the form changed", () => {

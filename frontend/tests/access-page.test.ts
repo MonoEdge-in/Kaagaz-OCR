@@ -88,8 +88,8 @@ describe("the Access page", () => {
     expect(html.match(/>Remove<span/g)).toHaveLength(3); // taking access away still works
   });
 
-  it("tells you on your own page that giving yourself access asks for your password", () => {
-    const hint = "Giving yourself access asks for your password. Management and the other admins get an email.";
+  it("tells you on your own page that giving yourself access asks you to sign in again", () => {
+    const hint = "Giving yourself access asks you to sign in again with your company account. Management and the other admins get an email.";
     expect(render({ access: access(), users: USERS }, null, "u1")).toContain(hint);
     expect(render({ access: access(), users: USERS })).not.toContain(hint);
   });

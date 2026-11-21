@@ -171,7 +171,6 @@ export function DocumentMenu({
       {sharing === "give" && (
         <GiveAccessDialog
           files={[detail]}
-          myId={me.user.id}
           onClose={() => setSharing(null)}
           onClosed={() => buttonRef.current?.focus()}
           onGiven={(message) => {

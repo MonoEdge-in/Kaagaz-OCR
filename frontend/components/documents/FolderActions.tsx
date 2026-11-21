@@ -16,14 +16,13 @@
 // an admin chooses in DeleteFolderDialog where it goes, or Trash.
 // PRD 7 PR 11b (#604, PR 10c): Move says first who would lose and gain what the folder holds (its
 // move preview; nothing when the person may not make such a move, or the same people see it), and a
-// move that opens it to the admin asks their password first, or on 403 password_required.
+// move that opens it to the admin needs a fresh company sign-in (403 keycloak_reauth_required).
 // #730: Copy path copies the folder's place (only folders this person sees), to paste in Search.
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
-import { includesMe } from "@/components/access/passwordStep";
-import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
-import { MAKE_PRIVATE, MAKE_PRIVATE_HELP, WHO_CAN_SEE, moveEffectText, quoted } from "@/components/access/words";
+import { useProofStep } from "@/components/access/proofStep";
+import { MAKE_PRIVATE, MAKE_PRIVATE_HELP, WHO_CAN_SEE, moveEffectText } from "@/components/access/words";
 import { Icon } from "@/components/ui/Icon";
 import { folderPathText } from "@/components/chat/scope";
 import { createFolder, deleteFolder, folderMovePreview, folderSummary, updateFolder } from "@/lib/api";
@@ -55,8 +54,6 @@ export interface FolderActionsProps {
   onAudience?(): void;
   /** #700: that button reads Make private (it opens the panel at that step: privateFirst). */
   makePrivate?: boolean;
-  /** PRD 7 (#604): the signed-in person, for the password step of a move that opens a folder to them. */
-  myId?: string;
 }
 
 /** The suggested names as square chips; pressing one puts it in the name box. */
@@ -93,11 +90,10 @@ export function FolderActions({
   admin = false,
   onAudience,
   makePrivate = false,
-  myId = "",
 }: FolderActionsProps) {
   const [mode, setMode] = useState<Mode | null>(null);
   const [preview, setPreview] = useState<MovePreview | null>(null); // PR 10c: what a move changes
-  const passwordStep = usePasswordStep();
+  const proofStep = useProofStep();
   const [summary, setSummary] = useState<FolderSummary | null>(null); // #537: what Delete would take
   const [copied, setCopied] = useState<{ ok: boolean; line: string } | null>(null); // #730: Copy path's line
   const copyFolderPath = (text: string) =>
@@ -191,12 +187,8 @@ export function FolderActions({
         const renamed = await updateFolder(current.folder.id, { name: name.trim() });
         onChanged(`Renamed the folder to ${renamed.name}.`);
       } else if (mode === "move" && current) {
-        const moved = await passwordStep.run(
-          quoted(current.folder.name),
-          (password?: string) => updateFolder(current.folder.id, { parent_id: target || null, password }),
-          preview !== null && includesMe(preview.gaining, myId),
-        );
-        if (moved === null) return; // the password step was cancelled: nothing was sent
+        const moved = await proofStep.run(() => updateFolder(current.folder.id, { parent_id: target || null }));
+        if (moved === null) return; // the company sign-in was started: nothing more is sent
         const where = target ? pathLabel(tree, target) : "the top level";
         onChanged(`Moved the folder ${moved.name} to ${where}.`);
       } else if (mode === "delete" && current) {
@@ -311,7 +303,6 @@ export function FolderActions({
 
   return (
     <div className={styles.folderActions}>
-      {passwordStep.dialog}
       {current && (
         <div className={styles.folderButtons}>
           {onAudience && (

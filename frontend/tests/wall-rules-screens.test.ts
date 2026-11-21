@@ -1,7 +1,7 @@
 // PRD 7 PR 11b (#604): PR 10c's contract (#637) on the library screens. A refused move or delete
 // in the server's words; a move's preview said before it is made (names, or a holder's counts
-// only); a folder move or a confirmed keep-delete that opens it to the admin asks their password
-// (first, when the preview says they gain it; else on 403 password_required); a keep-delete that
+// only); a folder move or a confirmed keep-delete that opens it to the admin starts the company
+// sign-in on 403 keycloak_reauth_required (#737), sending nothing more; a keep-delete that
 // changes who can see it is a warning, then "Move anyway and delete" sends confirm=true; an admin
 // who moves a file where they can't see it gets `{id, hidden: true}`, and no Undo.
 
@@ -128,10 +128,10 @@ describe("the calls", () => {
     await api.documentMovePreview("d1", null);
     await api.folderMovePreview("f", "s");
     await api.folderMovePreview("f", null);
-    await api.updateFolder("f", { parent_id: "s", password: "secret" });
-    await api.updateFolder("f", { parent_id: null, password: undefined });
+    await api.updateFolder("f", { parent_id: "s" });
+    await api.updateFolder("f", { parent_id: null });
     await api.deleteFolderWithContents("f", { contents: "keep", to: "s" });
-    await api.deleteFolderWithContents("f", { contents: "keep", to: null, confirm: true, password: "secret" });
+    await api.deleteFolderWithContents("f", { contents: "keep", to: null, confirm: true });
     await api.deleteFolderWithContents("f", { contents: "trash" });
     expect(calls).toEqual([
       'PATCH /api/documents/d1 {"folder_id":"s"}',
@@ -140,10 +140,10 @@ describe("the calls", () => {
       "GET /api/documents/d1/move-preview",
       "GET /api/folders/f/move-preview?parent_id=s",
       "GET /api/folders/f/move-preview",
-      'PATCH /api/folders/f {"parent_id":"s","password":"secret"}',
+      'PATCH /api/folders/f {"parent_id":"s"}',
       'PATCH /api/folders/f {"parent_id":null}',
       "DELETE /api/folders/f?contents=keep&to=s",
-      'DELETE /api/folders/f?contents=keep&confirm=true {"password":"secret"}',
+      "DELETE /api/folders/f?contents=keep&confirm=true",
       "DELETE /api/folders/f?contents=trash",
     ]);
     expect(api.isHiddenMove({ id: "d1", display_name: "a.pdf" } as unknown as DocumentSummary)).toBe(false);
@@ -201,17 +201,13 @@ async function submit(element: FakeElement | null) {
   await settle();
 }
 
-/** The open "Confirm it's you" step: type the password and press Give myself access, or Cancel. */
-const passwordStep = (within: FakeElement) =>
-  all(within).find((element) => element.tagName === "DIALOG" && element.textContent.includes("Confirm it's you")) ?? null;
-async function typePassword(within: FakeElement, password: string) {
-  const step = passwordStep(within)!;
-  const box = step.all().find((element) => element.tagName === "INPUT")!;
-  box.value = password;
-  await act(async () => void fire(box, "input"));
-  await submit(button(step, "Give myself access"));
+/** The company sign-in starts: the page's address is known, and where the browser is sent is noted. */
+const assign = vi.fn();
+function withCompanySignIn() {
+  assign.mockClear();
+  vi.stubGlobal("window", { ...window, location: { pathname: "/documents", origin: "https://kaagaz.example", assign } });
 }
-const cancelStep = async (within: FakeElement) => press(button(passwordStep(within)!, "Cancel"));
+const REAUTH_START = { "POST /api/auth/keycloak/reauth/access/start": { url: "https://idp.example/authorize" } };
 
 async function mount(element: ReturnType<typeof createElement>) {
   const container = doc.body.appendChild(doc.createElement("div")) as FakeElement;
@@ -237,39 +233,39 @@ describe("a folder's Move", () => {
     serve(routes);
     const onChanged = vi.fn();
     const screen = await mount(
-      createElement(FolderActions, { tree: TREE, current: TREE.byId.get("f")!, onChanged, admin: true, myId: "me" }),
+      createElement(FolderActions, { tree: TREE, current: TREE.byId.get("f")!, onChanged, admin: true }),
     );
     await press(button(screen, "Move this folder"));
     await choose(radio(screen, "Suppliers"));
     return { screen, onChanged };
   };
 
-  it("says who loses and gains what it holds, and asks the password first when the admin gains it", async () => {
+  it("says who loses and gains what it holds, then moves it with no password", async () => {
     const { screen, onChanged } = await moveTo({
       "GET /api/folders/f/move-preview?parent_id=s": { losing: [RAVI], gaining: [ME], files: 3 },
       "PATCH /api/folders/f": folder("f", "Bills", "s"),
     });
     expect(screen.textContent).toContain("1 person will lose access: Ravi. 1 person will be able to see it: Asha.");
     await submit(button(screen, "Move folder"));
-    expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
-    expect(screen.textContent).toContain("Confirm it's you");
-    await typePassword(screen, "pw-typed");
     expect(calls.filter((call) => call.method === "PATCH")).toEqual([
-      { url: "/api/folders/f", method: "PATCH", body: { parent_id: "s", password: "pw-typed" } },
+      { url: "/api/folders/f", method: "PATCH", body: { parent_id: "s" } },
     ]);
+    expect(screen.textContent).not.toContain("Confirm it's you");
     expect(onChanged).toHaveBeenCalledWith("Moved the folder Bills to Suppliers.");
   });
 
-  it("asks on 403 password_required when the preview didn't say, and sends nothing more on Cancel", async () => {
+  it("starts the company sign-in on 403 keycloak_reauth_required, and sends nothing more", async () => {
+    withCompanySignIn();
     const { screen, onChanged } = await moveTo({
-      "GET /api/folders/f/move-preview?parent_id=s": { losing: [], gaining: [], files: 3 },
-      "PATCH /api/folders/f": refused(403, "password_required", "Type your password."),
+      "GET /api/folders/f/move-preview?parent_id=s": { losing: [], gaining: [ME], files: 3 },
+      "PATCH /api/folders/f": refused(403, "keycloak_reauth_required", "Sign in again to go on."),
+      ...REAUTH_START,
     });
     await submit(button(screen, "Move folder"));
     expect(calls.filter((call) => call.method === "PATCH")).toHaveLength(1);
-    expect(screen.textContent).toContain("Confirm it's you");
-    await press(button(screen, "Cancel"));
-    expect(calls.filter((call) => call.method === "PATCH")).toHaveLength(1);
+    expect(calls.map((call) => call.url)).toContain("/api/auth/keycloak/reauth/access/start");
+    expect(assign).toHaveBeenCalledWith("https://idp.example/authorize");
+    expect(screen.textContent).not.toContain("Confirm it's you");
     expect(onChanged).not.toHaveBeenCalled();
   });
 
@@ -294,72 +290,42 @@ describe("deleting a folder and keeping what's inside", () => {
     serve({ "GET /api/folders/f/summary": { files: 3, folders: 0, bytes: 30 }, ...routes });
     onChanged = vi.fn();
     const screen = await mount(
-      createElement(FolderActions, { tree: TREE, current: TREE.byId.get("f")!, onChanged, admin: true, myId: "me" }),
+      createElement(FolderActions, { tree: TREE, current: TREE.byId.get("f")!, onChanged, admin: true }),
     );
     await press(button(screen, "Delete this folder"));
     return screen;
   }
   const deletes = () => calls.filter((call) => call.method === "DELETE");
-  /** The confirmed keep: 403 password_required the first time, then done. */
-  const confirmed = () => {
-    let asked = 0;
-    return () => {
-      asked += 1;
-      return asked === 1 ? refused(403, "password_required", "Type your password.") : { files: 3, folders: 0 };
-    };
-  };
 
-  it("warns first, then Move anyway sends it again confirmed, the password typed going in its body", async () => {
+  it("warns first, then Move anyway sends it again confirmed, with no password in it", async () => {
     const screen = await open({
       "DELETE /api/folders/f?contents=keep&to=p": refused(409, "access_would_change", WARNING),
-      "DELETE /api/folders/f?contents=keep&to=p&confirm=true": confirmed(),
+      "DELETE /api/folders/f?contents=keep&to=p&confirm=true": { files: 3, folders: 0 },
     });
     await press(button(screen, "Move and delete folder"));
     expect(screen.textContent).toContain(WARNING);
     await press(button(screen, "Move anyway and delete"));
-    expect(deletes().map((call) => call.url)).toEqual([
-      "/api/folders/f?contents=keep&to=p",
-      "/api/folders/f?contents=keep&to=p&confirm=true",
+    expect(deletes()).toEqual([
+      { url: "/api/folders/f?contents=keep&to=p", method: "DELETE", body: undefined },
+      { url: "/api/folders/f?contents=keep&to=p&confirm=true", method: "DELETE", body: undefined },
     ]);
-    expect(screen.textContent).toContain("Confirm it's you");
-    await typePassword(screen, "pw-typed");
-    const sent = deletes()[2]!;
-    expect(sent).toEqual({
-      url: "/api/folders/f?contents=keep&to=p&confirm=true",
-      method: "DELETE",
-      body: { password: "pw-typed" },
-    });
-    expect(sent.url).not.toContain("pw-typed");
+    expect(screen.textContent).not.toContain("Confirm it's you");
     expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
-  it("cancelled at the password step: nothing more sent, nothing deleted, the warning still shown", async () => {
+  it("starts the company sign-in when the confirmed keep needs it: nothing more sent, the warning still shown", async () => {
+    withCompanySignIn();
     const screen = await open({
       "DELETE /api/folders/f?contents=keep&to=p": refused(409, "access_would_change", WARNING),
-      "DELETE /api/folders/f?contents=keep&to=p&confirm=true": refused(403, "password_required", "Type your password."),
+      "DELETE /api/folders/f?contents=keep&to=p&confirm=true": refused(403, "keycloak_reauth_required", "Sign in again to go on."),
+      ...REAUTH_START,
     });
     await press(button(screen, "Move and delete folder"));
     await press(button(screen, "Move anyway and delete"));
-    await cancelStep(screen);
     expect(deletes()).toHaveLength(2);
+    expect(assign).toHaveBeenCalledWith("https://idp.example/authorize");
     expect(screen.textContent).toContain(WARNING);
-    expect(passwordStep(screen)).toBeNull();
     expect(button(screen, "Move anyway and delete")).not.toBeNull();
-    expect(onChanged).not.toHaveBeenCalled();
-  });
-
-  it("Esc in the password step closes only the step: the delete dialog stays, and nothing more is sent", async () => {
-    const screen = await open({
-      "DELETE /api/folders/f?contents=keep&to=p": refused(409, "access_would_change", WARNING),
-      "DELETE /api/folders/f?contents=keep&to=p&confirm=true": refused(403, "password_required", "Type your password."),
-    });
-    await press(button(screen, "Move and delete folder"));
-    await press(button(screen, "Move anyway and delete"));
-    await act(async () => void fire(passwordStep(screen)!, "cancel"));
-    await settle();
-    expect(passwordStep(screen)).toBeNull();
-    expect(button(screen, "Move anyway and delete")).not.toBeNull();
-    expect(deletes()).toHaveLength(2);
     expect(onChanged).not.toHaveBeenCalled();
   });
 

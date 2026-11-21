@@ -57,7 +57,7 @@ describe("the names list", () => {
     expect(menu).toContain(">Give access<");
     expect(menu).toContain(">Who can see this<");
     expect(menu).toContain(">Give myself access<");
-    expect(menu).toContain("Asks for your password, tells Management, then lets you open this file.");
+    expect(menu).toContain("Asks you to sign in again, tells Management, then lets you open this file.");
   });
 });
 

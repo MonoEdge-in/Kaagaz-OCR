@@ -329,7 +329,7 @@ export const confirmPhoneCode = () => request<WhatsAppMe>("POST", "/whatsapp/cod
 export const disconnectWhatsApp = () => request<WhatsAppMe>("POST", "/whatsapp/disconnect");
 
 // Email (#457 phase 0): every route is 404 while the server's email is off.
-/** Resolves while email is on (the sign-in page's "Forgot password?"); rejects with 404 when off. */
+/** Resolves while email is on; rejects with 404 when off. */
 export const emailOpen = () => request<{ enabled: boolean }>("GET", "/auth/email");
 /** ``pending``: the confirmed person's organisation is a sign-up waiting for approval. */
 export const confirmEmail = (token: string) =>
@@ -374,8 +374,7 @@ export const reprocessDocument = (id: string, reading?: UploadReading) =>
  * not_stoppable, in_trash or locked otherwise). The reply: failed with ``stopped``; Read again starts it again. */
 export const stopDocument = (id: string) => request<DocumentSummary>("POST", `/documents/${id}/stop`);
 /**
- * An admin session with two-step sign-in, or a granted user who just confirmed
- * their password (403 otherwise), and only from Trash (409 not_in_trash
+ * Delete forever: needs a company sign-in proven just now (403 keycloak_reauth_required), and only from Trash (409 not_in_trash
  * otherwise). Every version goes.
  */
 export const deleteDocumentForever = (id: string) =>
@@ -450,16 +449,12 @@ export const decideVersionGroup = (id: string, decision: GroupDecision, document
 /** The confirm step: which file Ask will answer from, where they'll be kept, who loses access. */
 export const previewLinkVersions = (body: LinkVersionsBody) =>
   request<LinkPreview>("POST", "/documents/link-versions/preview", body);
-/** 403 password_required when the link opens a file to the Admin linking it: send it again with it. */
-export const linkVersions = (body: LinkVersionsBody, password?: string) =>
-  request<{ link_id: string; document: DocumentSummary }>("POST", "/documents/link-versions", {
-    ...body,
-    ...(password === undefined ? {} : { password }),
-  });
+/** 403 keycloak_reauth_required when the link opens a file to the Admin linking it: the company sign-in first. */
+export const linkVersions = (body: LinkVersionsBody) =>
+  request<{ link_id: string; document: DocumentSummary }>("POST", "/documents/link-versions", body);
 /** V16: every version back as it was, while nothing newer joined. The reply is not read: V-A
  * answers the file's summary, or {id, undone: true} after its review fixes. */
-export const undoLinkVersions = (id: string, password?: string) =>
-  request<unknown>("POST", `${doc(id)}/link-versions/undo`, password === undefined ? undefined : { password });
+export const undoLinkVersions = (id: string) => request<unknown>("POST", `${doc(id)}/link-versions/undo`);
 export const listKeptApart = () => request<KeptApart>("GET", "/version-kept-apart");
 /** A5: every version of the family, newest first. */
 export const documentActivity = (id: string, cursor?: string) =>
@@ -943,20 +938,20 @@ export const createFolder = (
     ...(department ? { kind: "department", sort_order: department.sort_order } : {}),
   });
 /** Rename, move or order. An explicit parent_id: null moves the folder to the top level. PRD 7
- * (#601): a move that opens what it holds to the admin making it takes their `password` (403
- * password_required without it). */
+ * (#601): a move that opens what it holds to the admin making it needs the company sign-in (403
+ * keycloak_reauth_required without it). */
 export const updateFolder = (
   id: string,
-  changes: { name?: string; parent_id?: string | null; sort_order?: number | null; password?: string },
+  changes: { name?: string; parent_id?: string | null; sort_order?: number | null },
 ) => request<Folder>("PATCH", `/folders/${id}`, changes);
 export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
 /** #537, an admin's: move what is inside to `to` (null: the top level) or send it all to Trash,
  * then delete the folder. The reply: what moved, or the files that went to Trash. PRD 7 (#601): a
  * keep that changes who can see it is 409 access_would_change until it is sent with `confirm`;
- * a confirmed one that opens it to the admin takes their `password` (403 password_required). */
+ * a confirmed one that opens it to the admin needs the company sign-in (403 keycloak_reauth_required). */
 export const deleteFolderWithContents = (
   id: string,
-  what: { contents: "keep"; to: string | null; confirm?: boolean; password?: string } | { contents: "trash" },
+  what: { contents: "keep"; to: string | null; confirm?: boolean } | { contents: "trash" },
 ) =>
   request<{ files: number; folders: number }>(
     "DELETE",
@@ -965,12 +960,11 @@ export const deleteFolderWithContents = (
       to: what.contents === "keep" ? (what.to ?? undefined) : undefined,
       confirm: what.contents === "keep" && what.confirm ? true : undefined,
     })}`,
-    what.contents === "keep" && what.password !== undefined ? { password: what.password } : undefined,
   );
 export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
 /** #542: Trash's folders; one opened (its files: listDocuments with trashed_folder_id); Restore puts
- * one back where it was; delete forever has a document's rule (an admin with two-step, or a typed
- * password). Under /documents/trash, where the typed password's cookie is sent. */
+ * one back where it was; delete forever has a document's rule (a fresh company sign-in first).
+ * Under /documents/trash, where the proof's cookie is sent. */
 export const listTrashedFolders = () => request<{ items: TrashedFolder[] }>("GET", "/documents/trash/folders");
 export const getTrashedFolder = (id: string) =>
   request<TrashedFolderContents>("GET", `/documents/trash/folders/${id}`);
@@ -1368,37 +1362,32 @@ export const setDeleteForever = (id: string, allowed: boolean) =>
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
 /** What this organisation has stored, Trash included, and its storage limit (#516). */
 export const getAdminStorage = () => request<AdminStorage>("GET", "/admin/storage");
-// Kaagaz on WhatsApp (#603): the Admin's switches and who is connected. Turning it on needs the password.
+// Kaagaz on WhatsApp (#603): the Admin's switches and who is connected. Turning it on needs the company sign-in.
 export const adminWhatsApp = () => request<WhatsAppAdmin>("GET", "/admin/whatsapp");
 export const saveAdminWhatsApp = (
   settings: Pick<WhatsAppAdmin, "enabled" | "roles" | "management" | "voice" | "uploads">,
-  password?: string, // with the data rules tick: turning it on
-  rulesConfirmed = false,
+  rulesConfirmed = false, // the data rules tick: turning it on
 ) =>
   request<WhatsAppAdmin>("PUT", "/admin/whatsapp", {
     ...settings,
-    ...(password === undefined ? {} : { password }),
-    ...(rulesConfirmed || password !== undefined ? { rules_confirmed: true } : {}),
+    ...(rulesConfirmed ? { rules_confirmed: true } : {}),
   });
 export const adminDisconnectWhatsApp = (userId: string) =>
   request<WhatsAppAdmin>("POST", `/admin/whatsapp/${encodeURIComponent(userId)}/disconnect`);
 
 // --- access (PRD 7, #601) --------------------------------------------------------------------
-// Every write that can give the admin themselves access takes their `password` (403
-// password_required without it; components/access/passwordStep.ts).
+// Every write that can give the admin themselves access needs a fresh company sign-in (403
+// keycloak_reauth_required without it; components/access/proofStep.ts).
 
 /** A path part: an id typed into the address bar may hold "/" or "?". */
 const segment = (part: string) => encodeURIComponent(part);
 /** #707: My access, the signed-in person's own. */
 export const getMyAccess = () => request<MyAccess>("GET", "/me/access");
 export const getPersonAccess = (userId: string) => request<PersonAccess>("GET", `/admin/users/${segment(userId)}/access`);
-export const setManagement = (userId: string, on: boolean, password?: string) =>
-  request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, {
-    on,
-    ...(password === undefined ? {} : { password }),
-  });
+export const setManagement = (userId: string, on: boolean) =>
+  request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, { on });
 /** Adds the person to the department, or sets their Head tick; `head` left out keeps the tick. */
-export const putMembership = (userId: string, departmentId: string, change: { head?: boolean; password?: string } = {}) =>
+export const putMembership = (userId: string, departmentId: string, change: { head?: boolean } = {}) =>
   request<{ head: boolean; changed: boolean }>("PUT", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`, change);
 export const removeMembership = (userId: string, departmentId: string) =>
   request<void>("DELETE", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`);
@@ -1408,37 +1397,29 @@ export const listDepartmentMembers = (departmentId: string) =>
   request<{ items: DepartmentMember[] }>("GET", `/admin/departments/${segment(departmentId)}/members`);
 export const departmentOnlyPreview = (departmentId: string, on: boolean) =>
   request<PlacePreview>("GET", `/admin/departments/${segment(departmentId)}/department-only/preview${query({ on })}`);
-export const setDepartmentOnly = (departmentId: string, on: boolean, password?: string) =>
+export const setDepartmentOnly = (departmentId: string, on: boolean) =>
   request<{ department_only: boolean; members: number; warnings: string[] }>(
     "PUT",
     `/admin/departments/${segment(departmentId)}/department-only`,
-    { on, ...(password === undefined ? {} : { password }) },
+    { on },
   );
-export const addNamed = (folderId: string, userId: string, password?: string) =>
-  request<{ changed: boolean }>(
-    "PUT",
-    `/folders/${segment(folderId)}/named/${segment(userId)}`,
-    password === undefined ? {} : { password },
-  );
+export const addNamed = (folderId: string, userId: string) =>
+  request<{ changed: boolean }>("PUT", `/folders/${segment(folderId)}/named/${segment(userId)}`, {});
 export const removeNamed = (folderId: string, userId: string) =>
   request<void>("DELETE", `/folders/${segment(folderId)}/named/${segment(userId)}`);
-export const giveFile = (documentId: string, userId: string, password?: string) =>
+export const giveFile = (documentId: string, userId: string) =>
   request<{ versions: number; changed: boolean }>(
     "PUT",
     `/documents/${segment(documentId)}/shares/${segment(userId)}`,
-    password === undefined ? {} : { password },
+    {},
   );
 export const takeFile = (documentId: string, userId: string) =>
   request<void>("DELETE", `/documents/${segment(documentId)}/shares/${segment(userId)}`);
 
 // PR 11b: the library's access.
 /** Give files to people at once (at most 100 files and 20 people): how many pairs were new. */
-export const giveFiles = (documentIds: readonly string[], userIds: readonly string[], password?: string) =>
-  request<{ given: number }>("POST", "/documents/shares", {
-    document_ids: documentIds,
-    user_ids: userIds,
-    ...(password === undefined ? {} : { password }),
-  });
+export const giveFiles = (documentIds: readonly string[], userIds: readonly string[]) =>
+  request<{ given: number }>("POST", "/documents/shares", { document_ids: documentIds, user_ids: userIds });
 export type AudienceKind = "documents" | "folders";
 export const getAudience = (kind: AudienceKind, id: string) => request<Audience>("GET", `/${kind}/${segment(id)}/audience`);
 export const checkAudience = (kind: AudienceKind, id: string, userId: string) =>
@@ -1451,12 +1432,11 @@ export const privatePreview = (folderId: string, on: boolean, named: readonly st
   request<PlacePreview>("GET", `/folders/${segment(folderId)}/private/preview${query({ on, named })}`);
 /** Make it private, naming people on it (and, PR 10c, `dropNamed`: people named before taken off in
  * the same transaction; sent only when there are some), or open again (`named` only with `on`). */
-export const setPrivate = (folderId: string, on: boolean, named: readonly string[], password?: string, dropNamed: readonly string[] = []) =>
+export const setPrivate = (folderId: string, on: boolean, named: readonly string[], dropNamed: readonly string[] = []) =>
   request<{ private: boolean; named: Person[]; you_lose_access: boolean }>("PUT", `/folders/${segment(folderId)}/private`, {
     on,
     named,
     ...(dropNamed.length ? { drop_named: dropNamed } : {}),
-    ...(password === undefined ? {} : { password }),
   });
 /** PRD 7 PR 10c (#601): who would lose and gain a file, or what a folder holds, were it moved into
  * `into` (null: the top level). The person a file is held for gets counts only (`losing_count`,
@@ -1737,22 +1717,13 @@ export const lockPreview = (id: string) =>
 /** The bulk bar's: everyone who can see any of the files. */
 export const lockPreviewMany = (ids: readonly string[]) =>
   request<{ people: LockPerson[] }>("POST", "/documents/lock-preview", { document_ids: ids });
-export const lockDocument = (id: string, openTo: readonly string[], password?: string) =>
+export const lockDocument = (id: string, openTo: readonly string[]) =>
   request<{ locked: true; versions: number; open_to: number }>("POST", `/documents/${encodeURIComponent(id)}/lock`, {
     open_to: openTo,
-    ...(password === undefined ? {} : { password }),
   });
 /** All or nothing: a 409 carries `refused: [{id, reason}]` in its details. */
-export const lockDocuments = (ids: readonly string[], openTo: readonly string[], password?: string) =>
-  request<{ locked: number }>("POST", "/documents/lock", {
-    document_ids: ids,
-    open_to: openTo,
-    ...(password === undefined ? {} : { password }),
-  });
+export const lockDocuments = (ids: readonly string[], openTo: readonly string[]) =>
+  request<{ locked: number }>("POST", "/documents/lock", { document_ids: ids, open_to: openTo });
 /** `reading`: its current version is read again (PR 12's unlock_file). */
-export const unlockDocument = (id: string, password?: string) =>
-  request<{ unlocked: true; reading: boolean }>(
-    "POST",
-    `/documents/${encodeURIComponent(id)}/unlock`,
-    password === undefined ? {} : { password },
-  );
+export const unlockDocument = (id: string) =>
+  request<{ unlocked: true; reading: boolean }>("POST", `/documents/${encodeURIComponent(id)}/unlock`, {});

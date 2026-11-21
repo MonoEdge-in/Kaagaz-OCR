@@ -39,11 +39,6 @@ export function withRole(form: WhatsAppForm, role: Role, on: boolean): WhatsAppF
   return { ...form, roles };
 }
 
-/** Ticking Admins or Management (not there before) asks for the Admin's password, as turning it on. */
-export function tickNeedsPassword(saved: WhatsAppAdmin, form: WhatsAppForm): boolean {
-  return (form.roles.includes("admin") && !saved.roles.includes("admin")) || (form.management && !saved.management);
-}
-
 export function formChanged(saved: WhatsAppAdmin, form: WhatsAppForm): boolean {
   const before = formOf(saved);
   return (Object.keys(before) as (keyof WhatsAppForm)[]).some((key) =>

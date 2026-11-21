@@ -19,18 +19,16 @@
 //
 // PRD 7 (#604): an Access column (Management, then the person's departments), read only; the
 // menu's Access opens their Access page, where it is changed; Make or Stop Management asks first
-// (on yourself, Make Management asks for your password too), hidden for a turned-off account.
+// (on yourself, Make Management needs a fresh company sign-in too), hidden for a turned-off account.
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { asksFirst } from "@/components/access/passwordStep";
-import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
+import { useProofStep } from "@/components/access/proofStep";
 import {
   MANAGEMENT_CHIP,
   MANAGEMENT_MEANS,
   MANAGEMENT_TITLE,
-  MANAGEMENT_WHAT,
   accessErrorText,
   departmentsText,
   makeManagementQuestion,
@@ -237,7 +235,6 @@ export function UsersPanel({
                     user={user}
                     reauth={reauth}
                     isSelf={user.id === currentUserId}
-                    myId={currentUserId}
                     whatsapp={whatsapp ? whatsappCellState(connected, user.id) : null}
                     onWhatsApp={(reply) => setConnected(reply.people)}
                     onWhatsAppRetry={() => {
@@ -341,7 +338,6 @@ function UserRow({
   user,
   reauth,
   isSelf,
-  myId,
   whatsapp,
   onWhatsApp,
   onWhatsAppRetry,
@@ -352,7 +348,6 @@ function UserRow({
   user: AdminUser;
   reauth?: string;
   isSelf: boolean;
-  myId: string;
   /** Their WhatsApp cell (loading, failed, none, connected); null while the server has WhatsApp off. */
   whatsapp: WhatsAppCellState | null;
   onWhatsApp(reply: WhatsAppAdmin): void;
@@ -366,15 +361,14 @@ function UserRow({
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [newRole, setNewRole] = useState<Role | null>(null); // #693: the role picked, until Change role
   const router = useRouter();
-  const passwordStep = usePasswordStep();
+  const proofStep = useProofStep();
 
-  /** Management on or off; making yourself Management asks for your password first. */
+  /** Management on or off; making yourself Management needs a fresh company sign-in. */
   async function management(on: boolean) {
     setConfirming(null);
     setBusy(true);
     try {
-      const first = asksFirst({ myId, targetId: user.id, on });
-      const row = await passwordStep.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), first);
+      const row = await proofStep.run(() => setManagement(user.id, on));
       if (row) {
         onChanged(row);
         onNotice({ text: managementToast(user.display_name, on) });
@@ -618,7 +612,6 @@ function UserRow({
             </div>
           </ActionDialog>
         )}
-        {passwordStep.dialog}
       </td>
     </tr>
   );

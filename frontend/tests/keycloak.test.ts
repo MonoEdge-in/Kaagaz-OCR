@@ -109,7 +109,6 @@ describe("mapped proof requests", () => {
     });
     await saveAdminWhatsApp(
       { enabled: true, roles: ["member"], management: false, voice: true, uploads: false },
-      undefined,
       true,
     );
     expect(bodies).toEqual([
@@ -125,9 +124,10 @@ describe("mapped proof requests", () => {
     expect(whatsapp).not.toContain("proveForWhatsApp");
     const adminWhatsApp = source("components/admin/WhatsAppPanel.tsx");
     expect(adminWhatsApp).toContain('beginKeycloakReauth("whatsapp"');
-    expect(adminWhatsApp).toContain("!managed && tickNeedsPassword");
+    expect(adminWhatsApp).toContain("isKeycloakReauthRequired(caught)");
+    expect(adminWhatsApp).not.toContain("PasswordField");
     expect(source("components/admin/UsersPanel.tsx")).toContain('reauth !== "whatsapp"');
-    expect(source("components/access/SelfPasswordDialog.tsx")).toContain("if (isKeycloakManaged(me)) return await send();");
+    expect(source("components/access/proofStep.ts")).toContain('beginKeycloakReauth("access"');
     expect(source("components/documents/LockDialog.tsx")).toContain('beginKeycloakReauth("locks"');
     expect(source("components/viewer/LockedOpenPrompt.tsx")).toContain('beginKeycloakReauth("locked_open"');
     expect(source("components/viewer/LockedOpenPrompt.tsx")).not.toContain("PasswordField");

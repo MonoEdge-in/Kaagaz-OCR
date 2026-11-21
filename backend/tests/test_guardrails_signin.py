@@ -145,7 +145,8 @@ def test_only_the_auth_module_sets_a_cookie() -> None:
         for path in package.rglob("*.py")
         if re.search(r"\.(set_cookie|delete_cookie)\(", path.read_text(encoding="utf-8"))
     }
-    assert setters == {"api/auth.py"}
+    # api/routers/keycloak.py: #671 sets and clears the sign-in flow cookie; it is an auth module.
+    assert setters == {"api/auth.py", "api/routers/keycloak.py"}
 
 
 def _cookie(client: TestClient) -> str:

@@ -65,7 +65,7 @@ describe("the super admin's organisation menu", () => {
 describe("an Admin's names list menu (PRD 7, #604)", () => {
   it("says what Give myself access does in one plain line", () => {
     plainLine(MYSELF_HELP);
-    expect(MYSELF_HELP).toBe("Asks for your password, tells Management, then lets you open this file.");
+    expect(MYSELF_HELP).toBe("Asks you to sign in again, tells Management, then lets you open this file.");
   });
 });
 

@@ -470,7 +470,9 @@ def test_keycloak_runs_on_the_test_server_in_production_mode_behind_caddy() -> N
         assert f"      {line}\n" in block
     assert re.search(r"^      KC_HOSTNAME: https://\$\{KAAGAZ_DOMAIN[^}]*\}/kc$", block, re.MULTILINE)
     assert "KC_HOSTNAME_STRICT" not in block  # ignored once KC_HOSTNAME is set (Keycloak 26)
-    path = re.search(r"^      KC_HTTP_RELATIVE_PATH: (\S+)$", block, re.MULTILINE).group(1)
+    relative_path = re.search(r"^      KC_HTTP_RELATIVE_PATH: (\S+)$", block, re.MULTILINE)
+    assert relative_path
+    path = relative_path.group(1)
     assert re.search(rf"^      KC_HOSTNAME: .*{re.escape(path)}$", block, re.MULTILINE)
     assert re.search(r"- path: \.env\.keycloak-admin\n\s+required: true\n", block)
     assert "      - ./keycloak/themes/kaagaz:/opt/keycloak/themes/kaagaz:ro\n" in block  # #737 theme

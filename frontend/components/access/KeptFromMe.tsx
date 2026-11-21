@@ -4,7 +4,7 @@
 // admin session sees how many of its files they can't open, and their names (GET .../kept-from-me,
 // asked each time the folder opens, never kept). It shows nothing to anyone else, nothing while it
 // loads, nothing on any failure and nothing for 0: never a "0", never a count to anyone but an
-// Admin. Each name's menu: Give access, Who can see this, and Give myself access (my password).
+// Admin. Each name's menu: Give access, Who can see this, and Give myself access (a fresh sign-in).
 
 import { useEffect, useRef, useState } from "react";
 import { adminGate } from "@/components/admin/logic";
@@ -16,7 +16,7 @@ import type { DetectedType, KeptFromMe as Kept, Me } from "@/lib/types";
 import { accessAbilities } from "./abilities";
 import { AudiencePanel } from "./AudiencePanel";
 import { GiveAccessDialog } from "./GiveAccessDialog";
-import { usePasswordStep } from "./SelfPasswordDialog";
+import { useProofStep } from "./proofStep";
 import {
   AUDIENCE_HELP,
   GIVE_HELP,
@@ -30,7 +30,6 @@ import {
   keptShowing,
   keptStripText,
   myselfToast,
-  quoted,
 } from "./words";
 import styles from "./Access.module.css";
 
@@ -59,7 +58,7 @@ export function KeptFromMe({
   const [error, setError] = useState<string | null>(null);
   // The last change's words, kept in the names list as well as the toast (which sits behind it).
   const [notice, setNotice] = useState("");
-  const passwordStep = usePasswordStep();
+  const proofStep = useProofStep();
 
   useEffect(() => {
     if (!admin) return; // never asked for anyone else
@@ -94,7 +93,7 @@ export function KeptFromMe({
   async function giveMyself(file: KeptFile) {
     setError(null);
     try {
-      const reply = await passwordStep.run(quoted(file.name), (password) => giveFile(file.id, me.user.id, password), true);
+      const reply = await proofStep.run(() => giveFile(file.id, me.user.id));
       if (reply !== null) changed(myselfToast(file.name));
     } catch (caught) {
       setError(accessErrorText(caught));
@@ -119,7 +118,6 @@ export function KeptFromMe({
       {acting?.kind === "give" && (
         <GiveAccessDialog
           files={[{ id: acting.file.id, display_name: acting.file.name }]}
-          myId={me.user.id}
           onClose={() => setActing(null)}
           onGiven={(message) => {
             setActing(null);
@@ -136,7 +134,6 @@ export function KeptFromMe({
           onChanged={changed}
         />
       )}
-      {passwordStep.dialog}
     </>
   );
 }

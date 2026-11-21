@@ -213,10 +213,10 @@ describe("a refused link, in plain words", () => {
 
 describe("a refused Undo, in plain words (review of #659)", () => {
   const refuse = (code: string, message: string) =>
-    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ error: { code, message } }), { status: code === "password_required" ? 403 : 409 }));
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ error: { code, message } }), { status: code === "keycloak_reauth_required" ? 403 : 409 }));
 
-  it("sends the person to the Versions tab when Undo needs their password", async () => {
-    refuse("password_required", "Type your password to give yourself access.");
+  it("sends the person to the Versions tab when Undo needs a fresh company sign-in", async () => {
+    refuse("keycloak_reauth_required", "Sign in again to go on.");
     const caught = await undoLink("y").catch((error: unknown) => error);
     expect(linkErrorText(caught)).toBe("To undo this, open the file and use Undo linking in its Versions tab.");
   });
@@ -424,12 +424,10 @@ describe("the order and the confirm steps (V13)", () => {
       losing: [{ id: "p1", name: "Priya" }],
       gaining: [],
     };
-    const html = render(createElement(ConfirmStep, { preview, files: 2, password: null, onPassword: () => undefined }));
+    const html = render(createElement(ConfirmStep, { preview, files: 2 }));
     expect(html).toContain("Ask will answer from the latest: Lease 2025.pdf.");
     expect(html).toContain("1 person will lose access: Priya.");
     expect(html).not.toContain('type="password"');
-    const asked = render(createElement(ConfirmStep, { preview, files: 2, password: "", onPassword: () => undefined }));
-    expect(asked).toContain('type="password"');
   });
 });
 
@@ -514,9 +512,7 @@ describe("the calls", () => {
     await api.decideVersionGroup("g1", "later", ["z"]);
     await api.previewLinkVersions(body);
     await api.linkVersions(body);
-    await api.linkVersions(body, "secret");
     await api.undoLinkVersions("y");
-    await api.undoLinkVersions("y", "secret");
     await api.listKeptApart();
     const sent = JSON.stringify(body);
     expect(calls).toEqual([
@@ -527,18 +523,16 @@ describe("the calls", () => {
       'POST /api/version-groups/g1/later {"document_ids":["z"]}',
       `POST /api/documents/link-versions/preview ${sent}`,
       `POST /api/documents/link-versions ${sent}`,
-      `POST /api/documents/link-versions ${sent.slice(0, -1)},"password":"secret"}`,
       "POST /api/documents/y/link-versions/undo",
-      'POST /api/documents/y/link-versions/undo {"password":"secret"}',
       "GET /api/version-kept-apart",
     ]);
   });
 });
 
-describe("the password step (review of #659)", () => {
+describe("the linking steps (review of #659)", () => {
   const source = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
-  it("is a form, says each step politely, and puts the focus in the password box when it appears", () => {
+  it("is a form and says each step politely, with no password box", () => {
     const files = [
       { id: "x", name: "Lease 2024.pdf", date: "2024-04-01" },
       { id: "y", name: "Lease 2025.pdf", date: "2025-04-01" },
@@ -548,10 +542,8 @@ describe("the password step (review of #659)", () => {
     expect(html).toContain('aria-label="This is the latest: Lease 2024.pdf"');
     expect(html).toContain('aria-label="This is the latest: Lease 2025.pdf"');
     expect(html).toMatch(/<form[^>]*>[\s\S]*<button type="submit" class="btn btn-primary"[^>]*>Next<\/button>/);
-    expect(source("components/versions/LinkDialog.tsx")).toContain('getElementById("link-versions-password")?.focus()');
-    const panel = source("components/versions/VersionsPanel.tsx");
-    expect(panel).toContain('getElementById("undo-link-password")?.focus()');
-    expect(panel).toMatch(/<form[^>]*onSubmit=/);
+    expect(source("components/versions/LinkDialog.tsx")).toContain("withProof(() => linkVersions(body))");
+    expect(source("components/versions/VersionsPanel.tsx")).toContain("withProof(() => undoLinkVersions(detail.id))");
   });
 });
 

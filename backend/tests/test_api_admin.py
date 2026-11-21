@@ -21,9 +21,8 @@ from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns
 from kaagaz.pipeline import FinishedRun
 from tests.settings_factory import make_settings
-from tests.test_api_admin_sign_in import ADMIN_SESSION_REFUSED
 from tests.test_api_model_choice import add_model, allow
-from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, Signed, TestClient, answer_json
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, Signed, answer_json
 from tests.test_api_usage import NOW, THIS_MONTH, add_spend, set_budget
 from tests.test_runs_db import totals
 
@@ -56,6 +55,14 @@ KEYCLOAK_ON = {
     "keycloak_client_id": "kaagaz-web",
     "keycloak_admin_client_id": "kaagaz-provisioner",
     "keycloak_admin_client_secret": "a-test-provisioner-secret-of-32-chars00",
+}
+
+
+ADMIN_SESSION_REFUSED = {
+    "error": {
+        "code": "admin_session_required",
+        "message": "Only admins can use this. Ask your admin if you need it.",
+    }
 }
 
 
@@ -618,6 +625,29 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
 
 
 @pytest.mark.db
+def test_company_sign_in_is_waiting_until_linked_and_signed_in_once(db: Database) -> None:
+    """The People list's `company_sign_in` drives Resend: waiting until the person is linked to
+    Keycloak AND has signed in once, then connected."""
+    api = Api(db)
+    admin = api.new_admin()
+    member_id, _ = api.add_user(admin.customer_id, "member")  # made, never linked
+
+    def state() -> str:
+        items = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
+        return str(items[member_id]["company_sign_in"])
+
+    assert state() == "waiting"
+    with db.engine.begin() as conn:  # linked, but never signed in
+        conn.execute(
+            text("UPDATE users SET auth_authority = 'keycloak' WHERE customer_id = :c AND id = :u"),
+            {"c": admin.customer_id, "u": member_id},
+        )
+    assert state() == "waiting"
+    api.mint_session(api.client(), admin.customer_id, member_id)  # their first sign-in
+    assert state() == "connected"
+
+
+@pytest.mark.db
 def test_unlock(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
@@ -671,7 +701,7 @@ def test_disabling_a_user_ends_their_sessions(db: Database) -> None:
 
 
 def _member_in_keycloak(api: Api, keycloak: _Keycloak, admin: Signed, role: str = "member") -> dict[str, Any]:
-    person = admin.client.post(
+    person: dict[str, Any] = admin.client.post(
         "/api/admin/users",
         json={
             "email": f"{role}-{uuid.uuid4().hex[:10]}@example.test",

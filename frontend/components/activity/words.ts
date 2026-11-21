@@ -90,7 +90,7 @@ export const ACTIVITY_WORDS: Record<string, (entry: Entry) => string> = {
 };
 
 /** PRD 7 (#601): someone gave themselves access (the chip's words). The audit says `self` for an
- * Admin's password-proved grant and for a Head naming themselves (10a), so the words name no role. */
+ * Admin's sign-in-proved grant and for a Head naming themselves (10a), so the words name no role. */
 export const SELF_GIVEN = "Gave themselves access";
 /** The Admin tab's block of those entries, first. */
 export const SELF_GIVEN_HEADING = "People who gave themselves access";

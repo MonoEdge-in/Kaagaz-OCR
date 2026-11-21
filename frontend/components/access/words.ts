@@ -18,18 +18,9 @@ export function namesPreview(people: readonly Person[]): string {
 /** "1 person", "12 people". */
 export const peopleCount = (n: number) => plural(n, "person", "people");
 
-// --- the password step ---------------------------------------------------------------------------
+// --- names ---------------------------------------------------------------------------------------
 
-export const PASSWORD_TITLE = "Confirm it's you";
-export const PASSWORD_LABEL = "Your Kaagaz password";
-export const PASSWORD_BUTTON = "Give myself access";
-export const WRONG_PASSWORD = "That password isn't right. Try again.";
-
-/** `what`: "Finance", "“Salaries”", "“Sale deed.pdf”" or "every file (Management)". */
-export const selfGrantText = (what: string) =>
-  `You're giving yourself access to ${what}. Enter your Kaagaz password to go on. Management and the other admins will get an email saying you gave yourself access. The email doesn't name any file.`;
 export const quoted = (name: string) => `“${name}”`;
-export const MANAGEMENT_WHAT = "every file (Management)";
 
 // --- toasts --------------------------------------------------------------------------------------
 
@@ -90,7 +81,7 @@ export const ACCESS_PAGE = {
   departments: "Departments",
   privateFolders: "Private folders",
   give: "Give access",
-  selfHint: "Giving yourself access asks for your password. Management and the other admins get an email.",
+  selfHint: "Giving yourself access asks you to sign in again with your company account. Management and the other admins get an email.",
   noPrivateFolders: "There are no private folders yet. Make a folder private from Who can see this in Documents.",
   fileSearch: "Find a file",
   noFiles: "No files match.",
@@ -351,9 +342,6 @@ export const giveText = (files: number) =>
   files === 1
     ? "They can open it, and Ask, search and totals can use it for them. Every version is given, now and later."
     : "They can open them, and Ask, search and totals can use these files for them. Every version is given, now and later.";
-/** The password step's "access to …" for the files given. */
-export const filesWhat = (files: readonly { display_name: string }[]) =>
-  files.length === 1 ? quoted(files[0]?.display_name ?? "") : plural(files.length, "file", "files");
 
 // --- kept from me (an Admin's names list) -------------------------------------------------------
 
@@ -369,7 +357,7 @@ export const GIVE_MYSELF = "Give myself access";
 // The menus' plain lines (a document's menu, ACTION_HELP, and the names list's).
 export const GIVE_HELP = "Let named people open this file, with every version.";
 export const AUDIENCE_HELP = "See who can open this file, and why.";
-export const MYSELF_HELP = "Asks for your password, tells Management, then lets you open this file.";
+export const MYSELF_HELP = "Asks you to sign in again, tells Management, then lets you open this file.";
 
 // --- moves and folder deletes refused (PR 10c's rules; p1:194-204) -----------------------------
 
@@ -408,7 +396,6 @@ export const hiddenMovedText = (n: number, total: number) =>
 export const CHOOSE_PEOPLE_CAP = (cap: number) => `Choose ${cap} people or fewer.`;
 
 const ACCESS_ERRORS: Record<string, string> = {
-  wrong_password: WRONG_PASSWORD,
   disabled: "This account is disabled. Enable it before giving access.",
   not_a_department: "This isn't a department any more. Reload the page.",
   not_private: "This folder isn't private any more. Reload the page.",
@@ -422,10 +409,8 @@ const ACCESS_ERRORS: Record<string, string> = {
 /** Make private refused before asking (the same words as the server's 409s). */
 export const privateRefusalText = (code: "department" | "inside_private" | "holds_private") => ACCESS_ERRORS[code] ?? "";
 
-/** An access refusal in its own words; `password_locked` keeps the server's (how long the lock
- * lasts); anything else as `fallback` says it. */
+/** An access refusal in its own words; anything else as `fallback` says it. */
 export function accessErrorText(caught: unknown, fallback: (caught: unknown) => string = errorWords): string {
   if (caught instanceof ApiError && Object.hasOwn(ACCESS_ERRORS, caught.code)) return ACCESS_ERRORS[caught.code] ?? "";
-  if (caught instanceof ApiError && caught.code === "password_locked") return caught.message;
   return fallback(caught);
 }

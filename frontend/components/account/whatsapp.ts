@@ -10,7 +10,7 @@ export const PREFIX = "+91 ";
 /** PRD 7 section 15, Privacy: the Connect screen says it, word for word. */
 export const PRIVACY_TEXT =
   "Your questions, voice notes and answers pass through WhatsApp (Meta) and stay in your chat, on your phone, " +
-  "its backups and WhatsApp Web. Files are never sent on WhatsApp; you open them in Kaagaz with your password. " +
+  "its backups and WhatsApp Web. Files are never sent on WhatsApp; you open them in Kaagaz after signing in. " +
   "Kaagaz cannot delete them later. Anyone who can open WhatsApp on this phone can ask about your files. " +
   "Keep your phone locked.";
 export const CONSENT_TEXT = "I agree that my questions, voice notes and answers will pass through WhatsApp (Meta).";

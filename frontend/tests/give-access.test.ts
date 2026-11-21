@@ -6,7 +6,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { GiveAccessForm, giveProblem } from "@/components/access/GiveAccessDialog";
-import { filesWhat, giveTitle, sharedToast } from "@/components/access/words";
+import { giveTitle, sharedToast } from "@/components/access/words";
 import { ACTION_HELP, menuEntries } from "@/components/documents/library";
 import type { MenuEntry } from "@/components/documents/library";
 import type { DocumentSummary } from "@/lib/types";
@@ -108,13 +108,11 @@ describe("Give access", () => {
     expect(form({ files: 8 })).toContain("They can open them, and Ask, search and totals can use these files for them.");
   });
 
-  it("names the files in its title, the password step and the toast", () => {
+  it("names the files in its title and the toast", () => {
     const one = [{ id: "d1", display_name: "Sale deed.pdf" }];
     const eight = Array.from({ length: 8 }, (_, i) => ({ id: `d${i}`, display_name: `File ${i}` }));
     expect(giveTitle(one)).toBe("Give access to “Sale deed.pdf”");
     expect(giveTitle(eight)).toBe("Give access to 8 files");
-    expect(filesWhat(one)).toBe("“Sale deed.pdf”");
-    expect(filesWhat(eight)).toBe("8 files");
     expect(sharedToast(8, [{ id: "u1", name: "Priya" }])).toBe("8 files shared with Priya.");
     expect(sharedToast(1, [1, 2, 3].map((n) => ({ id: `u${n}`, name: `P${n}` })))).toBe("Shared with 3 people.");
   });

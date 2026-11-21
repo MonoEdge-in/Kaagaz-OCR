@@ -136,7 +136,7 @@ function AdminTabs({ tab, reauth }: { tab?: string; reauth?: string }) {
         {active === "settings" && (
           <div className={styles.panelStack}>
             <SettingsPanel onUnsaved={setUnsaved} />
-            {me.whatsapp === true && <WhatsAppPanel organisation={me.customer.name} reauth={reauth} />}
+            {me.whatsapp === true && <WhatsAppPanel organisation={me.customer.name} />}
           </div>
         )}
         {active === "departments" && <DepartmentsPanel me={{ id: me.user.id, name: me.user.display_name }} />}
