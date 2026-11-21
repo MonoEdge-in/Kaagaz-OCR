@@ -463,6 +463,8 @@ def test_keycloak_runs_on_the_test_server_in_production_mode_behind_caddy() -> N
     assert has(block, "mem_limit: 1g")
     assert has(block, 'profiles: ["keycloak"]')
     assert has(block, "networks: [edge, data]")
+    # postgres is profile-gated in the prod compose file, so a depends_on makes the project invalid.
+    assert "depends_on" not in block
 
 
 def test_caddy_serves_keycloak_but_never_its_admin_console() -> None:
