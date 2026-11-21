@@ -7,6 +7,8 @@ customers' admins sign in on the admin screen, so the admin routes are
 reached and must answer 404 (never 403) for the other customer's ids.
 """
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import text
 
@@ -149,10 +151,11 @@ def test_b_cannot_change_a_user_of_a(world: _World) -> None:
 @pytest.mark.parametrize("action", ["unlock", "reset-password", "reset-2fa"])
 def test_b_cannot_unlock_or_reset_a_user_of_a(world: _World, action: str) -> None:
     api, a = world.api, world.a
-    locked_id, locked_email = api.add_user(a.customer_id, "member")
-    for _ in range(api.settings.login_max_failures):
-        api.client().post(
-            "/api/auth/login", json={"email": locked_email, "password": "wrong password!!"}, headers=CSRF
+    locked_id, _ = api.add_user(a.customer_id, "member")
+    with api.db.engine.begin() as conn:  # the owner: a lock as the operator's sign-in leaves it
+        conn.execute(
+            text("UPDATE users SET failed_logins = :n, locked_until = :t WHERE id = :u"),
+            {"n": api.settings.login_max_failures, "t": api.clock() + timedelta(minutes=15), "u": locked_id},
         )
     before = {user: api.user_state(a.customer_id, user) for user in (a.user_id, locked_id)}
 

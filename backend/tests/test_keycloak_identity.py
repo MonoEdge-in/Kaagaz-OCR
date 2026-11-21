@@ -16,9 +16,8 @@ from sqlalchemy import Connection
 
 from kaagaz.api import keycloak_oidc
 from kaagaz.api.auth import CurrentUser
-from kaagaz.api.context import AppContext
 from kaagaz.api.errors import ApiError
-from kaagaz.api.routers.auth import prove_password
+from kaagaz.api.routers.auth import require_proof
 from kaagaz.db import keycloak, whatsapp
 from kaagaz.db.whatsapp import Linked
 from kaagaz.settings import Settings, SettingsError, _https_url
@@ -419,14 +418,15 @@ def test_signed_logout_rejects_nonce_and_accepts_valid_event(monkeypatch: pytest
     )
 
 
-def test_mapped_password_proof_requires_the_exact_action_cookie() -> None:
-    context = cast(AppContext, object())
+def test_a_risky_action_needs_the_exact_action_proof_and_no_password_counts() -> None:
     matching = cast(CurrentUser, SimpleNamespace(auth_authority="keycloak", reauth_action="locks"))
     stale_action = cast(CurrentUser, SimpleNamespace(auth_authority="keycloak", reauth_action="access"))
-    prove_password(context, matching, None, action="locks")
-    with pytest.raises(ApiError) as error:
-        prove_password(context, stale_action, None, action="locks")
-    assert error.value.code == "keycloak_reauth_required"
+    legacy = cast(CurrentUser, SimpleNamespace(auth_authority="legacy", reauth_action="locks"))
+    require_proof(matching, "locks")
+    for refused in (stale_action, legacy):
+        with pytest.raises(ApiError) as error:
+            require_proof(refused, "locks")
+        assert error.value.code == "keycloak_reauth_required"
 
 
 def test_settings_repr_does_not_include_confidential_keycloak_material() -> None:

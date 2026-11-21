@@ -7,7 +7,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ORG_PENDING, signInErrorMessage } from "@/app/login/signIn";
-import { checkEmail, signUpConfirming } from "@/app/signup/signUp";
 import { addedNotice } from "@/components/admin/logic";
 import { EmailBanner } from "@/components/shell/EmailBanner";
 import { orgStatus, waitingOnly } from "@/components/operator/logic";
@@ -66,7 +65,6 @@ describe("what the email screens say", () => {
     expect(linkError(gone, "confirm")).toBe(linkGone("confirm"));
     const form = read("app/reset-password/LinkPasswordForm.tsx");
     expect(form).toContain("linkError(caught, kind)");
-    expect(form).toContain('<Link href="/forgot-password">Forgot password</Link>');
   });
 
   it("says email is off on a 404, and logs an unexpected failure (#457 review)", () => {
@@ -113,16 +111,6 @@ describe("what the email screens say", () => {
       text: "Confirm your email. We sent a link to ramesh@firm.in.",
       button: "Send again",
     });
-    // Changed on purpose (#457 review): the screen names the address and how long the link
-    // works, and says when the link could not be sent.
-    expect(checkEmail("asha@sharma.example", true)).toEqual({
-      title: "Check your email",
-      text: "We sent a link to asha@sharma.example to confirm your address. The link works for 24 hours. Your organisation will then wait for approval.",
-    });
-    expect(checkEmail("asha@sharma.example", false)).toEqual({
-      title: "Confirm your email",
-      text: "We couldn't send the confirm link to asha@sharma.example. Try sending it again.",
-    });
     // Changed on purpose (#457 review): the typed temporary password is always kept, and a
     // failed invite is a problem notice.
     expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in", invited: true })).toEqual({
@@ -137,10 +125,6 @@ describe("what the email screens say", () => {
     });
   });
 
-  it("knows a sign-up that waits for its email", () => {
-    expect(signUpConfirming({ status: "confirm_email", sent: true })).toBe(true);
-    expect(signUpConfirming({ enrol_token: "t", secret: "s", otpauth_uri: "u" })).toBe(false);
-  });
 
   it("tells a waiting organisation why it cannot sign in", () => {
     // Changed on purpose (#457 review): who approves it, and the confirm link.
@@ -148,19 +132,13 @@ describe("what the email screens say", () => {
       "Your organisation is waiting for approval from the Kaagaz team. If you haven't confirmed your email yet, use the link we sent you.",
     );
     expect(signInErrorMessage(new ApiError(403, "org_pending", "anything"))).toBe(ORG_PENDING);
-    expect(read("app/login/ResendConfirm.tsx")).toContain("Send the confirm link again");
   });
 
-  it("offers the confirm link again on sign-up (#457 review)", () => {
-    const form = read("app/signup/SignUpForm.tsx");
-    expect(form).toContain("checkEmail(signUpBody(input).email, confirming.sent)");
-    expect(form).toContain("<ResendConfirm");
-  });
 });
 
 describe("the link and result screens (#457 review)", () => {
   it("move focus to the new heading when a form is replaced by its result", () => {
-    for (const path of ["app/forgot-password/ForgotForm.tsx", "app/reset-password/LinkPasswordForm.tsx", "app/signup/SignUpForm.tsx"]) {
+    for (const path of ["app/reset-password/LinkPasswordForm.tsx"]) {
       const form = read(path);
       expect(form, path).toContain("const focusOnMount = useCallback((element: HTMLHeadingElement | null) => element?.focus(), []);");
       expect(form, path).toMatch(/<h1 ref=\{focusOnMount\} tabIndex=\{-1\}/);
@@ -180,16 +158,12 @@ describe("the link and result screens (#457 review)", () => {
 });
 
 describe("one spelling (#457 review)", () => {
-  it("says email, never e-mail, on the sign-in, sign-up, forgot password and link pages", () => {
+  it("says email, never e-mail, on the sign-in and link pages", () => {
     const pages = [
-      "app/login/SignInForm.tsx",
-      "app/login/ProviderCodeStep.tsx",
+      "app/login/SignInPanel.tsx",
       "app/login/signIn.ts",
-      "app/forgot-password/ForgotForm.tsx",
       "app/reset-password/LinkPasswordForm.tsx",
       "app/email/confirm/ConfirmEmail.tsx",
-      "app/signup/SignUpForm.tsx",
-      "app/signup/signUp.ts",
     ];
     for (const path of pages) {
       const code = read(path)
@@ -197,7 +171,6 @@ describe("one spelling (#457 review)", () => {
         .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line));
       expect(code.filter((line) => /e-mail/i.test(line)), path).toEqual([]);
     }
-    expect(read("app/login/SignInForm.tsx")).toContain('"Email (temporary legacy sign-in)"');
   });
 });
 

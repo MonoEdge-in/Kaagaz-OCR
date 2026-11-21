@@ -11,31 +11,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { describeAction, whoText } from "@/components/admin/logic";
 import { ADMIN_TWO_STEP_HELP, OrgAdminTwoStepDialog, adminTwoStepConfirm } from "@/components/operator/AdminTwoStep";
 import { MENU_HELP } from "@/components/operator/OrganisationsView";
-import { TwoStepDialog } from "@/components/shell/TwoStepDialog";
-import { REQUIRED_TEXT, mayTurnOff } from "@/components/shell/twoStepAccount";
 import { getAdminTwoStep, setAdminTwoStep } from "@/lib/api";
-import type { Me, Organisation } from "@/lib/types";
+import type { Organisation } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 const ORG = { id: "org-1", name: "Sharma Traders" } as Organisation;
-
-const admin = (required: boolean | undefined): Me => ({
-  user: {
-    id: "u1",
-    email: "ramesh@example.com",
-    display_name: "Ramesh",
-    role: "admin",
-    must_change_password: false,
-    totp_enabled: true,
-    two_step_turned_off: false,
-    ...(required === undefined ? {} : { two_step_required: required }),
-    can_delete_forever: false,
-    email_confirmed: true,
-  },
-  customer: { id: "c1", name: "Sharma Traders" },
-  session: { scope: "admin" },
-  providers: [],
-});
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -85,20 +65,6 @@ describe("the super admin's switch", () => {
       { url: "/api/operator/orgs/org-1/admin-two-step", method: "GET", body: undefined },
       { url: "/api/operator/orgs/org-1/admin-two-step", method: "PUT", body: { required: true, code: "123456" } },
     ]);
-  });
-});
-
-describe("Account, while the organisation requires it", () => {
-  it("offers no Turn off and says why; deny by default, only true locks it", () => {
-    expect(mayTurnOff(admin(true))).toBe(false);
-    expect(mayTurnOff(admin(false))).toBe(true);
-    expect(mayTurnOff(admin(undefined))).toBe(true); // an older server: the server still refuses
-    const locked = renderToStaticMarkup(createElement(TwoStepDialog, { me: admin(true), onClose: () => {}, onDone: () => {} }));
-    expect(locked).toContain(REQUIRED_TEXT);
-    expect(locked).not.toMatch(/Turn off|Current password/);
-    const open = renderToStaticMarkup(createElement(TwoStepDialog, { me: admin(false), onClose: () => {}, onDone: () => {} }));
-    expect(open).toContain("Turn off");
-    expect(open).not.toContain(REQUIRED_TEXT);
   });
 });
 

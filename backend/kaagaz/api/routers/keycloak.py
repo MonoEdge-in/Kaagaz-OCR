@@ -1,13 +1,12 @@
-"""Keycloak login, explicit self-link/cutover, action reauthentication and signed logout."""
+"""Keycloak login (the only sign-in), action reauthentication and signed logout."""
 
-import dataclasses
 import hashlib
 import hmac
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -20,7 +19,6 @@ from kaagaz.api.auth import (
     CurrentUser,
     SessionClaims,
     User,
-    UserAllowGoogleLink,
     new_session,
     session_claims,
     set_confirm_cookie,
@@ -32,7 +30,6 @@ from kaagaz.api.auth import (
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter, client_address
-from kaagaz.api.routers.auth import _prove
 from kaagaz.api.twostep import unix
 from kaagaz.db import audit, keycloak, users
 from kaagaz.db.engine import Database
@@ -44,22 +41,14 @@ logger = logging.getLogger("kaagaz.api.keycloak")
 STATE_COOKIE = "kaagaz_keycloak_state"
 STATE_SECONDS = 10 * 60
 LOGIN = "/login"
-ACCOUNT = "/settings/sign-in"
+# What Keycloak's own pages can do for a signed-in person (``kc_action``).
+ACCOUNT_ACTIONS = frozenset({"UPDATE_PASSWORD", "CONFIGURE_TOTP"})
 CALLBACK_PATH = "/api/auth/keycloak/callback"
 BACKCHANNEL_PATH = "/api/auth/keycloak/backchannel-logout"
 _start_limits = RateLimiter(20)
 _callback_limits = RateLimiter(60)
-_link_limits = RateLimiter(10)
 _reauth_limits = RateLimiter(20)
 _backchannel_limits = RateLimiter(120)
-
-
-class LinkBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    password: str = Field(min_length=1, max_length=256)
-    code: str = Field(min_length=6, max_length=8)
-    next: str = Field(default=ACCOUNT, max_length=2048)
 
 
 class ReauthBody(BaseModel):
@@ -70,45 +59,22 @@ class ReauthBody(BaseModel):
 
 @router.get("/auth/keycloak/start")
 def login_start(request: Request, context: Context) -> RedirectResponse:
-    """Start sign-in for already linked users; this creates no identity mapping."""
+    """Start sign-in for already linked users; this creates no identity mapping. An optional
+    ``action`` (one of ``ACCOUNT_ACTIONS``) is passed to Keycloak as ``kc_action``, so its own page
+    for a new password or an authenticator app opens after the sign-in; any other value is refused."""
     _configured(context)
     _limit(_start_limits, client_address(request), "Too many sign-in attempts. Try again shortly.")
     next_path = _safe_next(request.query_params.get("next", "/"))
+    action = request.query_params.get("action")
+    if action is not None and action not in ACCOUNT_ACTIONS:
+        raise ApiError(400, "bad_request", "That account action is not available.")
     flow, state = _new_flow(context, purpose="login", next_path=next_path)
     url = keycloak_oidc.authorize_url(
         context.settings, state=state, nonce=flow.nonce, verifier=_open_verifier(context, flow, state)
     )
+    if action is not None:
+        url += ("&" if "?" in url else "?") + urlencode({"kc_action": action})
     response = RedirectResponse(url, status_code=303)
-    _set_flow_cookie(response, state, context.settings.cookie_secure)
-    _no_store(response)
-    return response
-
-
-@router.post("/auth/keycloak/link/start")
-def link_start(body: LinkBody, request: Request, user: UserAllowGoogleLink, context: Context) -> JSONResponse:
-    """Start a self-link only after the current legacy password and local MFA are proven."""
-    _configured(context)
-    if user.auth_authority != "legacy":
-        raise ApiError(403, "legacy_auth_disabled")
-    if not user.totp_enabled:
-        raise ApiError(403, "mfa_enrol_required")
-    _limit(_link_limits, f"user:{user.user_id}", "Too many account-link attempts. Try again shortly.")
-    _prove(context, user, body.password, body.code)
-    claims = session_claims(request, context.settings, unix(context.clock()))
-    if claims is None or claims.auth_source not in {"legacy_mfa", "legacy_google_mfa"}:
-        raise ApiError(401, "not_signed_in")
-    next_path = _safe_next(body.next)
-    flow, state = _new_flow(
-        context,
-        purpose="link",
-        next_path=next_path,
-        user=user,
-        claims=claims,
-    )
-    url = keycloak_oidc.authorize_url(
-        context.settings, state=state, nonce=flow.nonce, verifier=_open_verifier(context, flow, state)
-    )
-    response = JSONResponse({"url": url})
     _set_flow_cookie(response, state, context.settings.cookie_secure)
     _no_store(response)
     return response
@@ -203,9 +169,7 @@ def callback(request: Request, context: Context) -> RedirectResponse:
             response = _login(context, flow, identity)
         else:
             user, claims = _bound_user(request, context, flow)
-            if flow.purpose == "link":
-                response = _link(context, flow, identity, user, claims)
-            elif flow.purpose == "reauth":
+            if flow.purpose == "reauth":
                 response = _reauth(context, flow, identity, user, claims)
             else:
                 response = _failure(flow, "expired")
@@ -323,74 +287,6 @@ def _login(context: AppContext, flow: keycloak.FlowRow, identity: keycloak_oidc.
     return response
 
 
-def _link(
-    context: AppContext,
-    flow: keycloak.FlowRow,
-    identity: keycloak_oidc.Identity,
-    user: CurrentUser,
-    old_claims: SessionClaims,
-) -> RedirectResponse:
-    if user.auth_authority != "legacy" or not user.totp_enabled:
-        return _failure(flow, "refused")
-    if not _broker_policy_allowed(user, provider=identity.authentication_provider):
-        return _failure(flow, "organization_provider_policy_unconfigured")
-    now = context.clock()
-    scope = old_claims.scope
-    session: SessionClaims | None = None
-    migrated = dataclasses.replace(user, auth_authority="keycloak", session_version=user.session_version + 1)
-    with context.db.user(user.customer_id, user.user_id) as conn:
-        keycloak.stage_link(
-            conn,
-            identity.issuer,
-            identity.subject,
-            now=now,
-            expected_session_version=user.session_version,
-        )
-        version = keycloak.finalize_link(
-            conn,
-            identity.issuer,
-            identity.subject,
-            now=now,
-            expected_session_version=user.session_version,
-        )
-        migrated = dataclasses.replace(migrated, session_version=version)
-        session = new_session(
-            user_id=user.user_id,
-            customer_id=user.customer_id,
-            role=user.role,
-            scope=scope,
-            session_version=version,
-            settings=context.settings,
-            now=unix(now),
-            idle_hours=user.idle_hours,
-            auth_source="keycloak",
-            assurance=identity.acr,
-        )
-        if not keycloak.record_session(
-            conn,
-            identity.issuer,
-            identity.subject,
-            identity.session_id,
-            session.session_id,
-            expected_session_version=version,
-            expires_at=datetime.fromtimestamp(session.expires_at, UTC),
-        ):
-            raise ValueError("session changed or revoked")
-        audit.record(
-            conn,
-            user.customer_id,
-            actor_user_id=user.user_id,
-            action="auth.keycloak_linked",
-            target_type="user",
-            target_id=user.user_id,
-        )
-    if session is None:
-        return _failure(flow, "refused")
-    response = RedirectResponse(flow.next_path, status_code=303)
-    set_session_cookie(response, session, context.settings, now=unix(now))
-    return response
-
-
 def _reauth(
     context: AppContext,
     flow: keycloak.FlowRow,
@@ -462,16 +358,13 @@ def _bound_user(
         claims is None
         or (claims.customer_id, claims.user_id, claims.session_version, claims.session_id)
         != (flow.customer_id, flow.user_id, flow.session_version, flow.local_session_id)
-        or (flow.purpose == "link" and claims.auth_source not in {"legacy_mfa", "legacy_google_mfa"})
         or (flow.purpose == "reauth" and claims.auth_source != "keycloak")
     ):
         raise ValueError("flow browser session changed")
     user = _load_active(context.db, flow.customer_id, flow.user_id, claims.scope, claims.session_id)
     if user is None or user.role != claims.role or user.session_version != flow.session_version:
         raise ValueError("flow user changed")
-    if (flow.purpose == "link" and user.auth_authority != "legacy") or (
-        flow.purpose == "reauth" and user.auth_authority != "keycloak"
-    ):
+    if flow.purpose == "reauth" and user.auth_authority != "keycloak":
         raise ValueError("flow authority changed")
     if flow.purpose == "reauth" and claims.assurance != context.settings.keycloak_required_acr:
         raise ValueError("flow assurance changed")
@@ -621,8 +514,6 @@ def _clear_flow_cookie(response: Response, _secure: bool) -> None:
 
 def _failure(flow: keycloak.FlowRow, code: str) -> RedirectResponse:
     code = _safe_error(code)
-    if flow.purpose == "link":
-        return RedirectResponse(f"{ACCOUNT}?keycloak_error={code}", status_code=303)
     if flow.purpose == "reauth":
         separator = "&" if "?" in flow.next_path else "?"
         return RedirectResponse(f"{flow.next_path}{separator}reauth_error={code}", status_code=303)

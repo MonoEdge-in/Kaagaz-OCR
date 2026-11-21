@@ -3,9 +3,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LOST_PHONE_HELP } from "@/app/login/twoStep";
 import { conversationLoadText } from "@/components/chat/logic";
-import { waysLoadText } from "@/components/account/signInWays";
 import { OFFLINE_TEXT, OfflineBanner, isOffline } from "@/components/shell/OfflineBanner";
 import { STILL_LOOKING_AFTER_MS } from "@/components/chat/logic";
 import { STILL_LOADING_RETRY, STILL_LOADING_TEXT, StillLoading } from "@/components/shell/StillLoading";
@@ -220,11 +218,6 @@ describe("the operator's warning before the session ends (lib/operatorSession.ts
 });
 
 describe("the code step and the confirm page (A4)", () => {
-  it("tells someone without their phone what to do, at sign-in and after Google", () => {
-    expect(LOST_PHONE_HELP).toBe("Lost your phone? Ask another admin, or Kaagaz support, to reset your two-step sign-in.");
-    expect(read("app/login/SignInForm.tsx")).toContain("{askCode && <p className=\"hint\">{LOST_PHONE_HELP}</p>}");
-    expect(read("app/login/ProviderCodeStep.tsx")).toContain("{!expired && <p className=\"hint\">{LOST_PHONE_HELP}</p>}");
-  });
 
   it("says to open the email link again when confirming failed, as the page already took the token", () => {
     expect(confirmError(new TypeError("Failed to fetch"))).toBe(CONFIRM_NETWORK_FAILURE);
@@ -251,19 +244,6 @@ describe("load errors with a cause and Try again (A5)", () => {
     expect(chat.match(/setThreadError\(conversationLoadText\(error\)\);/g)).toHaveLength(2);
   });
 
-  it("Ways to sign in says why, with Try again (not when Google is switched off)", () => {
-    // Changed on purpose (#468 review, PT2/UX9): the one network wording (NETWORK_FAILURE).
-    expect(waysLoadText(new TypeError("Failed to fetch"))).toBe(
-      "Could not load your ways to sign in. Could not reach Kaagaz. Check your internet connection and try again.",
-    );
-    expect(waysLoadText(new ApiError(500, "error", "x"))).toBe(
-      "Could not load your ways to sign in. Kaagaz had a problem. Try again in a minute.",
-    );
-    const ways = read("components/account/WaysToSignIn.tsx");
-    expect(ways).toContain("setFailure(off ? { text: OFF, retry: false } : { text: waysLoadText(caught), retry: true });");
-    expect(ways).toMatch(/\{failure\.retry && \([\s\S]*setAttempt\(\(n\) => n \+ 1\);[\s\S]*Try again/);
-    expect(ways).toContain("}, [attempt, limited, managed]);");
-  });
 });
 
 describe("a page left on purpose is not stopped by the upload prompt (lib/sessionChannel.ts)", () => {

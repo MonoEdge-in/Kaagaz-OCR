@@ -737,6 +737,7 @@ const ACTION_WORDS: Record<string, string> = {
   "org.approved": "Organisation approved", // #457: a sign-up approved by the Kaagaz team
   "customer.enable": "Organisation turned on",
   "customer.disable": "Organisation turned off",
+  "customer.clear_legacy_credentials": "Old passwords and two-step codes cleared",
   "chat.ask": "Asked a question",
   "chat.rename": "Renamed a conversation",
   "chat.delete": "Deleted a conversation",

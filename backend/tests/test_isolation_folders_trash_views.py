@@ -281,6 +281,7 @@ def test_an_admin_deletes_forever_a_trashed_folder_holding_files_they_cant_open(
     admin = org.people["admin"]
     _trash(org, org.folders["finance"])
     # Changed on purpose (PR 9b, #606): an Admin deletes forever files they can't see, with the rule on.
+    Api.of(admin).prove(admin, "delete_forever")  # 21 Nov 2026: after the company sign-in
     reply = admin.client.delete(
         f"/api/documents/trash/folders/{org.folders['finance']}/permanent", headers=CSRF
     )

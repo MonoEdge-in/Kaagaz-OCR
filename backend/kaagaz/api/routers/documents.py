@@ -175,7 +175,6 @@ from kaagaz.api.auth import (
     CurrentUser,
     Reviewer,
     User,
-    deletes_forever_by_password,
     require_admin_session,
 )
 from kaagaz.api.context import AppContext, get_context
@@ -2458,8 +2457,6 @@ def delete_document_forever(document_id: uuid.UUID, user: CanDeleteForever, cont
         details: dict[str, audit.DetailValue] = {"versions": versions}
         if user.role != "admin":
             details["by_grant"] = True
-        elif deletes_forever_by_password(user):
-            details["by_password"] = True
         audit.record(
             conn,
             customer_id,

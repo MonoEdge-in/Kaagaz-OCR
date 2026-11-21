@@ -1,8 +1,7 @@
 """The emailed links (#457 phase 0). Every route here is 404 while email is off
 (``EMAIL_ENABLED``, on the router itself, so a route added later cannot forget it).
 
-* ``GET /auth/email``: ``{"enabled": true}``, so the sign-in page shows "Forgot password?"
-  only while email is on (404, like every route here, while it is off).
+* ``GET /auth/email``: ``{"enabled": true}`` (404, like every route here, while email is off).
 * ``POST /auth/email/confirm`` {token}: the link from "Confirm your email" proves the
   e-mail (``users.email_verified_at``), audited ``auth.email_confirmed``. ``{"ok": true,
   "pending": bool}``: ``pending`` while the organisation is a sign-up waiting for approval.
@@ -11,22 +10,9 @@
   ``{"ok": true, "sent": bool}``: ``sent`` is false when the email failed.
 * ``POST /auth/email/resend-confirm`` {email} (no session): "Send the link again" for a
   sign-up's admin, who cannot sign in while their organisation is pending. Always 202 with
-  the same words, and the work happens after the reply, as ``/auth/forgot``'s (and with its
-  limits). A new confirm link goes only to an enabled user whose e-mail is not confirmed
-  and whose organisation is ``pending``.
-* ``POST /auth/forgot`` {email}: always 202 with the same words, so it never shows who has
-  an account. The lookup and the email happen after the reply (a background task), so an
-  unknown address takes the same path and time. At most LINKS_PER_HOUR_ADDRESS a visitor
-  address with ``resend-confirm`` (A1) and LINKS_PER_HOUR_SITE for the whole site (429), and
-  FORGOTS_PER_HOUR_EMAIL an e-mail from one address (the rest are answered the same and send
-  nothing; per address, so a stranger never uses up a person's own links). Only organisation
-  users are found (``kaagaz_login_lookup``), never an operator, and never a disabled user.
-* ``POST /auth/reset`` {token, new_password}: the password from a reset link. It clears a
-  temporary password, proves the e-mail, raises the session version (every browser is
-  signed out), ends the user's other open links, removes their connected accounts (as an
-  admin's reset: someone may have taken the account; audited ``auth.identity_unlinked``
-  {count}), is audited ``auth.password_reset`` and sends a security notice. No session
-  starts: the page sends them to sign in, and an admin still types their code.
+  the same words, and the work happens after the reply (a background task, so an unknown
+  address takes the same path and time). A new confirm link goes only to an enabled user whose
+  e-mail is not confirmed and whose organisation is ``pending``.
 * ``POST /auth/invite/accept`` {token, new_password}: the same for an invite from an admin
   (``routers/admin.py``), audited ``auth.invite_accepted``.
 
@@ -66,20 +52,17 @@ router = APIRouter(dependencies=[Depends(require_email)])
 Context = Annotated[AppContext, Depends(get_context)]
 
 LINK_GONE = "That link has expired or was already used."
-FORGOT_SENT = "If that email has an account, we've sent a link."
 RESEND_SENT = "If that email is waiting to be confirmed, we've sent a new link."
 # PROVISIONAL limits. Each visitor has their own address (uvicorn takes it from Caddy's
 # X-Forwarded-For, backend/Dockerfile), so the per-address cap does the work (A1, 7 Nov 2026) and
 # the site-wide one, 5x what it was, only stops a spread-out flood.
 CONFIRMS_PER_HOUR = 3
-LINKS_PER_HOUR_ADDRESS = 10  # forgot and resend-confirm together
+LINKS_PER_HOUR_ADDRESS = 10  # resend-confirm
 LINKS_PER_HOUR_SITE = 1500
 FORGOTS_PER_HOUR_EMAIL = 3
 SITE = "site"  # the one key of the site-wide limits
 confirm_limits = RateLimiter(CONFIRMS_PER_HOUR, window_seconds=3600)
 link_address_limits = RateLimiter(LINKS_PER_HOUR_ADDRESS, window_seconds=3600)
-forgot_site_limits = RateLimiter(LINKS_PER_HOUR_SITE, window_seconds=3600)
-forgot_email_limits = RateLimiter(FORGOTS_PER_HOUR_EMAIL, window_seconds=3600)
 resend_site_limits = RateLimiter(LINKS_PER_HOUR_SITE, window_seconds=3600)
 resend_email_limits = RateLimiter(FORGOTS_PER_HOUR_EMAIL, window_seconds=3600)
 TOO_MANY_LINKS = "We sent a few links already. Try again in an hour."
@@ -133,24 +116,6 @@ def resend_confirm(
     address = client_address(request)
     _link_later(background, context, body.email, address, "confirm", resend_site_limits, resend_email_limits)
     return {"message": RESEND_SENT}
-
-
-@router.post("/auth/forgot", status_code=202)
-def forgot_password(
-    body: ForgotBody, request: Request, background: BackgroundTasks, context: Context
-) -> dict[str, str]:
-    address = client_address(request)
-    _link_later(background, context, body.email, address, "reset", forgot_site_limits, forgot_email_limits)
-    return {"message": FORGOT_SENT}
-
-
-@router.post("/auth/reset")
-def reset_password(body: NewPasswordBody, background: BackgroundTasks, context: Context) -> dict[str, bool]:
-    link = _set_password(context, body, "reset", "auth.password_reset")
-    notice = emails.password_was_reset
-    who = (context, link.customer_id, link.user_id)
-    emails.after(background, "password_reset", emails.notify, *who, "password_reset", notice)
-    return {"ok": True}
 
 
 @router.post("/auth/invite/accept")

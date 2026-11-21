@@ -6,15 +6,10 @@ Account, WhatsApp (signed in, any role). The bot messages first:
 
 * ``GET /whatsapp/me``: ``state``: ``off`` (WhatsApp is off for the organisation: its Admin's switch
   or the super admin's), ``not_allowed`` (their role), ``none`` or ``connected``, with the number's
-  last 4 digits and when it was connected and last used; ``google``: they sign in with Google only,
-  so they confirm with Google; ``totp``: the code is asked too.
-* ``POST /whatsapp/prove`` {password, code?}: the password again, plus the code for anyone with
-  two-step sign-in on (``routers/auth.py`` ``_prove``: counted like a sign-in, as Google connect's);
-  ``POST /whatsapp/prove/google`` {code?}: only for one who signs in with Google only (else 403
-  ``not_google_only``), at most GOOGLE_PROOFS_AN_HOUR (their audit rows, 429): the code first
-  (two-step on), then ``{url}`` to Google asking for a fresh sign-in (``max_age=0``), whose callback
-  (``routers/oidc.py``) checks it is their own connection, signed in within 5 minutes. Either sets
-  the proof cookie: 10 minutes, this person at this session version; signing out clears it.
+  last 4 digits and when it was connected and last used.
+* The proof: a fresh Keycloak sign-in for ``whatsapp`` (``routers/keycloak.py`` ``reauth_start``),
+  which sets the proof cookie too: 10 minutes, this person at this session version; signing out
+  clears it.
 * ``POST /whatsapp/codes`` {number, agreed, way}: with the proof (else 403 ``proof_needed``), the
   "I agree" tick (400), a number (400), WhatsApp on for the organisation and the role (403 ``off``,
   ``not_allowed``). Nothing says whether the number is connected anywhere. ``way``:
@@ -49,11 +44,12 @@ The Admin (``/admin/whatsapp``):
 
 * ``GET``: the switches (WhatsApp, the roles that may connect, Management, voice notes, uploads),
   ``available`` (the super admin's switches) and who is connected, when, and when last used.
-* ``PUT`` {enabled, roles, management, voice, uploads, rules_confirmed?, password?}: all at once.
+* ``PUT`` {enabled, roles, management, voice, uploads, rules_confirmed?}: all at once.
   Turning WhatsApp on needs the super admin's switch (409 ``not_available``) and the Admin's tick
   "our organisation's data rules allow WhatsApp" (400 without; stored with when and who, and in the
   audit row); it is emailed to Management and the other Admins. Turning it on, or ticking Admins or
-  Management, needs the Admin's password (400 without, counted like a sign-in). A change is audited
+  Management, needs the Admin's Keycloak proof for ``whatsapp`` (403 ``keycloak_reauth_required``).
+  A change is audited
   (``settings.whatsapp_on``, ``_off`` or ``settings.whatsapp``, the values in its details), then the
   sweep ends at once the connections no longer allowed.
 * ``POST /admin/whatsapp/{user_id}/disconnect``: ends that person's connection (audited by the
@@ -64,7 +60,6 @@ The "you were disconnected" message goes after the reply; one that fails is logg
 never the number), as the channel's.
 """
 
-import dataclasses
 import hmac
 import logging
 import re
@@ -73,34 +68,22 @@ from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
 
 from kaagaz.adapters.whatsapp import MetaWhatsApp, WhatsAppError, masked_email
-from kaagaz.api import emails, oidc
+from kaagaz.api import emails
 from kaagaz.api.auth import (
     WHATSAPP_PROOF_COOKIE,
     AdminSession,
     CurrentUser,
     User,
     require_admin_session,
-    set_flow_cookie,
-    set_whatsapp_proof_cookie,
     whatsapp_proved,
 )
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.routers.admin import MAX_PASSWORD
-from kaagaz.api.routers.auth import (
-    MAX_CODE,
-    _check_current_password,
-    _prove,
-    _prove_code,
-    _succeeded,
-    prove_password,
-)
-from kaagaz.api.routers.oidc import CONNECTS_PER_HOUR, WHATSAPP_PAGE, _new_flow
+from kaagaz.api.routers.auth import require_proof
 from kaagaz.api.routers.whatsapp import require_whatsapp
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import unix
@@ -118,7 +101,6 @@ _log = logging.getLogger("kaagaz.api.whatsapp")
 Context = Annotated[AppContext, Depends(get_context)]
 
 CODES_AN_HOUR = 3  # codes one account may ask for
-GOOGLE_PROOFS_AN_HOUR = CONNECTS_PER_HOUR  # as Google connect's
 MAX_TRIES = 5  # wrong codes for one code (whatsapp_link_codes.tries)
 _SPACING = re.compile(r"[\s().-]")
 ROLES = ("member", "reviewer", "admin")
@@ -135,27 +117,10 @@ TOO_MANY_TRIES = "Too many wrong codes. Ask for a new one."
 NUMBER_TAKEN = "This WhatsApp is already connected to another Kaagaz account."
 NOT_CONNECTED = "No WhatsApp number is connected."
 NOT_AVAILABLE = "WhatsApp isn't available for your organisation yet."
-ON_NEEDS_PROOF = "Type your Kaagaz password to turn WhatsApp on."
 RULES_NOT_CONFIRMED = "Confirm that your organisation's data rules allow WhatsApp."
-TICK_NEEDS_PROOF = "Type your Kaagaz password to let Admins or Management use WhatsApp."
 SEND_FIRST = "Ask for a code on WhatsApp first."
-NOT_GOOGLE_ONLY = "Confirm with your Kaagaz password."
-TOO_MANY_PROOFS = "Too many tries. Try again in an hour."
 WELCOME_NOT_SENT = "Kaagaz couldn't message this number on WhatsApp, so it isn't connected. Try again later."
 _REFUSALS = {"off": OFF, "not_allowed": NOT_ALLOWED}
-
-
-class ProveBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    password: str = Field(min_length=1, max_length=MAX_PASSWORD)
-    code: str | None = Field(default=None, max_length=MAX_CODE)
-
-
-class GoogleProveBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    code: str | None = Field(default=None, max_length=MAX_CODE)
 
 
 class CodesBody(BaseModel):
@@ -181,7 +146,6 @@ class SettingsBody(BaseModel):
     voice: bool
     uploads: bool
     rules_confirmed: bool = False  # "our organisation's data rules allow WhatsApp", to turn it on
-    password: str | None = Field(default=None, min_length=1, max_length=MAX_PASSWORD)
 
 
 # --- Account, WhatsApp ---------------------------------------------------------------------------
@@ -192,8 +156,7 @@ def my_whatsapp(user: User, context: Context) -> dict[str, Any]:
     with context.db.user(user.customer_id, user.user_id) as conn:
         refused = wa.refused(conn, user.customer_id, user.user_id)
         mine = wa.mine(conn, user.customer_id, user.user_id)
-    google = _google_only(context, user)
-    reply: dict[str, Any] = {"state": refused or "none", "google": google, "totp": user.totp_enabled}
+    reply: dict[str, Any] = {"state": refused or "none"}
     if mine is not None:  # shown even when it is no longer allowed: Disconnect stays
         reply |= {
             "state": "connected",
@@ -202,41 +165,6 @@ def my_whatsapp(user: User, context: Context) -> dict[str, Any]:
             "last_used_at": None if mine.last_used_at is None else iso(mine.last_used_at),
         }
     return reply
-
-
-@router.post("/whatsapp/prove")
-def prove(body: ProveBody, user: User, context: Context) -> JSONResponse:
-    if user.auth_authority == "keycloak":
-        raise ApiError(403, "legacy_auth_disabled")
-    _prove(context, user, body.password, body.code)
-    response = JSONResponse({"proved": True})
-    set_whatsapp_proof_cookie(response, user, context.settings, now=unix(context.clock()))
-    return response
-
-
-@router.post("/whatsapp/prove/google")
-def prove_with_google(body: GoogleProveBody, user: User, context: Context) -> JSONResponse:
-    if user.auth_authority == "keycloak":
-        raise ApiError(403, "legacy_auth_disabled")
-    if not _google_only(context, user):
-        raise ApiError(403, "not_google_only", NOT_GOOGLE_ONLY)
-    with context.db.user(user.customer_id, user.user_id) as conn:
-        if wa.google_proofs_this_hour(conn, user.customer_id, user.user_id) >= GOOGLE_PROOFS_AN_HOUR:
-            raise ApiError(429, "rate_limited", TOO_MANY_PROOFS)
-        audit.record(
-            conn, user.customer_id, actor_user_id=user.user_id, action="whatsapp.google_proof",
-            target_type="user", target_id=user.user_id, subject_user_id=user.user_id,
-        )  # fmt: skip
-    _prove_code(context, user, body.code)
-    now = unix(context.clock())
-    provider = oidc.PROVIDERS["google"]
-    flow = dataclasses.replace(_new_flow(provider, WHATSAPP_PAGE, now, user), mode="whatsapp")
-    url = oidc.authorize_url(
-        provider, context.settings, state=flow.state, nonce=flow.nonce, verifier=flow.verifier, max_age=0
-    )
-    response = JSONResponse({"url": url})
-    set_flow_cookie(response, flow, context.settings, now=now)
-    return response
 
 
 @router.post("/whatsapp/codes")
@@ -343,21 +271,10 @@ def disconnect(user: User, context: Context) -> dict[str, Any]:
     return my_whatsapp(user, context)
 
 
-def _google_only(context: AppContext, user: CurrentUser) -> bool:
-    """The person signs in with Google only (#507): they confirm with Google, not the password."""
-    return (
-        oidc.enabled(context.settings, "google")
-        and user.google_on
-        and user.google_only
-        and user.google_linked
-    )
-
-
 def _require_proof(request: Request, user: CurrentUser, context: AppContext) -> None:
     proof = request.cookies.get(WHATSAPP_PROOF_COOKIE) or ""
-    if user.auth_authority == "keycloak" and user.reauth_action != "whatsapp":
-        raise ApiError(403, "proof_needed", PROOF_NEEDED)
-    if not whatsapp_proved(proof, user, context.settings.session_secret, unix(context.clock())):
+    secret, now = context.settings.session_secret, unix(context.clock())
+    if user.reauth_action != "whatsapp" or not whatsapp_proved(proof, user, secret, now):
         raise ApiError(403, "proof_needed", PROOF_NEEDED)
 
 
@@ -491,16 +408,7 @@ def save_whatsapp(
         if not body.rules_confirmed:
             raise ApiError(400, "bad_request", RULES_NOT_CONFIRMED)
     if turned_on or ticked:
-        if user.auth_authority == "keycloak":
-            prove_password(context, user, body.password, action="whatsapp")
-        else:
-            if body.password is None:
-                raise ApiError(400, "bad_request", ON_NEEDS_PROOF if turned_on else TICK_NEEDS_PROOF)
-            _succeeded(
-                context,
-                _check_current_password(context, user, body.password, context.clock()),
-                signed_in=True,
-            )
+        require_proof(user, "whatsapp")
     wanted = {
         "enabled": body.enabled,
         "management": body.management,

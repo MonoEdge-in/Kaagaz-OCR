@@ -4,7 +4,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aiChangesToKeep, orgDraftOver, settingsDraft, settingsFromDraft } from "@/components/admin/logic";
-import { waysLoadText } from "@/components/account/signInWays";
 import { ASK_DRAFT, askDraft, askHref, askWithWordsHref, conversationLoadText } from "@/components/chat/logic";
 import { operatorErrorMessage } from "@/components/operator/logic";
 import { storyFailure } from "@/components/viewer/story";
@@ -372,10 +371,9 @@ describe("PT2 / UX9: errorWords takes any failure; one network wording everywher
     }
   });
 
-  it("the departments' load error says what and why; the conversation and ways-to-sign-in loads too", () => {
+  it("the departments' load error says what and why; the conversation load too", () => {
     expect(read("components/admin/DepartmentsPanel.tsx")).toContain("setError(`The departments did not load. ${errorWords(caught)}`)");
     expect(conversationLoadText(new TypeError("x"))).toBe(`Could not load this conversation. ${NETWORK_FAILURE}`);
-    expect(waysLoadText(new TypeError("x"))).toBe(`Could not load your ways to sign in. ${NETWORK_FAILURE}`);
   });
 });
 

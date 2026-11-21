@@ -1,16 +1,14 @@
 """Connecting a WhatsApp number (#603, PRD 7 section 15 W3), on the fake WhatsApp. The bot messages
-first: the proof (the password, and the code with two-step on; Google for one who signs in with Google
-only), the number and the tick, Meta's code template to that number, the code typed back (once, for
-10 minutes, 5 tries, only the newest, only for its own number), at most 3 codes an hour an account and
-5 a day a number; "already connected" only after the right code, naming no one; the welcome, the audit
-row and the security email. The second way ("Link <code>" from the phone, then "Connect?" on the
-screen). Disconnect. A number not connected told once a day, BLOCK, and WhatsApp's owner change. The
-Admin's switches (the password to turn it on, the roles and the extra ticks, audited, emailed), who is
-connected, and the Admin's Disconnect."""
+first: the proof (a fresh company sign-in for ``whatsapp``, ``Api.prove``), the number and the tick,
+Meta's code template to that number, the code typed back (once, for 10 minutes, 5 tries, only the
+newest, only for its own number), at most 3 codes an hour an account and 5 a day a number; "already
+connected" only after the right code, naming no one; the welcome, the audit row and the security
+email. The second way ("Link <code>" from the phone, then "Connect?" on the screen). Disconnect. A
+number not connected told once a day, BLOCK, and WhatsApp's owner change. The Admin's switches (the
+company sign-in to turn it on, the roles and the extra ticks, audited, emailed), who is connected, and
+the Admin's Disconnect."""
 
 import threading
-import urllib.parse
-import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import Any
@@ -20,17 +18,13 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.adapters.email import MemoryMailer
-from kaagaz.api.middleware import RateLimiter
-from kaagaz.api.routers import oidc as oidc_router
 from kaagaz.api.routers.whatsapp import GO_BACK
 from kaagaz.api.routers.whatsapp_account import NUMBER_TAKEN
 from kaagaz.channel.loop import NOT_CONNECTED
 from kaagaz.channel.numbers import number_hash
-from kaagaz.db import google_rules
 from kaagaz.db import whatsapp as wa
 from kaagaz.db.engine import Database
-from tests.oidc_fake import FakeGoogle, google_settings, use_google
-from tests.test_api_support import CSRF, PASSWORD, Api, Signed, call, wrong_code
+from tests.test_api_support import CSRF, Api, Signed, call
 from tests.whatsapp_fake import (
     BUSINESS_NUMBER,
     NUMBER_KEY,
@@ -88,12 +82,11 @@ class _World:
                 _on(self.db, customer)
         return self.api.sign_in(customer, role)
 
-    def prove(self, signed: Signed, password: str = PASSWORD) -> httpx.Response:
-        body: dict[str, str] = {"password": password}
-        if signed.totp_secret is not None:
-            self.api.clock.advance(30)  # a fresh code: the sign-in used this step's
-            body["code"] = self.api.code(signed.totp_secret)
-        return signed.client.post("/api/whatsapp/prove", json=body, headers=CSRF)
+    def prove(self, signed: Signed) -> httpx.Response:
+        """The company sign-in's proof for WhatsApp (what its callback leaves), answered 200 as the
+        step before it did."""
+        self.api.prove(signed, "whatsapp")
+        return httpx.Response(200)
 
     def ask(self, signed: Signed, number: str, way: str = "sent", agreed: bool = True) -> httpx.Response:
         body = {"number": number, "agreed": agreed, "way": way}
@@ -151,7 +144,7 @@ def test_connecting_a_number_the_bot_messaging_first(db: Database, fake: WhatsAp
     world = _World(db, fake, mailer)
     member = world.person()
     assert member.client.get("/api/auth/me").json()["whatsapp"] is True
-    assert world.me(member) == {"state": "none", "google": False, "totp": False}
+    assert world.me(member) == {"state": "none"}
     number = new_number()
     typed = f"{number[:2]} {number[2:5]}-{number[5:]}"  # as people type it
     asked = world.proved_ask(member, typed)
@@ -194,11 +187,7 @@ def test_a_code_needs_the_proof_the_tick_and_a_number(db: Database, fake: WhatsA
     world = _World(db, fake)
     member = world.person()
     assert _error(world.ask(member, new_number()))[:2] == (403, "proof_needed")
-    wrong = world.prove(member, password="not the password!!")
-    assert _error(wrong) == (400, "bad_request", "Your current password is not right.")
-    assert world.api.user_state(member.customer_id, member.user_id)["failed_logins"] == 1
     assert world.prove(member).status_code == 200
-    assert world.api.user_state(member.customer_id, member.user_id)["failed_logins"] == 0
     assert _error(world.ask(member, new_number(), agreed=False))[0] == 400
     for bad in ("12", "+0 555 1234 567", "phone"):
         assert _error(world.ask(member, bad))[0] == 400
@@ -211,18 +200,6 @@ def test_a_code_needs_the_proof_the_tick_and_a_number(db: Database, fake: WhatsA
     world.api.clock.advance(10 * 60 + 1)
     assert _error(world.ask(member, new_number()))[:2] == (403, "proof_needed")
     assert fake.sent() == []
-
-
-def test_two_step_people_give_the_code_too(db: Database, fake: WhatsAppFake) -> None:
-    world = _World(db, fake)
-    admin = world.api.new_admin()
-    _on(db, admin.customer_id, roles=("member", "reviewer", "admin"))
-    assert admin.totp_secret is not None
-    no_code = admin.client.post("/api/whatsapp/prove", json={"password": PASSWORD}, headers=CSRF)
-    assert _error(no_code)[0] == 400
-    wrong = {"password": PASSWORD, "code": wrong_code(world.api, admin.totp_secret)}
-    assert _error(admin.client.post("/api/whatsapp/prove", json=wrong, headers=CSRF))[0] == 400
-    assert world.proved_ask(admin, new_number()).json()["sent"] is True
 
 
 @pytest.mark.parametrize(
@@ -640,91 +617,15 @@ def test_a_connection_made_after_an_owner_change_outlives_its_late_notice(
     assert _ended(db, link) == (None,)
 
 
-# --- Google, for one who signs in with Google only ------------------------------------------------------
-
-
-@pytest.fixture
-def google(monkeypatch: pytest.MonkeyPatch) -> FakeGoogle:
-    monkeypatch.setattr(oidc_router, "connect_limits", RateLimiter(1000, window_seconds=3600))
-    return use_google(monkeypatch)
-
-
-def test_google_proves_it_is_them_only_with_their_own_fresh_sign_in(
-    db: Database, fake: WhatsAppFake, google: FakeGoogle
-) -> None:
-    world = _World(db, fake)
-    settings = google_settings(**{name: getattr(world.api.settings, name) for name in _WHATSAPP_SETTINGS})
-    api = Api(db, settings=settings)
-    customer, _ = api.customer()
-    _on(db, customer)
-    member, colleague, reviewer = (api.sign_in(customer, role) for role in ("member", "member", "reviewer"))
-    now = int(api.clock().timestamp())
-
-    def connect_google(signed: Signed) -> str:
-        """Their own Google account, approved (its email is theirs): its subject."""
-        subject = f"made-up-sub-{uuid.uuid4().hex}"
-        started = signed.client.post(
-            "/api/auth/oidc/google/connect", json={"password": PASSWORD}, headers=CSRF
-        )
-        query = google.sign_in(started.json()["url"], subject, signed.email, now)
-        linked = signed.client.get("/api/auth/oidc/google/callback", params=query, follow_redirects=False)
-        assert "connected=google" in linked.headers["location"]
-        return subject
-
-    subject, theirs = connect_google(member), connect_google(colleague)
-    connect_google(reviewer)
-    with api.db.customer(customer) as conn:  # members sign in with Google only; reviewers not
-        google_rules.save_rules(
-            conn, customer, allowed_roles=["member", "reviewer", "admin"], only_roles=["member"], domains=[]
-        )
-    assert member.client.get("/api/whatsapp/me").json()["google"] is True
-    not_only = reviewer.client.post("/api/whatsapp/prove/google", json={}, headers=CSRF)
-    assert _error(not_only)[:2] == (403, "not_google_only")  # they confirm with their password
-
-    def proof(sub: str, **claims: Any) -> str:
-        started = member.client.post("/api/whatsapp/prove/google", json={}, headers=CSRF)
-        assert started.status_code == 200, started.text
-        assert "max_age=0" in started.json()["url"]
-        query = google.sign_in(started.json()["url"], sub, member.email, now, **claims)
-        back = member.client.get("/api/auth/oidc/google/callback", params=query, follow_redirects=False)
-        return urllib.parse.urlsplit(back.headers["location"]).geturl()
-
-    fresh = {"auth_time": now - 10}
-    assert proof(f"made-up-sub-{uuid.uuid4().hex}", **fresh) == "/settings/whatsapp?error=not_yours"
-    assert proof(theirs, **fresh) == "/settings/whatsapp?error=not_yours"  # a colleague's, approved
-    assert proof(subject) == "/settings/whatsapp?error=not_fresh"  # no auth_time
-    assert proof(subject, auth_time=now - 301) == "/settings/whatsapp?error=not_fresh"
-    asked = {"number": new_number(), "agreed": True}
-    assert _error(member.client.post("/api/whatsapp/codes", json=asked, headers=CSRF))[:2] == (
-        403,
-        "proof_needed",
-    )
-    assert proof(subject, **fresh) == "/settings/whatsapp?proved=google"
-    assert member.client.post("/api/whatsapp/codes", json=asked, headers=CSRF).json()["sent"] is True
-    # The hourly limit is counted in the database (one audit row a start).
-    starts = "SELECT count(*) FROM audit_log WHERE actor_user_id = :u AND action = 'whatsapp.google_proof'"
-    assert _owner(db, starts, {"u": member.user_id}) == [(5,)]
-    for _ in range(5):
-        member.client.post("/api/whatsapp/prove/google", json={}, headers=CSRF)
-    assert _error(member.client.post("/api/whatsapp/prove/google", json={}, headers=CSRF))[0] == 429
-
-
-_WHATSAPP_SETTINGS = (
-    "whatsapp_enabled",
-    "whatsapp_graph_url",
-    "whatsapp_phone_number_id",
-    "whatsapp_access_token",
-    "whatsapp_app_secret",
-    "whatsapp_verify_token",
-    "whatsapp_number_key",
-    "whatsapp_business_number",
-)
-
-
 # --- the Admin's --------------------------------------------------------------------------------------
 
 
-def _save(admin: Signed, password: str | None = None, **changes: Any) -> httpx.Response:
+def _save(admin: Signed, proved: bool = False, **changes: Any) -> httpx.Response:
+    """The Admin's PUT; ``proved``: after the company sign-in for ``whatsapp`` (``Api.prove``)."""
+    if proved:
+        Api.of(admin).prove(admin, "whatsapp")
+    else:
+        admin.client.cookies.delete("kaagaz_keycloak_proof", path="/api")  # each save stands on its own
     body = {
         "enabled": False,
         "roles": ["member", "reviewer"],
@@ -733,8 +634,6 @@ def _save(admin: Signed, password: str | None = None, **changes: Any) -> httpx.R
         "uploads": False,
     }
     body |= changes
-    if password is not None:
-        body["password"] = password
     return admin.client.put("/api/admin/whatsapp", json=body, headers=CSRF)
 
 
@@ -747,7 +646,7 @@ def _settings_audit(db: Database, customer: str) -> list[tuple[Any, ...]]:
     )
 
 
-def test_the_admin_turns_it_on_with_the_password_and_management_and_admins_are_told(
+def test_the_admin_turns_it_on_with_the_company_sign_in_and_management_and_admins_are_told(
     db: Database, fake: WhatsAppFake
 ) -> None:
     mailer = MemoryMailer()
@@ -767,15 +666,10 @@ def test_the_admin_turns_it_on_with_the_password_and_management_and_admins_are_t
         "available": True,
         "people": [],
     }
-    no_tick = _save(admin, PASSWORD, enabled=True)
+    no_tick = _save(admin, True, enabled=True)
     assert _error(no_tick)[2] == "Confirm that your organisation's data rules allow WhatsApp."
-    assert (
-        _error(_save(admin, enabled=True, rules_confirmed=True))[2]
-        == "Type your Kaagaz password to turn WhatsApp on."
-    )
-    assert _error(_save(admin, "not the password!!", enabled=True, rules_confirmed=True))[0] == 400
-    assert world.api.user_state(admin.customer_id, admin.user_id)["failed_logins"] == 1
-    on = _save(admin, PASSWORD, enabled=True, rules_confirmed=True)
+    assert _error(_save(admin, enabled=True, rules_confirmed=True))[:2] == (403, "keycloak_reauth_required")
+    on = _save(admin, True, enabled=True, rules_confirmed=True)
     confirmed = (
         "SELECT rules_confirmed_by::text, rules_confirmed_at IS NOT NULL FROM whatsapp_org_settings"
         " WHERE customer_id = :c"
@@ -787,8 +681,8 @@ def test_the_admin_turns_it_on_with_the_password_and_management_and_admins_are_t
     assert {other_admin.email, boss_email} <= {row[0] for row in told}
     assert sorted(sent.to for sent in mailer.sent) == [row[0] for row in told]
     assert {sent.subject for sent in mailer.sent} == {"WhatsApp was turned on for your organisation"}
-    assert _save(admin, enabled=True).status_code == 200  # unchanged: no password, no audit
-    assert _save(admin, PASSWORD, enabled=True, voice=False, roles=["reviewer", "member", "admin"]).json()[
+    assert _save(admin, enabled=True).status_code == 200  # unchanged: no proof, no audit
+    assert _save(admin, True, enabled=True, voice=False, roles=["reviewer", "member", "admin"]).json()[
         "roles"
     ] == [
         "member",
@@ -815,7 +709,7 @@ def test_it_turns_on_only_where_the_super_admin_leaves_it(db: Database, fake: Wh
                " VALUES (:c, 'whatsapp', false)",
            {"c": admin.customer_id})  # fmt: skip
     assert admin.client.get("/api/admin/whatsapp").json()["available"] is False
-    assert _error(_save(admin, PASSWORD, enabled=True, rules_confirmed=True))[:2] == (409, "not_available")
+    assert _error(_save(admin, True, enabled=True, rules_confirmed=True))[:2] == (409, "not_available")
 
 
 def test_switching_off_or_narrowing_the_roles_ends_those_connections_at_once(
@@ -888,15 +782,16 @@ def test_a_codes_number_is_never_logged(
     assert number[1:] not in caplog.text and number[-7:] not in caplog.text
 
 
-def test_ticking_admins_or_management_later_asks_for_the_password(db: Database, fake: WhatsAppFake) -> None:
+def test_ticking_admins_or_management_later_asks_for_the_company_sign_in(
+    db: Database, fake: WhatsAppFake
+) -> None:
     world = _World(db, fake)
     admin = world.api.new_admin()
     _on(db, admin.customer_id)
     for tick in ({"roles": ["member", "reviewer", "admin"]}, {"management": True}):
         refused = _save(admin, enabled=True, **tick)
-        assert _error(refused)[2] == "Type your Kaagaz password to let Admins or Management use WhatsApp."
-        assert _error(_save(admin, "not the password!!", enabled=True, **tick))[0] == 400
-        assert _save(admin, PASSWORD, enabled=True, **tick).status_code == 200
+        assert _error(refused)[:2] == (403, "keycloak_reauth_required")
+        assert _save(admin, True, enabled=True, **tick).status_code == 200
         assert _save(admin, enabled=True).status_code == 200  # taking it away needs none
 
 

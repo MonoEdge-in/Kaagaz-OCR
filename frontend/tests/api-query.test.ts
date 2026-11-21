@@ -1,22 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  adminEnrol,
-  changePassword,
-  confirmPassword,
   getUploadLimits,
-  login,
   logoutEverywhere,
   onSessionEnded,
   query,
   resetUser2fa,
   resetUserPassword,
   setDeleteForever,
-  signUp,
-  startTwoStep,
-  turnOffTwoStep,
   unlockUser,
 } from "@/lib/api";
-import type { AdminUser, Me } from "@/lib/types";
+import type { AdminUser } from "@/lib/types";
 
 describe("query", () => {
   it("is empty when nothing is set", () => {
@@ -60,22 +53,6 @@ describe("query", () => {
 // The sign-in and admin calls, checked against the contract (plan 4 WP1.3a and
 // 9.5): the method, the path, the CSRF header and the exact JSON body.
 describe("sign-in and admin calls", () => {
-  const ME: Me = {
-    user: {
-      id: "u1",
-      email: "asha@sharma.in",
-      display_name: "Asha",
-      role: "admin",
-      must_change_password: false,
-      totp_enabled: false,
-      two_step_turned_off: false,
-      can_delete_forever: false,
-      email_confirmed: true, // #457
-    },
-    customer: { id: "c1", name: "Sharma Traders" },
-    session: { scope: "admin" },
-    providers: [], // #457 review: the sign-in providers switched on
-  };
   const USER: AdminUser = {
     id: "u2",
     email: "ravi@sharma.in",
@@ -121,103 +98,22 @@ describe("sign-in and admin calls", () => {
 
   // Changed on purpose (one sign-in page, 16 Oct 2026): /auth/admin/login and turning
   // 2FA on or off in Admin, Settings went; admins sign in and set up at /auth/login.
-  it("signs in at the one sign-in, sending the code only when there is one", async () => {
-    reply(200, ME);
-    expect(await login("asha@sharma.in", "a long password", "123456")).toEqual(ME);
-    await login("asha@sharma.in", "a long password");
-    expect(sent(0)).toMatchObject({
-      url: "/api/auth/login",
-      method: "POST",
-      headers: { "X-Requested-With": "kaagaz" },
-      body: { email: "asha@sharma.in", password: "a long password", code: "123456" },
-    });
-    expect(sent(1).body).toEqual({ email: "asha@sharma.in", password: "a long password" });
-  });
 
-  it("returns sign-up's two-step set-up as it is", async () => {
-    const setup = { enrol_token: "tok", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };
-    reply(201, setup);
-    const body = { organisation_name: "Sharma", name: "Asha", email: "asha@sharma.in", password: "p" };
-    expect(await signUp(body)).toEqual(setup);
-    expect(sent(0)).toMatchObject({ url: "/api/auth/signup", method: "POST", body });
-  });
 
-  it("keeps a 403 mfa_enrol_required's set-up in details", async () => {
-    const setup = { enrol_token: "tok", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };
-    reply(403, { error: { code: "mfa_enrol_required", message: "Set up two-step.", details: setup } });
-    await expect(login("asha@sharma.in", "a long password")).rejects.toMatchObject({
-      status: 403,
-      code: "mfa_enrol_required",
-      details: setup,
-    });
-  });
 
-  it("allows or stops Delete forever, and confirms a granted user's password", async () => {
+  it("allows or stops Delete forever", async () => {
     reply(200, USER);
     await setDeleteForever("u2", true);
     const url = "/api/admin/users/u2/delete-forever";
     expect(sent(0)).toMatchObject({ url, method: "PUT", body: { allowed: true } });
-    vi.unstubAllGlobals();
-    reply(204);
-    await expect(confirmPassword("a long password")).resolves.toBeUndefined();
-    const body = { password: "a long password" };
-    expect(sent(1)).toMatchObject({ url: "/api/auth/confirm-password", method: "POST", body });
   });
 
-  it("finishes enrolment with the token and the code", async () => {
-    reply(200, ME);
-    expect(await adminEnrol("tok", "654321")).toEqual(ME);
-    expect(sent(0)).toMatchObject({
-      url: "/api/auth/admin/enrol",
-      method: "POST",
-      body: { enrol_token: "tok", code: "654321" },
-    });
-  });
 
   // Tushar, 30 Oct 2026: an admin turns their own two-step sign-in off, and on again.
   // Changed on purpose (#457 with #460): on the routes every role uses.
-  it("turns the admin's own two-step off with the password and a code", async () => {
-    const off = { ...ME, user: { ...ME.user, totp_enabled: false, two_step_turned_off: true } };
-    reply(200, off);
-    expect(await turnOffTwoStep("a long password", "123456")).toEqual(off);
-    expect(sent(0)).toMatchObject({
-      url: "/api/auth/2fa/off",
-      method: "POST",
-      headers: { "X-Requested-With": "kaagaz" },
-      body: { password: "a long password", code: "123456" },
-    });
-  });
 
-  it("starts turning it on again with the password, for the set-up enrol finishes", async () => {
-    const setup = { enrol_token: "tok", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };
-    reply(200, setup);
-    expect(await startTwoStep("a long password")).toEqual(setup);
-    expect(sent(0)).toMatchObject({
-      url: "/api/auth/2fa/start",
-      method: "POST",
-      headers: { "X-Requested-With": "kaagaz" },
-      body: { password: "a long password" },
-    });
-  });
 
-  it("keeps the server's plain words when turning off is refused", async () => {
-    reply(409, { error: { code: "conflict", message: "Two-step sign-in is already off." } });
-    await expect(turnOffTwoStep("a long password", "123456")).rejects.toMatchObject({
-      status: 409,
-      message: "Two-step sign-in is already off.",
-    });
-  });
 
-  it("changes the password with the current and the new one", async () => {
-    reply(200, ME);
-    await changePassword("temporary one", "my own new password");
-    expect(sent(0)).toMatchObject({
-      url: "/api/auth/password",
-      method: "POST",
-      headers: { "X-Requested-With": "kaagaz" },
-      body: { current_password: "temporary one", new_password: "my own new password" },
-    });
-  });
 
   it("signs out everywhere with an empty body", async () => {
     reply(204);
@@ -275,11 +171,11 @@ describe("upload limits and a session that ends", () => {
     expect(ended).toHaveBeenCalledTimes(1);
   });
 
-  it("does not for a wrong password or any other refusal", async () => {
+  it("does not for any other refusal", async () => {
     const ended = vi.fn();
     onSessionEnded(ended);
     reply(401, { error: { code: "bad_credentials", message: "Wrong e-mail or password." } });
-    await expect(login("asha@sharma.in", "a long password")).rejects.toBeInstanceOf(Error);
+    await expect(getUploadLimits()).rejects.toBeInstanceOf(Error);
     reply(403, { error: { code: "admin_session_required", message: "Only admins can use this." } });
     await expect(getUploadLimits()).rejects.toMatchObject({ status: 403 });
     expect(ended).not.toHaveBeenCalled();

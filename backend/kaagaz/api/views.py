@@ -15,7 +15,7 @@ from sqlalchemy import Connection, RowMapping
 
 from kaagaz.answering.clarify import without_resume
 from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
-from kaagaz.api.auth import CurrentUser, needs_google_link
+from kaagaz.api.auth import CurrentUser
 from kaagaz.db import audit, listing, word_review
 from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db.folder_upload_items import ItemRow
@@ -1234,8 +1234,6 @@ def me_json(
     user: CurrentUser,
     *,
     email_on: bool,
-    providers: Sequence[str],
-    recent_connections: Sequence[dict[str, str]] = (),
     access: tuple[bool, Sequence[str], bool, bool],
     whatsapp: bool = False,
     keycloak_enabled: bool = False,
@@ -1243,18 +1241,11 @@ def me_json(
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
     member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
     ``email_confirmed`` false shows the "Confirm your email" banner (#457), so it is true
-    while email is off: nothing could be sent to confirm it. ``recent_connections``: the
-    "Google connected on 30 Oct." banner's ``{provider, linked_at}`` (#457 phase 1; only
-    /auth/me and /auth/session read them, every other reply leaves the list empty).
-    ``providers``: those switched on (``oidc.enabled_providers``), so Account shows "Ways to
-    sign in" only while one is. ``google_link_required`` (#507): the limited session, whose
-    password lets the user only connect Google; ``google_unchecked`` (#507 review): in it, their
-    connected Google account is from before its domain was checked, so they sign in with Google
-    once instead. ``access`` (PRD 7, #601): the person's Management and the departments they head,
-    so the screens show a Head's menus, and whether they are in a live department (``in_department``,
-    PR 10c: "Ask your admin for access" when not), and whether the organisation has ever kept
-    something to some people (``walled``, PR 11c: that message only once it has). ``whatsapp``
-    (#603): only while WHATSAPP_ENABLED is on, so Account shows WhatsApp."""
+    while email is off: nothing could be sent to confirm it. ``access`` (PRD 7, #601): the person's
+    Management and the departments they head, so the screens show a Head's menus, and whether they
+    are in a live department (``in_department``, PR 10c: "Ask your admin for access" when not),
+    and whether the organisation has ever kept something to some people (``walled``, PR 11c: that message
+    only once it has). ``whatsapp`` (#603): only while WHATSAPP_ENABLED is on, so Account shows WhatsApp."""
     return {
         "access": {
             "management": access[0],
@@ -1277,13 +1268,10 @@ def me_json(
             and (keycloak_enabled or (user.two_step_required and user.role == "admin")),
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
             "email_confirmed": user.email_confirmed or not email_on,
-            "google_link_required": needs_google_link(user, "google" in providers),
-            "google_unchecked": needs_google_link(user, "google" in providers) and user.google_unchecked,
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},
-        "recent_connections": list(recent_connections),
-        "providers": list(providers),
+        "providers": [],  # Google sign-in is gone (21 Nov 2026); the admin screens still read the list
         "keycloak_enabled": keycloak_enabled,
         **({"whatsapp": True} if whatsapp else {}),
     }

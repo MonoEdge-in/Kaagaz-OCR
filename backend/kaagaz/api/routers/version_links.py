@@ -10,12 +10,12 @@ the locks).
 * ``POST /documents/link-versions/preview {document_ids, order, current_id}``: the confirm step
   (V13, V15): ``{latest: {id, name}, folder: {id, path} | null, held, versions, losing, gaining}``
   (people as ``{id, name}``), from one snapshot; nothing is locked or written.
-* ``POST /documents/link-versions {document_ids, order, current_id, password?}``: 2 to 20 files,
+* ``POST /documents/link-versions {document_ids, order, current_id}``: 2 to 20 files,
   ``order`` each of them once (oldest first), ``current_id`` among them (the one Ask answers from).
   ``{link_id, document}``, the latest's summary. 409 ``in_trash``, ``locked``, ``not_ready``,
-  ``already_versions`` or ``changed``; 403 ``password_required`` when the link opens a file to the
+  ``already_versions`` or ``changed``; 403 ``keycloak_reauth_required`` when the link opens a file to the
   Admin linking it (a wall opened to themselves, as a folder move).
-* ``POST /documents/{id}/link-versions/undo {password?}``: Undo of the newest link of the file's
+* ``POST /documents/{id}/link-versions/undo``: Undo of the newest link of the file's
   family, while it holds exactly the versions the link left; the file's summary, or ``{id, undone:
   true}`` once it is back where the person can't see it. 409
   ``not_linked``, ``not_newest``, ``folder_gone``, ``locked`` or ``in_trash``.
@@ -36,7 +36,7 @@ from kaagaz.api.auth import CurrentUser, User, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.locked import UNLOCK_FIRST
-from kaagaz.api.routers.access import Password, _password_given, _self_grant
+from kaagaz.api.routers.access import _self_grant
 from kaagaz.api.views import document_summary
 from kaagaz.db import access as access_sql
 from kaagaz.db import listing, trash
@@ -72,16 +72,6 @@ class LinkBody(BaseModel):
     document_ids: list[uuid.UUID] = Field(min_length=2, max_length=MAX_GROUP)
     order: list[uuid.UUID] = Field(min_length=2, max_length=MAX_GROUP)
     current_id: uuid.UUID
-
-
-class LinkWithPassword(LinkBody):
-    password: Password = None
-
-
-class UndoBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    password: Password = None
 
 
 def _allowed(conn: Connection, user: CurrentUser) -> None:
@@ -178,10 +168,9 @@ def preview_link(body: LinkBody, user: User, context: Context) -> dict[str, Any]
 
 
 @router.post("/documents/link-versions")
-def link_versions(body: LinkWithPassword, user: User, context: Context) -> dict[str, Any]:
+def link_versions(body: LinkBody, user: User, context: Context) -> dict[str, Any]:
     """Link these files as versions of one file (V13, V14, V15)."""
     ids, order, current = _asked(body)
-    _password_given(context, user, body.password)  # holding no connection (access.py)
 
     def transaction() -> dict[str, Any]:
         with context.db.user(user.customer_id, user.user_id) as conn:
@@ -189,7 +178,7 @@ def link_versions(body: LinkWithPassword, user: User, context: Context) -> dict[
             _seen(conn, user, ids)
             plan = links_sql.prepare(conn, user.customer_id, ids, order, current)
             if user.user_id in _audience(conn, user, plan.moves)[1]:
-                _self_grant(user, body.password)
+                _self_grant(user)
             link = links_sql.apply(conn, user.customer_id, plan, by=user.user_id)
             return {"link_id": link, "document": _summary(conn, context, user, current)}
 
@@ -197,13 +186,9 @@ def link_versions(body: LinkWithPassword, user: User, context: Context) -> dict[
 
 
 @router.post("/documents/{document_id}/link-versions/undo")
-def undo_link(
-    document_id: uuid.UUID, user: User, context: Context, body: UndoBody | None = None
-) -> dict[str, Any]:
+def undo_link(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
     """Undo the link (V16): every version back as it was; this file's summary."""
     target = str(document_id)
-    password = None if body is None else body.password
-    _password_given(context, user, password)
 
     def transaction() -> dict[str, Any]:
         with context.db.user(user.customer_id, user.user_id) as conn:
@@ -211,7 +196,7 @@ def undo_link(
             _seen(conn, user, [target])
             plan = links_sql.prepare_undo(conn, user.customer_id, target)
             if user.user_id in _audience(conn, user, plan.moves)[1]:
-                _self_grant(user, password)
+                _self_grant(user)
             links_sql.apply_undo(conn, user.customer_id, plan, by=user.user_id)
             if not listing.documents_seen(conn, user.customer_id, [target]):
                 return {"id": target, "undone": True}  # review (#658): back where the person can't see it

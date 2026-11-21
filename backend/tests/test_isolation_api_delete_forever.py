@@ -7,7 +7,7 @@ import pytest
 
 from kaagaz.api.auth import CONFIRM_COOKIE
 from kaagaz.db.engine import Database
-from tests.test_api_support import CSRF, PASSWORD, Api
+from tests.test_api_support import CSRF, Api
 
 pytestmark = pytest.mark.db
 
@@ -32,13 +32,12 @@ def test_a_grant_never_crosses_customers(db: Database) -> None:
     for admin, member in ((a, a_member), (b, b_member)):
         grant = f"/api/admin/users/{member.user_id}/delete-forever"
         assert admin.client.put(grant, json={"allowed": True}, headers=CSRF).status_code == 200
-        confirm = {"password": PASSWORD}
-        assert member.client.post("/api/auth/confirm-password", json=confirm, headers=CSRF).status_code == 204
+        api.prove(member, "delete_forever")
     assert b_member.client.delete(f"/api/documents/{binned}/permanent", headers=CSRF).status_code == 404
     b_member.client.cookies.delete(CONFIRM_COOKIE)
     b_member.client.cookies.set(CONFIRM_COOKIE, a_member.client.cookies[CONFIRM_COOKIE])
     refused = b_member.client.delete(f"/api/documents/{binned}/permanent", headers=CSRF)
-    assert refused.json()["error"]["code"] == "password_confirm_required"
+    assert refused.json()["error"]["code"] == "keycloak_reauth_required"
     assert api.storage.has(a.customer_id, binned)
 
     assert a_member.client.delete(f"/api/documents/{binned}/permanent", headers=CSRF).status_code == 204

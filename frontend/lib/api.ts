@@ -126,7 +126,6 @@ import type {
   ScopeBody,
   SessionTimeout,
   SheetCells,
-  SignUpConfirming,
   SourcePin,
   Speed,
   SpeedName,
@@ -135,8 +134,6 @@ import type {
   Tag,
   TaskLevel,
   TestModel,
-  TwoStepSetup,
-  WaysToSignIn,
   WhatsAppAdmin,
   WhatsAppCode,
   WhatsAppMe,
@@ -317,23 +314,12 @@ export const pageImageUrl = (documentId: string, pageNo: number) =>
 
 // --- auth ----------------------------------------------------------------------
 
-/** The one sign-in (16 Oct 2026). An admin also sends the code once the server asks
- * for it (401 code_required), or sets two-step up first (403 mfa_enrol_required). */
-export const login = (email: string, password: string, code?: string) =>
-  request<Me>("POST", "/auth/login", { email, password, ...(code === undefined ? {} : { code }) });
 export const logout = () => request<void>("POST", "/auth/logout");
-/** Whether anyone may create an organisation at /signup (SELF_SIGNUP_ENABLED). */
-export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/signup");
-/** A new organisation and its first admin. The reply is the two-step set-up (admins must
- * have it); the first code (adminEnrol) signs in as that admin. With email on (#457), the
- * email is confirmed first and the organisation waits for approval: SignUpConfirming. */
-export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
-  request<TwoStepSetup | SignUpConfirming>("POST", "/auth/signup", body);
 /** Who is signed in, 200 either way (issue 378): a signed-out visit logs no expected 401. */
 export const currentSession = () =>
   request<
     | { signed_in: true; me: Me }
-    | { signed_in: false; providers?: string[]; keycloak_enabled?: boolean }
+    | { signed_in: false; keycloak_enabled?: boolean }
   >("GET", "/auth/session");
 
 /** Start action-bound Keycloak verification. The backend owns the provider URL and callback. */
@@ -341,31 +327,6 @@ export const startKeycloakReauth = (
   action: "locked_open" | "delete_forever" | "whatsapp" | "access" | "locks",
   next: string,
 ) => request<{ url: string }>("POST", `/auth/keycloak/reauth/${action}/start`, { next });
-/** Prove the local password and MFA before linking this legacy account to Keycloak. */
-export const startKeycloakLink = (password: string, code: string, next: string) =>
-  request<{ url: string }>("POST", "/auth/keycloak/link/start", { password, code, next });
-
-// Ways to sign in (#457 phase 1): every route is 404 while no provider is switched on.
-/** After a provider for anyone with two-step sign-in on: the code (the second-step cookie). */
-export const oidcCode = (code: string) => request<Me>("POST", "/auth/oidc/code", { code });
-/** "isn't connected": the provider's email, kept out of the address, read once. */
-export const oidcNotice = () => request<{ email: string | null }>("GET", "/auth/oidc/notice");
-export const identities = () => request<WaysToSignIn>("GET", "/auth/identities");
-/** The password (and the code with two-step sign-in on), then the provider's address to open. */
-export const connectProvider = (provider: string, password: string, code?: string) =>
-  request<{ url: string }>("POST", `/auth/oidc/${encodeURIComponent(provider)}/connect`, {
-    password,
-    ...(code === undefined ? {} : { code }),
-  });
-/** Disconnect with the password, or cancel a waiting one with none (#457 review). The reply is
- * the new list. */
-export const removeIdentity = (id: string, password?: string) =>
-  request<WaysToSignIn>(
-    "POST",
-    `/auth/identities/${encodeURIComponent(id)}/remove`,
-    password === undefined ? {} : { password },
-  );
-
 // Kaagaz on WhatsApp (#603): Account, WhatsApp. The proof (password and code, or Google) is kept
 // 10 minutes in a cookie only /api/whatsapp reads.
 export const whatsappMe = () => request<WhatsAppMe>("GET", "/whatsapp/me");
@@ -385,24 +346,6 @@ export const phoneCodeState = () =>
 export const confirmPhoneCode = () => request<WhatsAppMe>("POST", "/whatsapp/codes/phone/confirm");
 export const disconnectWhatsApp = () => request<WhatsAppMe>("POST", "/whatsapp/disconnect");
 
-/** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
-export const adminEnrol = (enrolToken: string, code: string) =>
-  request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
-/** Account, Two-step sign-in, Turn on (#457, any role): the password, then the set-up key; the
- * first code (adminEnrol) turns it on. */
-export const startTwoStep = (password: string) => request<TwoStepSetup>("POST", "/auth/2fa/start", { password });
-/** Turn off, for anyone: the password and a current code. An admin's stays off until they turn
- * it on again (Tushar, 30 Oct 2026). */
-export const turnOffTwoStep = (password: string, code: string) =>
-  request<Me>("POST", "/auth/2fa/off", { password, code });
-/** With two-step sign-in on, the code too (#457). */
-export const changePassword = (current: string, next: string, code?: string) =>
-  request<Me>("POST", "/auth/password", {
-    current_password: current,
-    new_password: next,
-    ...(code === undefined ? {} : { code }),
-  });
-
 // Email (#457 phase 0): every route is 404 while the server's email is off.
 /** Resolves while email is on (the sign-in page's "Forgot password?"); rejects with 404 when off. */
 export const emailOpen = () => request<{ enabled: boolean }>("GET", "/auth/email");
@@ -414,8 +357,6 @@ export const sendConfirmEmail = () => request<{ ok: true; sent: boolean }>("POST
 /** "Send the link again" with no session (a waiting sign-up's admin): always the same reply. */
 export const resendConfirmEmail = (email: string) =>
   request<{ message: string }>("POST", "/auth/email/resend-confirm", { email });
-/** Always the same reply, whoever the email belongs to. */
-export const forgotPassword = (email: string) => request<{ message: string }>("POST", "/auth/forgot", { email });
 export const resetPassword = (token: string, newPassword: string) =>
   request<{ ok: boolean }>("POST", "/auth/reset", { token, new_password: newPassword });
 export const acceptInvite = (token: string, newPassword: string) =>

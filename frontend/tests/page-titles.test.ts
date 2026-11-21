@@ -17,7 +17,6 @@ const TITLES: Record<string, string> = {
   "app/operator/(console)/page.tsx": "Platform",
   "app/login/page.tsx": "Sign in",
   "app/operator/login/page.tsx": "Sign in",
-  "app/signup/page.tsx": "Create an account",
 };
 
 describe("page titles", () => {

@@ -19,7 +19,7 @@ from kaagaz.db.runs import PgRuns
 from kaagaz.pipeline import FinishedRun
 from tests.settings_factory import make_settings
 from tests.test_api_model_choice import add_model, allow
-from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, TestClient, answer_json
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, answer_json
 from tests.test_api_usage import NOW, THIS_MONTH, add_spend, set_budget
 from tests.test_runs_db import totals
 
@@ -70,9 +70,6 @@ def test_admin_lists_and_creates_users_and_the_new_user_can_sign_in(db: Database
     assert api.audit_actions(admin.customer_id)[-1] == "user.create"
     listed = admin.client.get("/api/admin/users").json()["items"]
     assert user["id"] in [item["id"] for item in listed]
-    login = api.client().post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
-    assert login.status_code == 200
-    assert login.json()["user"]["must_change_password"] is True
     with db.customer(admin.customer_id) as conn:
         details: dict[str, object] = conn.execute(
             text("SELECT details FROM audit_log WHERE action = 'user.create'")
@@ -133,7 +130,7 @@ def test_bad_new_users_are_400(db: Database, body: dict[str, str]) -> None:
 
 
 @pytest.mark.db
-def test_update_role_disable_and_password(db: Database) -> None:
+def test_update_role_and_disable(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
     member = api.sign_in(admin.customer_id, "member")
@@ -145,25 +142,10 @@ def test_update_role_disable_and_password(db: Database) -> None:
     assert promoted.json()["role"] == "reviewer"
     assert member.client.get("/api/auth/me").status_code == 401  # the old session named the old role
 
-    new_password = "a brand new password"
-    changed = admin.client.patch(
-        f"/api/admin/users/{member.user_id}", json={"password": new_password}, headers=CSRF
-    )
-    assert changed.json()["role"] == "reviewer"  # untouched fields stay
-    assert changed.json()["must_change_password"] is True
-    login = api.client().post(
-        "/api/auth/login", json={"email": member.email, "password": new_password}, headers=CSRF
-    )
-    assert login.status_code == 200
-    assert login.json()["user"]["must_change_password"] is True
-
     disabled = admin.client.patch(f"/api/admin/users/{member.user_id}", json={"disabled": True}, headers=CSRF)
     assert disabled.json()["disabled"] is True
-    again = api.client().post(
-        "/api/auth/login", json={"email": member.email, "password": new_password}, headers=CSRF
-    )
-    assert again.status_code == 401
-    assert api.audit_actions(admin.customer_id).count("user.update") == 3
+    assert member.client.get("/api/auth/me").status_code == 401  # the old session ends with it
+    assert api.audit_actions(admin.customer_id).count("user.update") == 2
 
 
 @pytest.mark.db
@@ -201,17 +183,6 @@ def test_an_admin_cannot_lock_themselves_out(db: Database, body: dict[str, objec
     reply = admin.client.patch(f"/api/admin/users/{admin.user_id}", json=body, headers=CSRF)
     assert reply.status_code == 400
     assert admin.client.get("/api/auth/me").json()["user"]["role"] == "admin"
-
-
-@pytest.mark.db
-def test_an_admin_may_change_their_own_password(db: Database) -> None:
-    admin = Api(db).new_admin()
-    reply = admin.client.patch(
-        f"/api/admin/users/{admin.user_id}",
-        json={"password": "my new long password", "role": "admin"},
-        headers=CSRF,
-    )
-    assert reply.status_code == 200
 
 
 @pytest.mark.db
@@ -474,12 +445,13 @@ def test_a_run_at_00_30_ist_on_the_1st_counts_in_the_new_month(db: Database) -> 
 
 
 def _lock(api: Api, email: str) -> None:
-    """Changed on purpose (A2, 7 Nov 2026): one address locks only itself, so the account's own
-    lock takes ACCOUNT_MAX_FAILURES from several addresses."""
-    for n in range(ACCOUNT_MAX_FAILURES // api.settings.login_max_failures):
-        client = TestClient(api.app, client=(f"203.0.113.{n}", 50000))
-        for _ in range(api.settings.login_max_failures):
-            client.post("/api/auth/login", json={"email": email, "password": WRONG}, headers=CSRF)
+    """The account is locked for an hour, as the operator's sign-in lock leaves it (there is no
+    other sign-in with a lock any more)."""
+    with api.db.engine.begin() as conn:
+        conn.execute(
+            text("UPDATE users SET failed_logins = :n, locked_until = :until WHERE email = :e"),
+            {"n": ACCOUNT_MAX_FAILURES, "until": api.clock() + timedelta(minutes=60), "e": email.lower()},
+        )
 
 
 @pytest.mark.db
@@ -519,56 +491,7 @@ def test_unlock(db: Database) -> None:
     assert reply.status_code == 200, reply.text
     assert set(reply.json()) == ADMIN_USER_FIELDS
     assert reply.json()["locked_until"] is None
-    login = api.client().post(
-        "/api/auth/login", json={"email": member_email, "password": PASSWORD}, headers=CSRF
-    )
-    assert login.status_code == 200
-    assert api.audit_actions(admin.customer_id)[-2:] == ["user.unlock", "auth.login"]
-
-
-@pytest.mark.db
-def test_reset_password_gives_a_temporary_password_and_ends_sessions(db: Database) -> None:
-    api = Api(db)
-    admin = api.new_admin()
-    member = api.sign_in(admin.customer_id, "member")
-
-    reply = admin.client.post(f"/api/admin/users/{member.user_id}/reset-password", headers=CSRF)
-
-    assert reply.status_code == 200, reply.text
-    body = reply.json()
-    # Changed on purpose (#457 phase 1): a reset clears connected accounts, and says so; and
-    # (#507 review) the Google tag that may change with them.
-    assert set(body["user"]) == ADMIN_USER_FIELDS | GOOGLE_TAG
-    assert body["user"]["must_change_password"] is True
-    assert len(body["temporary_password"]) == 16
-    assert member.client.get("/api/auth/me").status_code == 401
-    assert api.audit_actions(admin.customer_id)[-1] == "user.reset_password"
-    with db.customer(admin.customer_id) as conn:
-        details: dict[str, object] = conn.execute(
-            text("SELECT details FROM audit_log WHERE action = 'user.reset_password'")
-        ).scalar_one()
-    assert body["temporary_password"] not in json.dumps(details)
-
-
-@pytest.mark.db
-def test_reset_2fa_clears_the_code_so_the_next_sign_in_sets_it_up_again(db: Database) -> None:
-    api = Api(db)
-    admin = api.new_admin()
-    colleague = api.enrol_admin(admin.customer_id)
-
-    reply = admin.client.post(f"/api/admin/users/{colleague.user_id}/reset-2fa", headers=CSRF)
-
-    assert reply.status_code == 200, reply.text
-    assert set(reply.json()) == ADMIN_USER_FIELDS
-    assert reply.json()["totp_enabled"] is False
-    state = api.user_state(admin.customer_id, colleague.user_id)
-    assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
-    assert (
-        api.audit_actions(admin.customer_id)[-1] == "auth.totp_reset"
-    )  # Changed on purpose (#457): the spec's
-    signed_in = api.admin_login(api.client(), colleague.email)  # MFA required (0035): no session yet
-    assert (signed_in.status_code, signed_in.json()["error"]["code"]) == (403, "mfa_enrol_required")
-    assert "set-cookie" not in signed_in.headers
+    assert api.audit_actions(admin.customer_id)[-1] == "user.unlock"
 
 
 @pytest.mark.db

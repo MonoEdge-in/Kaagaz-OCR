@@ -59,7 +59,7 @@ const account = (initial: ThemeChoice) =>
       createElement(
         PaletteProvider,
         { initial: "kaagaz" } as Parameters<typeof PaletteProvider>[0],
-        createElement(AccountMenu, { me, onChanged: noop }),
+        createElement(AccountMenu, { me }),
       ),
     ),
   );

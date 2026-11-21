@@ -28,7 +28,7 @@ from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderNotFound
 from kaagaz.db.sqlstate import CHECK_VIOLATION, INSUFFICIENT_PRIVILEGE, sqlstate
 from tests.db_support import insert_document, insert_folder, name_session, rule_off, wait_until_blocked
-from tests.test_api_support import CSRF, PASSWORD, Api
+from tests.test_api_support import CSRF, Api, after_proof
 from tests.test_isolation_access_api import _email_api
 from tests.test_isolation_access_views import Org, _app, _seen, _walled
 from tests.test_operator_auth_db import _owner
@@ -210,6 +210,7 @@ def test_an_admins_folder_delete_sends_every_file_to_trash_and_counts_them(db: D
 def test_an_admins_delete_forever_deletes_the_files_they_cant_see(db: Database) -> None:
     org = _walled(Api(db))
     _trash_folder(org, org.folders["finance"])
+    Api.of(org.people["admin"]).prove(org.people["admin"], "delete_forever")
     reply = org.people["admin"].client.delete(
         f"/api/documents/trash/folders/{org.folders['finance']}/permanent", headers=CSRF
     )
@@ -583,7 +584,7 @@ _TRASH_KEPT = "/api/documents/{d}/kept/trash"
 
 
 def _post(signed: Any, path: str, body: Any = None) -> tuple[int, Any]:
-    reply = signed.client.post(path, json=body, headers=CSRF)
+    reply = signed.client.post(path, json=after_proof(signed, path, body), headers=CSRF)
     return reply.status_code, (reply.json() if reply.content else None)
 
 
@@ -615,10 +616,10 @@ def test_an_admin_moves_and_trashes_a_file_they_cant_see_from_the_names_list(db:
     people = {str(row[0]): str(row[0]) for row in _owner(db, active, {"c": org.c})}
     before = {name: fin in _seen(_app(db), org.c, user) for name, user in people.items()}
     refused = _post(admin, _MOVE_KEPT.format(d=fin), {"folder_id": loose})
-    assert (refused[0], refused[1]["error"]["code"]) == (403, "password_required")
+    assert (refused[0], refused[1]["error"]["code"]) == (403, "keycloak_reauth_required")
     assert _audited(db, org.c, "document.move", fin) == []
     assert _owner(db, where, {"d": fin}) == [(finance,)]
-    moved = _post(admin, _MOVE_KEPT.format(d=fin), {"folder_id": loose, "password": PASSWORD})
+    moved = _post(admin, _MOVE_KEPT.format(d=fin), {"folder_id": loose, "proved": True})
     assert moved == (200, {"id": fin, "folder_id": loose})
     assert _owner(db, where, {"d": fin}) == [(loose,)]
     after = {name: fin in _seen(_app(db), org.c, user) for name, user in people.items()}
@@ -700,7 +701,7 @@ def test_a_names_list_move_meeting_a_trash_meanwhile_is_409_and_writes_nothing(
         original(conn, customer_id)
 
     lock = "SELECT id FROM documents WHERE family_id = :f ORDER BY (id <> family_id), id FOR NO KEY UPDATE"
-    body = {"folder_id": org.folders["sales"], "password": PASSWORD}
+    body = {"folder_id": org.folders["sales"], "proved": True}
     with ThreadPoolExecutor(max_workers=1) as pool:
         with db.customer(org.c) as conn:
             conn.execute(text(lock), {"f": fin}).all()

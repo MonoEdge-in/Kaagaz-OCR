@@ -37,6 +37,10 @@
   the last admin of a customer, who has no other admin to do it. Their sessions
   end; they set it up again at their next sign-in. It needs no password:
   whoever runs it already has the server.
+* ``clear-legacy-credentials --customer-id ID``: the password hashes and two-step secrets of that
+  organisation's people who are linked to Keycloak (the only sign-in now), counts printed. It
+  refuses, changing nothing, while any active person there is not linked yet. Owner login only,
+  like disable-customer; one ``platform_audit`` row with no operator.
 * ``measure --file PATH [--truth DIR] [--engine gemini|rapidocr]``: read one local
   file the way the worker does and print, per page, its route and why, the route
   check's numbers, and the time it took (PRD 2 X4, the council's ML 12), to set the
@@ -288,6 +292,8 @@ CUSTOMER_STATUS = {
     "disable-customer": (customers_sql.DISABLED, "customer.disable", "disabled"),
     "enable-customer": (customers_sql.ACTIVE, "customer.enable", "enabled"),
 }
+# A password hash nothing can match (``verify_password`` fails to read it): the column is NOT NULL.
+NO_PASSWORD = "!"  # noqa: S105
 # The operator commands that print a new two-step secret: only at a terminal.
 SECRET_COMMANDS = ("create-operator", "reset-operator-2fa")
 # cost-saving: the limits a run's config names (``reader_config``), after "cost_saving_".
@@ -344,6 +350,11 @@ def _parser() -> argparse.ArgumentParser:
     disable.add_argument("--customer-id", required=True)
     enable = commands.add_parser("enable-customer", help="turn a disabled organisation on again")
     enable.add_argument("--customer-id", required=True)
+
+    clear = commands.add_parser(
+        "clear-legacy-credentials", help="clear old passwords and two-step codes once all are on Keycloak"
+    )
+    clear.add_argument("--customer-id", required=True)
 
     purge = commands.add_parser("purge-customer", help="remove an organisation being deleted, NOW")
     purge.add_argument("--customer-id", required=True)
@@ -610,6 +621,53 @@ def _owner(db: Database) -> Iterator[Connection]:
     in api, which logs in as ``kaagaz_api`` (#479), PostgreSQL refuses them."""
     with db.engine.begin() as conn:
         yield conn
+
+
+def _clear_legacy_credentials(db: Database, customer_id: str) -> str:
+    """Blank the password hash and drop the two-step secret of every Keycloak-linked person of one
+    organisation, in one owner transaction. Refuses (nothing changed) while an active person is
+    not linked. Returns the line to print."""
+    try:
+        customer_id = str(uuid.UUID(customer_id))
+    except ValueError:
+        raise CliError("the customer id is not valid") from None
+    with _owner(db) as conn:
+        rows = (
+            conn.execute(
+                text(
+                    "SELECT disabled, auth_authority, password_hash <> :none AS has_password,"
+                    " totp_secret_enc IS NOT NULL OR totp_enabled_at IS NOT NULL AS has_totp"
+                    " FROM users WHERE customer_id = :c"
+                ),
+                {"c": customer_id, "none": NO_PASSWORD},
+            )
+            .mappings()
+            .all()
+        )
+        if not rows:
+            raise CliError("no such customer, or it has no people")
+        waiting = sum(1 for row in rows if not row["disabled"] and row["auth_authority"] != "keycloak")
+        if waiting:
+            raise CliError(f"{waiting} active people are not linked to Keycloak yet; nothing was changed")
+        linked = [row for row in rows if row["auth_authority"] == "keycloak"]
+        passwords = sum(1 for row in linked if row["has_password"])
+        codes = sum(1 for row in linked if row["has_totp"])
+        conn.execute(
+            text(
+                "UPDATE users SET password_hash = :none, totp_secret_enc = NULL, totp_enabled_at = NULL,"
+                " totp_last_step = NULL, totp_off_at = NULL"
+                " WHERE customer_id = :c AND auth_authority = 'keycloak'"
+            ),
+            {"c": customer_id, "none": NO_PASSWORD},
+        )
+        operators_sql.record(
+            conn,
+            "customer.clear_legacy_credentials",
+            target_type="customer",
+            target_id=customer_id,
+            subject_customer_id=customer_id,
+        )
+    return f"customer {customer_id}: {passwords} passwords and {codes} two-step codes cleared"
 
 
 def _set_customer_status(db: Database, command: str, customer_id: str, now: datetime) -> str:
@@ -1987,6 +2045,8 @@ def main(
         elif args.command in CUSTOMER_STATUS:
             line = _set_customer_status(db, args.command, args.customer_id, datetime.now(UTC))
             stdout.write(line + "\n")
+        elif args.command == "clear-legacy-credentials":
+            stdout.write(_clear_legacy_credentials(db, args.customer_id) + "\n")
         elif args.command == "purge-customer":
             if storage is None:
                 from kaagaz.adapters.storage import S3Storage

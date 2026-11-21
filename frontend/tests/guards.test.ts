@@ -64,13 +64,9 @@ describe("guards", () => {
     const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/"));
     expect(fromSignIn).toEqual([]);
     const leaving = [
-      "app/login/SignInForm.tsx",
-      "app/login/EnrolStep.tsx", // one sign-in page (16 Oct 2026): the admin form went
-      "app/signup/SignUpForm.tsx",
       // Changed on purpose (UI audit G6, 16 Oct 2026): signing out moved from AppShell to AccountMenu.
       "components/shell/AppShell.tsx",
       "components/shell/AccountMenu.tsx",
-      "components/shell/SetPasswordScreen.tsx",
       "components/admin/AdminView.tsx",
     ];
     for (const file of leaving) expect(readFileSync(join(ROOT, file), "utf8"), file).not.toContain("useRouter");

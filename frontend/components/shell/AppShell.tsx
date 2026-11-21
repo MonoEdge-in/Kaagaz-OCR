@@ -14,10 +14,7 @@
 // menu (AccountMenu).
 // <main id="main"> has no padding; screens use .page (the chat fills it).
 // #457: while the person's email is not confirmed, EmailBanner sits at the top of <main>;
-// an account connected in the last 14 days, ConnectedBanner (phase 1).
 // Issue 468: above them, while the browser has no connection, OfflineBanner.
-// #507: a session that may only connect Google (lib/session.tsx keeps it on Ways to sign in)
-// says why, LinkRequiredBanner, and shows no links, search or Upload (appChrome, #507 review).
 
 import Form from "next/form";
 import Link from "next/link";
@@ -28,7 +25,6 @@ import { MAX_FIND_LENGTH } from "@/components/search/pathSearch";
 import { Drawer } from "@/components/ui/Drawer";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { ConnectedBanner, LinkRequiredBanner } from "@/components/account/ConnectedBanner";
 import { canReview } from "@/components/review/review";
 import { listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -44,13 +40,12 @@ import { Wordmark } from "./Wordmark";
 import styles from "./Shell.module.css";
 
 const MENU_ID = "app-menu";
-const NONE: readonly { provider: string; linked_at: string }[] = [];
 
 /** The documents screen's and the dashboard's file input (DocumentsView.tsx, Dashboard.tsx). */
 const UPLOAD_INPUT_ID = "upload-input";
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { me, refresh } = useSession();
+  const { me } = useSession();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const chrome = appChrome(me);
@@ -164,7 +159,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </Link>
               </>
             )}
-            <AccountMenu me={me} onChanged={refresh} />
+            <AccountMenu me={me} />
           </div>
         </header>
 
@@ -189,8 +184,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         >
           <OfflineBanner />
           {!me.user.email_confirmed && <EmailBanner email={me.user.email} />}
-          {me.user.google_link_required && <LinkRequiredBanner unchecked={me.user.google_unchecked === true} />}
-          <ConnectedBanner items={me.recent_connections ?? NONE} />
           <StatusBarSlot value={statusBar}>
             <UploadsProvider>{children}</UploadsProvider>
           </StatusBarSlot>

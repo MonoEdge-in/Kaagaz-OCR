@@ -186,9 +186,6 @@ def test_switched_off_features_are_403_feature_off(db: Database) -> None:
     with switched_off(db, "review"):
         reply = member.client.get(f"/api/documents/{document}/flags")
         assert (reply.status_code, reply.json()["error"]["code"]) == (403, "feature_off")
-    with switched_off(db, "self_signup"):
-        assert api.client().get("/api/auth/signup").json() == {"enabled": False}
-    assert api.client().get("/api/auth/signup").json() == {"enabled": True}
     assert member.client.get("/api/me/words").status_code == 200  # back on
 
 

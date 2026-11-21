@@ -36,21 +36,25 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "routers/admin.py:create_user:system": (1, "frees a stale sign-up's e-mail in any organisation (0063)"),
     "routers/admin.py:tell_admins:customer": (1, "after the reply, the admins' addresses; recipients only"),
     "routers/admin.py:approve_identity:system": (1, "whether the e-mail signs in a user of any organisation"),
-    "routers/auth.py:admin_enrol:customer": (2, "two-step set-up from the enrol token, before a session"),
-    "routers/auth.py:signup:system": (2, "sign-up: creates the organisation, no person yet"),
-    "routers/auth.py:signup:customer": (2, "sign-up: the new admin's link and first read, before a session"),
-    "routers/auth.py:_check_password:system": (1, "sign-in: finds the account by e-mail, any organisation"),
-    "routers/auth.py:_account:customer": (1, "sign-in and code attempts on an account not yet proven"),
     "routers/email.py:confirm_email:customer": (1, "e-mail link: the link names the user, nobody signed in"),
     "routers/email.py:_send_link:system": (1, "forgot password: finds the account by e-mail, anywhere"),
     "routers/email.py:_send_link:customer": (1, "forgot password: the found user's address, not signed in"),
     "routers/email.py:_set_password:customer": (1, "reset or invite link: the link's user, nobody signed in"),
     "routers/email.py:_open_link:system": (1, "finds a link by its token, any organisation"),
-    "routers/oidc.py:_sign_in:system": (1, "Google sign-in: finds the connection, any organisation"),
-    "routers/oidc.py:_sign_in:customer": (3, "Google sign-in: the found user, before a session"),
-    "routers/oidc.py:_connect:system": (1, "whether this Google account is connected in any organisation"),
-    # Changed on purpose (PRD 7, #605): a locked files' Google confirm finds the account by its key.
-    "routers/oidc.py:_locked_open:system": (1, "whether this Google account is the person's own connection"),
+    # Changed on purpose (21 Nov 2026): Keycloak's callbacks, before or while a session is made; the
+    # backchannel logout is Keycloak's own call; no person is signed in to any of them.
+    "routers/keycloak.py:callback:system": (1, "the flow, by its one-use state, before any session"),
+    "routers/keycloak.py:backchannel_logout:system": (
+        1,
+        "Keycloak's signed logout: finds the sessions by sid",
+    ),
+    "routers/keycloak.py:_login:system": (1, "finds the person by their Keycloak identity, any organisation"),
+    "routers/keycloak.py:_login:customer": (1, "the found user, read before a session is made"),
+    "routers/keycloak.py:_new_flow:system": (1, "a sign-in's flow, nobody signed in yet"),
+    "routers/keycloak.py:_reauth:system": (
+        1,
+        "the identity the fresh proof names, checked against the person",
+    ),
     "routers/operator_models.py:_plan:customer": (1, "the super admin, not a person of the organisation"),
     "routers/operator_orgs.py:create_org:system": (1, "the super admin frees a stale sign-up's e-mail"),
     # Changed on purpose (#603): Meta's webhook, which no person signs in to.
@@ -58,7 +62,6 @@ ALLOWED: dict[str, tuple[int, str]] = {
     # number with no organisation yet; the Google proof, as Google connect's; the Admin's save's sweep
     # and "WhatsApp was turned on" to Management and the admins, after the reply.
     "routers/whatsapp.py:receive:system": (2, "WhatsApp: a number's connection, owner change, Link, BLOCK"),
-    "routers/oidc.py:_whatsapp_proof:system": (1, "WhatsApp's Google proof: finds the connection, anywhere"),
     "routers/whatsapp_account.py:save_whatsapp:system": (1, "the WhatsApp sweep's owner-rights function"),
     "routers/whatsapp_account.py:_tell_leaders:customer": (
         1,
@@ -69,14 +72,12 @@ ALLOWED: dict[str, tuple[int, str]] = {
 # "file under kaagaz/api:innermost function" → (how many, who the person is) for .user(...) calls
 # not in the plain shapes above.
 USER_EXCEPTIONS: dict[str, tuple[int, str]] = {
-    "auth.py:_signed_in": (1, "the user the checked session names, loaded by load_user"),
+    "routers/keycloak.py:_login": (1, "the found person, whose session is being made (Keycloak's callback)"),
+    "routers/keycloak.py:_new_flow": (1, "a bound flow's signed-in user (a risky action's fresh proof)"),
+    "auth.py:current_user": (1, "the user the checked session names, loaded by load_user"),
     "auth.py:feature_on": (1, "user: require_feature's signed-in user (None: sign-up, on system)"),
-    "routers/auth.py:_open_session": (1, "the user whose session starts, just proven by sign-in"),
-    "routers/auth.py:_account": (1, "signed_in: the signed-in user's own re-proof (_prove)"),
     "routers/chat.py:_write_memory": (2, "after the reply, the asker: _remember passes user's ids"),
     "routers/documents.py:enqueue": (1, "the uploader: _ReadingQueue's requested_by is user.user_id"),
-    "routers/oidc.py:_connect": (2, "the connect's signed-in user (current_user_allow_google_link)"),
-    "routers/oidc.py:_locked_open": (1, "the confirm's signed-in user (_flow_user), PRD 7 #605"),
     "routers/words.py:add_my_word": (1, "me is user.user_id"),
     "routers/words.py:my_words_on_page": (1, "me is user.user_id"),
     # Changed on purpose (#603): the person whose connected number sent a signed message.
@@ -91,8 +92,6 @@ SIGNED_IN = {
     "AdminWithTwoStep",
     "Admin",
     "Reviewer",
-    "UserAllowGoogleLink",
-    "UserAllowPasswordChange",
     "CanDeleteForever",
 }
 Function = ast.FunctionDef | ast.AsyncFunctionDef

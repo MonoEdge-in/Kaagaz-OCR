@@ -2,7 +2,6 @@
 // field must hold, which field gets focus after a failed submit, and what to
 // say when the server says no. Messages say what to do next.
 
-import { PASSWORD_REFUSED } from "@/app/login/providerMessages";
 import { ApiError } from "@/lib/api";
 
 export type SignInField = "email" | "password";
@@ -68,7 +67,6 @@ export function orgPending(caught: unknown): boolean {
 export function signInErrorMessage(caught: unknown): string {
   if (caught instanceof ApiError) {
     if (caught.code === "org_pending") return ORG_PENDING;
-    if (caught.code === "password_refused") return PASSWORD_REFUSED;
     if (caught.status === 401) return caught.message.trim() || WRONG_DETAILS_ADVICE;
     if (caught.status === 429) return TOO_MANY_ATTEMPTS;
     if (caught.status === 0) return NETWORK_FAILURE;

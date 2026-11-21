@@ -10,36 +10,24 @@
 // with useSession(); it is a hint for what to show, the server still decides
 // what each person may do.
 //
-// While the account has a temporary password (PRD A5), the provider shows the
-// set-new-password screen instead of the app, whatever the page; the server
-// refuses everything else until then. refresh() asks the server again, so the
-// app opens once the new password is saved. An admin without two-step sign-in
-// (MFA required, 16 Oct 2026; a session from before, or just after a temporary
-// password) is signed out and sent to the sign-in, which sets it up.
-// #507: a session that may only connect Google (me.user.google_link_required) sees only Ways to sign
-// in: any other page sends the browser there, and so does a 403 google_link_required from any
-// reply (who is signed in is asked again first, the server decides).
+// Keycloak is the only sign-in (21 Nov 2026): no temporary password, no two-step set-up and no
+// Google link gate remain here.
 
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
-  appGate,
   endedPath,
-  mfaEnrollmentPath,
   pageAfterSessionChange,
   SEARCH_DRAFT,
   searchToKeep,
   signInPath,
-  twoStepPath,
-  WAYS_PATH,
 } from "@/components/shell/gate";
-import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import { KeycloakReauthNotice } from "@/components/shell/KeycloakReauthNotice";
 import styles from "@/components/shell/Shell.module.css";
-import { ApiError, currentSession, logout, onGoogleLinkRequired, onSessionEnded } from "./api";
+import { ApiError, currentSession, onSessionEnded } from "./api";
 import { clearDrafts, flushDrafts, keepDraftsOf, saveDraft } from "./drafts";
-import { announceSession, leavePage, watchSession } from "./sessionChannel";
+import { leavePage, watchSession } from "./sessionChannel";
 import type { Me } from "./types";
 
 export interface Session {
@@ -160,47 +148,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [state, refresh],
   );
 
-  const gate = session ? appGate(session.me) : null;
-  useEffect(() => {
-    if (gate !== "set_two_step") return;
-    const go = () => {
-      announceSession(null);
-      leavePage(twoStepPath(pathname));
-    };
-    void logout().then(go, go); // signed out or not, the sign-in sets two-step up
-  }, [gate, pathname]);
-
-  // #507: a reply refused with 403 google_link_required: ask who is signed in again, and the gate
-  // below sends the browser to Ways to sign in. Once Me says so already, there is nothing to ask.
-  const linkRequired = session?.me.user.google_link_required === true;
-  useEffect(() => {
-    onGoogleLinkRequired(linkRequired ? null : refresh);
-    return () => onGoogleLinkRequired(null);
-  }, [linkRequired, refresh]);
-
-  useEffect(() => {
-    if (gate !== "connect_google" || pathname === WAYS_PATH) return;
-    router.replace(WAYS_PATH);
-  }, [gate, pathname, router]);
-
-  useEffect(() => {
-    if (gate !== "mfa_enrol" || pathname === WAYS_PATH) return;
-    router.replace(mfaEnrollmentPath(pathname));
-  }, [gate, pathname, router]);
-
-  // Any other page waits for the move: its screen would only be refused.
-  const leaving =
-    gate === "set_two_step" ||
-    ((gate === "connect_google" || gate === "mfa_enrol") && pathname !== WAYS_PATH);
-  if (session && !leaving) {
+  if (session) {
     return (
       <SessionContext.Provider value={session}>
         <KeycloakReauthNotice />
-        {appGate(session.me) === "set_password" ? (
-          <SetPasswordScreen me={session.me} onChanged={session.refresh} />
-        ) : (
-          children
-        )}
+        {children}
       </SessionContext.Provider>
     );
   }
@@ -233,15 +185,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     <main className={styles.centered}>
       <p className={`delayed ${styles.loading}`} role="status" aria-live="polite">
         <span className="spinner" aria-hidden="true" />
-        {gate === "set_two_step"
-          ? "Taking you to set up two-step sign-in…"
-          : gate === "mfa_enrol"
-            ? "Taking you to finish required two-step setup…"
-          : gate === "connect_google"
-            ? "Taking you to Ways to sign in…"
-            : state.kind === "signed_out"
-              ? "Taking you to sign in…"
-              : "Loading…"}
+        {state.kind === "signed_out" ? "Taking you to sign in…" : "Loading…"}
       </p>
     </main>
   );

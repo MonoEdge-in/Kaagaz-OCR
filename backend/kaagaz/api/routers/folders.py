@@ -40,13 +40,12 @@ from kaagaz.api.auth import (
     CanDeleteForever,
     CurrentUser,
     User,
-    deletes_forever_by_password,
     require_admin_session,
 )
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
-from kaagaz.api.routers.access import Password, PasswordBody, _password_given, _self_grant, _tell, _watchers
+from kaagaz.api.routers.access import _self_grant, _tell, _watchers
 from kaagaz.api.routers.documents import ASK_AN_ADMIN, MOVE_REFUSED, ActivityCursor, ActivityLimit
 from kaagaz.api.views import folder, shown_folder, timeline, trashed_folder, uploaded_every_version
 from kaagaz.db import access as access_sql
@@ -79,7 +78,6 @@ class FolderChangesBody(BaseModel):
     parent_id: uuid.UUID | None = None  # an explicit null: the top level; left out: don't move
     kind: FolderKind | None = None  # left out or null: keep it
     sort_order: SortOrder | None = None  # an explicit null clears it; left out: keep it
-    password: Password = None  # PRD 7 (#601): an Admin's move that opens a wall to themselves
 
 
 def _admin_for_departments(user: CurrentUser, *kinds: str | None) -> None:
@@ -170,15 +168,15 @@ def update_folder(
     folder_id: uuid.UUID, body: FolderChangesBody, user: User, background: BackgroundTasks, context: Context
 ) -> dict[str, Any]:
     """Rename, move, or set a folder's kind or order. PRD 7 (#601): a move that opens what the
-    folder holds to the Admin making it asks their password (403 ``password_required``), as giving
-    themselves access does; it is audited ``self`` and Management and the other Admins are told."""
-    given = body.model_fields_set - {"password"}
+    folder holds to the Admin making it asks for their fresh Keycloak proof (403
+    ``keycloak_reauth_required``), as giving themselves access does; it is audited ``self`` and
+    Management and the other Admins are told."""
+    given = body.model_fields_set
     if not given:
         raise ApiError(400, "bad_request", "Say what to change: the name, the place, or both.")
     name = _name(body.name) if "name" in given else None
     target = str(folder_id)
     parent_id = None if body.parent_id is None else str(body.parent_id)
-    _password_given(context, user, body.password)  # holding no connection (access.py)
     details: dict[str, audit.DetailValue] = {}
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
         _seen(conn, user, target, parent_id if "parent_id" in given else None)
@@ -198,7 +196,7 @@ def update_folder(
             move = folders_sql.folder_move(conn, user.customer_id, target, parent_id)
             rights = access_sql.rights(conn, user.role == "admin")
             if folders_sql.check_move(conn, user.customer_id, rights, move):
-                details = _wall_moved(conn, user, move, body.password)
+                details = _wall_moved(conn, user, move)
             row = folders_sql.move_folder(conn, user.customer_id, target, parent_id=parent_id)
             _audit(conn, user, "folder.move", target, {"parent_id": parent_id, **details})
         if name is not None:
@@ -221,17 +219,15 @@ def update_folder(
     return reply
 
 
-def _wall_moved(
-    conn: Connection, user: CurrentUser, move: folders_sql.Move, password: str | None
-) -> dict[str, audit.DetailValue]:
+def _wall_moved(conn: Connection, user: CurrentUser, move: folders_sql.Move) -> dict[str, audit.DetailValue]:
     """A move that changes who can see what it carries (PRD 7 decision 18, #601; the caller has
     checked the person may make it, under the tree lock): its audit's ``losing`` and ``gaining``
     counts, as its preview counts them, and ``self`` when it opens what it carries to the Admin
-    making it, who then must have typed their password (``_self_grant``, access.py)."""
+    making it, who then must have their Keycloak proof (``_self_grant``, access.py)."""
     losing, gaining = access_sql.moved(conn, user.customer_id, move)
     details: dict[str, audit.DetailValue] = {"losing": len(losing), "gaining": len(gaining)}
     if user.user_id in gaining:
-        _self_grant(user, password)
+        _self_grant(user)
         details["self"] = True
     return details
 
@@ -262,7 +258,6 @@ def delete_folder(
     contents: Literal["keep", "trash"] | None = None,
     to: uuid.UUID | None = None,
     confirm: bool = False,
-    body: PasswordBody | None = None,
 ) -> Response:
     """Today's delete of an empty folder, for anyone (PRD 7, #601: one holding a folder or a file
     the person can't see is an Admin's, 403 ``hidden_inside``). #537, an admin only:
@@ -272,7 +267,7 @@ def delete_folder(
     deletes the folder with every folder inside it (``folders_sql.delete_folder_with_contents``).
     Those two reply 200 with ``{files, folders}``: what moved, or the files that went to Trash.
     A confirmed keep counts who loses and gains it, and one that opens it to the Admin asks their
-    password (``body.password``; 403 ``password_required``), as a move does."""
+    Keycloak proof (403 ``keycloak_reauth_required``), as a move does."""
     if contents is not None and user.role != "admin":
         raise ApiError(403, "forbidden", "Only an admin can delete a folder that holds files.")
     if contents is not None:
@@ -282,8 +277,6 @@ def delete_folder(
     if (to is not None or confirm) and contents != "keep":
         raise ApiError(400, "bad_request", "Choose where things go only when moving them.")
     target = str(folder_id)
-    password = None if body is None else body.password
-    _password_given(context, user, password)  # holding no connection (access.py)
     moved: dict[str, audit.DetailValue] = {}
     with _refused(), context.db.user(user.customer_id, user.user_id) as conn:
         _seen(conn, user, target)
@@ -298,7 +291,7 @@ def delete_folder(
             folders_sql._lock_tree(conn, user.customer_id)
             move = folders_sql.folder_move(conn, user.customer_id, target, destination, contents=True)
             if folders_sql.check_move(conn, user.customer_id, access_sql.rights(conn, True), move):
-                moved = _wall_moved(conn, user, move, password)
+                moved = _wall_moved(conn, user, move)
         try:
             held = folders_sql.delete_folder_with_contents(
                 conn,
@@ -457,8 +450,6 @@ def delete_trashed_folder_forever(folder_id: uuid.UUID, user: CanDeleteForever, 
     marks: dict[str, audit.DetailValue] = {}
     if user.role != "admin":
         marks["by_grant"] = True
-    elif deletes_forever_by_password(user):
-        marks["by_password"] = True
     deleted = 0
     try:
         for family in families[:FOREVER_FAMILIES]:

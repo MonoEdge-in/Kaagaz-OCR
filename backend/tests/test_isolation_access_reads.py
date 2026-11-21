@@ -17,7 +17,7 @@ from kaagaz.api.routers import access as access_router
 from kaagaz.db import audit
 from kaagaz.db.engine import Database
 from tests.db_support import insert_folder
-from tests.test_api_support import CSRF, PASSWORD, Api, Signed
+from tests.test_api_support import CSRF, Api, Signed
 from tests.test_isolation_access_api import _call, _code, _ids
 from tests.test_isolation_access_views import Org, _walled
 from tests.test_operator_auth_db import _owner
@@ -334,7 +334,7 @@ def test_the_admin_log_filters_by_whom_it_is_about_and_shows_self_given_first(db
     body = _get(admin, f"/api/admin/audit?document_id={later}")[1]
     assert "access.file_give" in [item["action"] for item in body["items"]]
     assert _call(admin, "PUT", f"/api/admin/users/{p['named']}/management", {"on": True})[0] == 200
-    mine = {"on": True, "password": PASSWORD}
+    mine = {"on": True, "proved": True}
     assert _call(admin, "PUT", f"/api/admin/users/{p['admin']}/management", mine)[0] == 200
     status, body = _get(admin, f"/api/admin/audit?subject_id={p['plain']}")
     assert status == 200 and [item["action"] for item in body["items"]] == ["access.file_give"]

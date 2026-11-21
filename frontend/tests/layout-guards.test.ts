@@ -446,7 +446,7 @@ describe("layout guards", () => {
   // only motion is the citation fading in once (no robot, pages or title sweep).
   it("frames every sign-in with AuthFrame, whose one motion is a single fade", () => {
     // One sign-in page (16 Oct 2026): /admin/login only redirects to /login now.
-    const pages = ["app/login/page.tsx", "app/operator/login/page.tsx", "app/signup/page.tsx"];
+    const pages = ["app/login/page.tsx", "app/operator/login/page.tsx"];
     for (const page of pages) {
       expect(read(page), page).toMatch(/<AuthFrame\b/);
     }

@@ -27,7 +27,6 @@ from tests.settings_factory import make_settings
 from tests.test_api_support import (
     CSRF,
     NOW,
-    PASSWORD,
     Api,
     ApiFakeQueue,
     ApiFakeStorage,
@@ -518,9 +517,9 @@ def test_default_wiring_uses_the_real_answer_service_without_a_model(db: Databas
         make_settings(model_enabled=False), db=db, storage=api.storage, queue=api.queue, clock=lambda: NOW
     )
     customer_id, _ = api.customer()
-    _, email = api.add_user(customer_id, "member")
+    user_id, _ = api.add_user(customer_id, "member")
     client = TestClient(app)
-    client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
+    api.mint_session(client, customer_id, user_id)
 
     body = client.post("/api/chat", json={"question": "Kiska profit sabse jyada tha?"}, headers=CSRF).json()
 

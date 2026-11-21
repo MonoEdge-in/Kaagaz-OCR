@@ -18,9 +18,9 @@ from starlette.testclient import TestClient
 
 from kaagaz.api import auth, keycloak_oidc
 from kaagaz.api.app import create_app
-from kaagaz.api.auth import CurrentUser, UserAllowGoogleLink, new_session
-from kaagaz.api.routers import auth as auth_router
+from kaagaz.api.auth import CurrentUser, User, new_session
 from kaagaz.api.routers import keycloak as keycloak_router
+from kaagaz.db import access as access_sql
 from kaagaz.db import keycloak
 from kaagaz.db.engine import Database
 from kaagaz.settings import Settings
@@ -57,7 +57,7 @@ def _client(*, settings: Settings | None = None, expose_auth_user: bool = False)
     app = create_app(configured, db=cast(Database, _NoDatabase()), clock=lambda: NOW)
     if expose_auth_user:
 
-        def auth_user(user: UserAllowGoogleLink) -> dict[str, object]:
+        def auth_user(user: User) -> dict[str, object]:
             return {"id": user.user_id, "authority": user.auth_authority, "totp_enabled": user.totp_enabled}
 
         app.add_api_route("/test/auth-user", auth_user, methods=["GET"])
@@ -257,49 +257,6 @@ def test_invalid_signed_logout_is_rejected_without_csrf_or_database_access(
     assert response.json()["error"]["code"] == "invalid_logout"
 
 
-def test_enrolled_legacy_user_can_start_link_through_real_auth_dependency(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = make_settings(
-        keycloak_enabled=True,
-        keycloak_issuer="https://id.example.test/realms/kaagaz",
-        keycloak_client_id="kaagaz-api",
-        keycloak_client_secret="route-test-confidential-secret",
-        keycloak_redirect_uri="https://app.example.test/api/auth/keycloak/callback",
-        keycloak_required_acr="1",
-        keycloak_flow_encryption_key="distinct-route-test-encryption-key-material",
-    )
-    user = _user(role="member", authority="legacy", totp_enabled=True)
-    client = _client(settings=settings)
-    _set_session(client, settings, user, "legacy_mfa", None)
-    monkeypatch.setattr(auth, "load_user", lambda *args, **kwargs: user)
-    proofs: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        keycloak_router, "_prove", lambda _context, _user, password, code: proofs.append((password, code))
-    )
-    destinations: list[str] = []
-    monkeypatch.setattr(
-        keycloak,
-        "create_flow",
-        lambda *args, **kwargs: destinations.append(kwargs["next_path"]),
-    )
-    monkeypatch.setattr(keycloak_router, "_open_verifier", lambda *args: "pkce-verifier")
-    monkeypatch.setattr(
-        keycloak_oidc, "authorize_url", lambda *args, **kwargs: "https://id.example.test/auth"
-    )
-
-    with client:
-        response = client.post(
-            "/api/auth/keycloak/link/start",
-            json={"password": "current-password", "code": "123456"},
-            headers={auth.CSRF_HEADER: auth.CSRF_VALUE},
-        )
-    assert response.status_code == 200, response.text
-    assert response.json() == {"url": "https://id.example.test/auth"}
-    assert proofs == [("current-password", "123456")]
-    assert destinations == ["/settings/sign-in"]
-
-
 def test_keycloak_admin_without_local_totp_passes_real_auth_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -308,7 +265,7 @@ def test_keycloak_admin_without_local_totp_passes_real_auth_dependency(
     client = _client(settings=settings, expose_auth_user=True)
     _set_session(client, settings, admin, "keycloak", "1")
     monkeypatch.setattr(auth, "load_user", lambda *args, **kwargs: admin)
-    monkeypatch.setattr(auth_router, "_recent_connections", lambda *args: ([], (False, [], False, False)))
+    monkeypatch.setattr(access_sql, "me", lambda conn: (False, [], False, False))
     with client:
         response = client.get("/test/auth-user")
         me = client.get("/api/auth/me").json()
@@ -319,31 +276,11 @@ def test_keycloak_admin_without_local_totp_passes_real_auth_dependency(
     assert me["keycloak_enabled"] is True
 
 
-def test_session_and_me_expose_keycloak_policy_for_all_legacy_roles(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = make_settings(keycloak_enabled=True, keycloak_required_acr="1")
-    user = replace(_user(role="member", authority="legacy", totp_enabled=False), must_change_password=True)
-    client = _client(settings=settings)
-    assert client.get("/api/auth/session").json() == {
-        "signed_in": False,
-        "providers": [],
-        "keycloak_enabled": True,
-    }
-    _set_session(client, settings, user, "legacy_limited", None)
-    monkeypatch.setattr(auth, "load_user", lambda *args, **kwargs: user)
-    with client:
-        session = client.get("/api/auth/session").json()
-        me = client.get("/api/auth/me").json()
-    assert session["me"]["keycloak_enabled"] is True
-    assert me["keycloak_enabled"] is True
-    assert me["user"]["auth_source"] == "legacy_limited"
-    assert me["user"]["two_step_required"] is True
-
-
 def test_bound_flows_reject_another_user_or_browser_and_reauth_rejects_an_unknown_action(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = make_settings(keycloak_enabled=True, keycloak_required_acr="1")
-    legacy = _user(role="member", authority="legacy", totp_enabled=True)
+    legacy = _user(role="member", authority="keycloak", totp_enabled=False)
     claims = new_session(
         user_id=legacy.user_id,
         customer_id=legacy.customer_id,
@@ -353,7 +290,8 @@ def test_bound_flows_reject_another_user_or_browser_and_reauth_rejects_an_unknow
         settings=settings,
         now=int(NOW.timestamp()),
         idle_hours=None,
-        auth_source="legacy_mfa",
+        auth_source="keycloak",
+        assurance="1",
     )
     token = auth.sign_session(claims, settings.session_secret)
     request = Request(
@@ -371,8 +309,8 @@ def test_bound_flows_reject_another_user_or_browser_and_reauth_rejects_an_unknow
     flow = keycloak.FlowRow(
         nonce="nonce",
         sealed_verifier="sealed",
-        purpose="link",
-        next_path="/settings/sign-in",
+        purpose="reauth",
+        next_path="/documents",
         customer_id=legacy.customer_id,
         user_id=legacy.user_id,
         session_version=legacy.session_version,
@@ -394,3 +332,27 @@ def test_bound_flows_reject_another_user_or_browser_and_reauth_rejects_an_unknow
         context, bad_action, cast(keycloak_oidc.Identity, object()), keycloak_admin, claims
     )
     assert refused.headers["location"] == "/sensitive?reauth_error=refused"
+
+
+def test_session_says_signed_out_with_no_providers_and_whether_keycloak_is_on() -> None:
+    assert _client().get("/api/auth/session").json() == {"signed_in": False, "keycloak_enabled": True}
+
+
+def test_the_start_passes_only_an_allowed_account_action_to_keycloak(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Change password and Two-step sign-in open Keycloak's own pages (``kc_action``); no other
+    value is passed on, and with none the sign-in is as before."""
+    monkeypatch.setattr(keycloak, "create_flow", lambda *args, **kwargs: None)
+    monkeypatch.setattr(keycloak_router, "_open_verifier", lambda *args: "pkce-verifier")
+    monkeypatch.setattr(
+        keycloak_oidc, "authorize_url", lambda *args, **kwargs: "https://id.example.test/auth?state=s"
+    )
+    with _client() as client:
+        plain = client.get("/api/auth/keycloak/start?next=/documents")
+        assert plain.headers["location"] == "https://id.example.test/auth?state=s"
+        for action in ("UPDATE_PASSWORD", "CONFIGURE_TOTP"):
+            started = client.get(f"/api/auth/keycloak/start?action={action}")
+            assert started.status_code == 303
+            assert parse_qs(urlsplit(started.headers["location"]).query)["kc_action"] == [action]
+        for refused in ("VERIFY_EMAIL", "update_password", "UPDATE_PASSWORD%20CONFIGURE_TOTP", ""):
+            reply = client.get(f"/api/auth/keycloak/start?action={refused}")
+            assert (reply.status_code, reply.json()["error"]["code"]) == (400, "bad_request"), refused
