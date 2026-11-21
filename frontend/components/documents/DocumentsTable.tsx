@@ -639,9 +639,6 @@ export function DocumentsTable({
                     ? bulkReadQuestion(readableIds.length)
                     : bulkTrashQuestion(restorableIds.length)}
               </span>
-              {confirming === "forever" && (
-                <span className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; return, reselect items if needed, and confirm again.</span>
-              )}
               {/* [Destructive] ... [Cancel], or [Cancel] [Read again now]; focus starts on Cancel. */}
               {confirming !== "read" && nowButton}
               <button ref={focusOnMount} type="button" className="btn" onClick={clearSelection} disabled={busy}>
@@ -1250,9 +1247,6 @@ const DocumentRow = memo(function DocumentRow({
           >
             <div className={library.dialogForm}>
               <p>{question}</p>
-              {confirming === "forever" && (
-                <p className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; reopen this item and confirm again after returning.</p>
-              )}
               {error && (
                 <p className="error-text" role="alert">
                   {error}

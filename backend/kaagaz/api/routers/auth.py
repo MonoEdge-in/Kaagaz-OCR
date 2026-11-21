@@ -7,7 +7,7 @@ receives it and ends it. What stays here:
   the person's Kaagaz sessions only (it does not sign them out of Keycloak itself).
 * ``GET /auth/me`` is the signed-in user (401 when nobody is); ``GET /auth/session`` is the same
   with no session a 200 ``{signed_in: false, keycloak_enabled}``, for the sign-in page.
-* The risky actions (locked files, delete forever, access, locks, WhatsApp) are proved only by a
+* The risky actions (locked files, access, locks, WhatsApp) are proved only by a
   fresh Keycloak sign-in for that action: ``require_proof``.
 * The rate-limit helpers and constants the operator's sign-in and the e-mail routes share.
 """

@@ -804,8 +804,7 @@ AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 
 
 def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
-    """For what can't be undone (deleting a tag; ``require_delete_forever`` lets an admin
-    without two-step type their password instead, #538): an admin session whose admin has
+    """For what can't be undone (deleting a tag): an admin session whose admin has
     two-step sign-in on, else 403
     ``two_step_required``. ``current_user`` lets through only an admin with two-step
     sign-in on or one who turned it off themselves (0061b), whom this refuses."""

@@ -7,9 +7,11 @@ session or the grant is the whole rule, and the page's confirm dialog the check.
 
 from typing import Any
 
+import httpx2 as httpx
 import pytest
 
 from kaagaz.db.engine import Database
+from tests.settings_factory import make_settings
 from tests.test_api_support import ANY_ID, CSRF, Api, Signed
 
 pytestmark = pytest.mark.db
@@ -85,3 +87,29 @@ def test_admins_are_never_targets(db: Database) -> None:
     member, _ = api.add_user(admin.customer_id, "member")
     assert _grant(admin, member, allowed=False) == (200, False)
     assert api.audit_actions(admin.customer_id)[-1] == "user.delete_forever_off"
+
+
+def test_delete_forever_is_no_company_sign_in_action(db: Database) -> None:
+    """#744: starting a fresh sign-in for it is refused (403 ``forbidden``), so nothing can set a proof
+    for it; another action's start is not refused for that reason."""
+    settings = make_settings(
+        keycloak_enabled=True,
+        keycloak_issuer="https://id.example.test/realms/kaagaz",
+        keycloak_client_id="kaagaz-api",
+        keycloak_client_secret="route-test-confidential-secret",
+        keycloak_redirect_uri="https://app.example.test/api/auth/keycloak/callback",
+        keycloak_required_acr="1",
+        keycloak_flow_encryption_key="distinct-route-test-encryption-key-material",
+    )
+    api = Api(db, settings=settings)
+    admin = api.new_admin()
+
+    def start(action: str) -> httpx.Response:
+        reply: httpx.Response = admin.client.post(
+            f"/api/auth/keycloak/reauth/{action}/start", json={"next": "/documents"}, headers=CSRF
+        )
+        return reply
+
+    refused = start("delete_forever")
+    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "forbidden")
+    assert start("locks").status_code != 403

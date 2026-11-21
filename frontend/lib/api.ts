@@ -965,8 +965,8 @@ export const deleteFolderWithContents = (
   );
 export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
 /** #542: Trash's folders; one opened (its files: listDocuments with trashed_folder_id); Restore puts
- * one back where it was; delete forever has a document's rule (a fresh company sign-in first).
- * Under /documents/trash, where the proof's cookie is sent. */
+ * one back where it was; delete forever has a document's rule (no fresh sign-in, #744).
+ * Under /documents/trash. */
 export const listTrashedFolders = () => request<{ items: TrashedFolder[] }>("GET", "/documents/trash/folders");
 export const getTrashedFolder = (id: string) =>
   request<TrashedFolderContents>("GET", `/documents/trash/folders/${id}`);

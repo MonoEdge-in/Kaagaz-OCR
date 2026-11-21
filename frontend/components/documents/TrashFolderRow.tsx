@@ -266,7 +266,6 @@ export function TrashFolderRow({
           >
             <div className={library.dialogForm}>
               <p>{folderForeverQuestion(folder)}</p>
-              <p className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; find this folder again and confirm after returning.</p>
               {error && (
                 <p className="error-text" role="alert">
                   {error}

@@ -140,7 +140,7 @@ describe("Delete forever, granted (council 4 Oct 2026)", () => {
   it("asks first, says it covers all of Trash, and shows the chip and the audit words", () => {
     expect(allowForeverQuestion("Ravi")).toBe(
       "Let Ravi delete documents in Trash for good? This covers every document in Trash, " +
-        "not only theirs, and can't be undone. They confirm with their company sign-in each time.",
+        "not only theirs, and can't be undone. They're asked to confirm each time.",
     );
     expect(userStatus(user({ can_delete_forever: true }), NOW).map((part) => part.text)).toEqual([
       "Active",

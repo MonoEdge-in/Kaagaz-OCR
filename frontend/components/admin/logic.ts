@@ -209,7 +209,7 @@ export function companySignIn(user: Pick<AdminUser, "company_sign_in">): string 
 export function allowForeverQuestion(name: string): string {
   return (
     `Let ${name} delete documents in Trash for good? This covers every document in Trash, ` +
-    "not only theirs, and can't be undone. They confirm with their company sign-in each time."
+    "not only theirs, and can't be undone. They're asked to confirm each time."
   );
 }
 

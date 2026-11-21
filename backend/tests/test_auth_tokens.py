@@ -1,4 +1,4 @@
-"""Session and confirm tokens, the sign-in settings and the sign-in dependencies (PRD 1 A1 to A7).
+"""Session tokens, the sign-in settings and the sign-in dependencies (PRD 1 A1 to A7).
 
 Pure: no database. The dependency tests build a bare FastAPI app whose
 ``load_user`` is replaced, so they check the wiring of ``current_user``,
