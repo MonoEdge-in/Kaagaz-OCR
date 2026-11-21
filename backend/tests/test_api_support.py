@@ -61,7 +61,15 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.search.scope import Scope
 from kaagaz.settings import Settings
-from tests.db_support import APP_ROLE, insert_document, insert_folder, insert_tag, new_customer, tag_document
+from tests.db_support import (
+    APP_ROLE,
+    insert_document,
+    insert_folder,
+    insert_tag,
+    mark_keycloak,
+    new_customer,
+    tag_document,
+)
 from tests.fakes import MemoryQueue, MemoryStorage
 from tests.settings_factory import make_settings
 
@@ -338,11 +346,9 @@ class Api:
         """Sign this user in on ``client`` the way the Keycloak callback ends (``routers/keycloak.py``
         ``_login``): the user's authority is Keycloak and the cookie is a ``keycloak`` session at the
         required assurance. No route is used, because the only sign-in is Keycloak's own page."""
-        with self.db.engine.begin() as conn:  # the owner: the API may not write auth_authority (0103)
-            conn.execute(
-                text("UPDATE users SET auth_authority = 'keycloak' WHERE customer_id = :c AND id = :u"),
-                {"c": customer_id, "u": user_id},
-            )
+        mark_keycloak(
+            self.db, customer_id, user_id
+        )  # as the owner: the API may not write auth_authority (0103)
         with self.app_db.user(customer_id, user_id) as conn:  # the callback's own: the idle clock starts
             users_sql.attempt_succeeded(conn, customer_id, user_id, now=self.clock())
             audit.record(
