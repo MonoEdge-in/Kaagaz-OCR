@@ -288,6 +288,10 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "handle /kc/realms/master* {",
         "respond 404",
         "}",
+        "@keycloak_account path /kc/realms/*/account /kc/realms/*/account/*",
+        "handle @keycloak_account {",
+        "respond 404",
+        "}",
         "@keycloak_pages path /kc/realms/* /kc/resources/*",
         "handle @keycloak_pages {",
         "reverse_proxy keycloak:8080",
@@ -487,12 +491,16 @@ def test_caddy_serves_only_keycloak_sign_in_pages_never_master_or_admin() -> Non
     """#735: an allow-list. The master realm and everything else under /kc/ is a 404."""
     text = (ROOT / "infra" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
     master = text.index("\thandle /kc/realms/master* {\n\t\trespond 404\n\t}\n")
+    account = text.index(  # #737: a realm's account console is never served
+        "\t@keycloak_account path /kc/realms/*/account /kc/realms/*/account/*\n"
+        "\thandle @keycloak_account {\n\t\trespond 404\n\t}\n"
+    )
     allowed = text.index(
         "\t@keycloak_pages path /kc/realms/* /kc/resources/*\n"
         "\thandle @keycloak_pages {\n\t\treverse_proxy keycloak:8080\n\t}\n"
     )
     rest = text.index("\thandle /kc/* {\n\t\trespond 404\n\t}\n")
-    assert master < allowed < rest < text.index("\thandle {\n")
+    assert master < account < allowed < rest < text.index("\thandle {\n")
     assert text.count("keycloak:8080") == 1  # no other handle can reach Keycloak
     query = text[text.index("request>uri query {") : text.index("}", text.index("request>uri query {"))]
     for name in ["key", "session_code", "id_token_hint", "login_hint", "client_data"]:

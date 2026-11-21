@@ -157,11 +157,6 @@ TEXTS: dict[str, tuple[str, str, str]] = {
         "जवाब देने का यह तरीका अभी उपलब्ध नहीं है। Kaagaz में Answer settings में दूसरा चुनें।",
         "उत्तर देण्याची ही पद्धत आता उपलब्ध नाही. Kaagaz मध्ये Answer settings मध्ये दुसरी निवडा.",
     ),
-    "change_password": (
-        "Please sign in to Kaagaz and set a new password first.",
-        "कृपया पहले Kaagaz में साइन इन करके नया पासवर्ड सेट करें।",
-        "कृपया आधी Kaagaz मध्ये साइन इन करून नवीन पासवर्ड सेट करा.",
-    ),
     "too_long": (
         "Please keep your question under 1,000 characters.",
         "कृपया अपना सवाल 1,000 अक्षरों से छोटा रखें।",

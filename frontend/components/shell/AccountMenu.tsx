@@ -23,12 +23,12 @@ import { Icon } from "@/components/ui/Icon";
 import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { PalettePicker } from "@/components/ui/PalettePicker";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
-import { ApiError, logout, logoutEverywhere } from "@/lib/api";
+import { ApiError, keycloakLogoutUrl, logout, logoutEverywhere } from "@/lib/api";
 import { keycloakAccountHref } from "@/lib/keycloak";
 import { clearDrafts } from "@/lib/drafts";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
-import { signedOutPath } from "./gate";
+import { signOutDestination } from "./gate";
 import { initials, roleName } from "./nav";
 import styles from "./Shell.module.css";
 
@@ -83,10 +83,18 @@ export function AccountMenu({ me }: { me: Me }) {
         return;
       }
     }
+    // Company sign-in ends too: Keycloak's own sign-out page, which lands on /login (#737).
+    const keycloakUrl =
+      me.user.auth_authority === "keycloak"
+        ? await keycloakLogoutUrl().then(
+            (reply) => reply.url,
+            () => null,
+          )
+        : null;
     clearStored(); // the upload tray's drops (PRD 5 U1) are this person's
     clearDrafts(); // and so is unsent work kept in this tab (lib/drafts.ts, issue 468)
     announceSession(null);
-    leavePage(signedOutPath(pathname));
+    leavePage(signOutDestination(pathname, keycloakUrl));
   }
 
   // Issue 373: Down or Up on the avatar opens the menu and moves into it; inside, the arrow

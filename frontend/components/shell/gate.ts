@@ -49,6 +49,20 @@ export function signedOutPath(pathname: string): string {
   return withNote(signInPath(pathname), "signed_out");
 }
 
+/** Where to leave for after signing out: Keycloak's end-session address when the server gave one,
+ * so company sign-in ends too (it lands on /login), else the sign-in page. Only http(s) is followed. */
+export function signOutDestination(pathname: string, keycloakUrl: string | null): string {
+  if (keycloakUrl !== null) {
+    try {
+      const url = new URL(keycloakUrl);
+      if (url.protocol === "https:" || url.protocol === "http:") return url.href;
+    } catch {
+      // not an address: the sign-in page below
+    }
+  }
+  return signedOutPath(pathname);
+}
+
 /** The note on a sign-in page, from its query: ?signed_out=1 or ?ended=1. */
 export function signedOutMessage(query: Record<string, string | string[] | undefined>): string | null {
   if (query.signed_out === "1") return "You signed out.";

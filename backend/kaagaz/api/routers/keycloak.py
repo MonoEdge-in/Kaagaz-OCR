@@ -184,6 +184,19 @@ def callback(request: Request, context: Context) -> RedirectResponse:
     return _no_store(response)
 
 
+@router.get("/auth/keycloak/logout-url")
+def logout_url(request: Request, context: Context) -> JSONResponse:
+    """Where the browser goes after Kaagaz's own sign-out, so Keycloak's session ends too. Needs
+    no sign-in: it holds nothing about anyone (the sign-out has just ended the session)."""
+    _configured(context)
+    _limit(_start_limits, client_address(request), "Too many sign-in attempts. Try again shortly.")
+    try:
+        url = keycloak_oidc.logout_url(context.settings)
+    except keycloak_oidc.OidcError:
+        raise ApiError(502, "keycloak_unavailable", "Could not reach company sign-in to end it.") from None
+    return _no_store(JSONResponse({"url": url}))
+
+
 @router.post("/auth/keycloak/backchannel-logout")
 async def backchannel_logout(request: Request, context: Context) -> Response:
     """Accept only a verified signed logout token; the database stores replay and sid tombstones."""

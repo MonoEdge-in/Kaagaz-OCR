@@ -305,6 +305,8 @@ export const pageImageUrl = (documentId: string, pageNo: number) =>
 // --- auth ----------------------------------------------------------------------
 
 export const logout = () => request<void>("POST", "/auth/logout");
+/** Keycloak's end-session address, to leave for after the sign-out so its session ends too (#737). */
+export const keycloakLogoutUrl = () => request<{ url: string }>("GET", "/auth/keycloak/logout-url");
 /** Who is signed in, 200 either way (issue 378): a signed-out visit logs no expected 401. */
 export const currentSession = () =>
   request<

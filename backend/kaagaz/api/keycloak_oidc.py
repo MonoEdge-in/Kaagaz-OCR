@@ -91,6 +91,19 @@ def authorize_url(
     return f"{metadata['authorization_endpoint']}?{query}"
 
 
+def logout_url(settings: Settings) -> str:
+    """Keycloak's end-session address for this browser (RP-initiated logout, #737): the client and
+    where to land (the callback's own origin plus /login), nothing else. No ID token is kept
+    server-side, so there is no hint; Keycloak asks the person to confirm in its own page."""
+    _configured(settings)
+    redirect = urllib.parse.urlsplit(settings.keycloak_redirect_uri or "")
+    landing = f"{redirect.scheme}://{redirect.netloc}/login"
+    query = urllib.parse.urlencode(
+        {"client_id": settings.keycloak_client_id, "post_logout_redirect_uri": landing}
+    )
+    return f"{_discovery(settings)['end_session_endpoint']}?{query}"
+
+
 def id_token_for(settings: Settings, code: str, verifier: str) -> str:
     """Exchange a one-use authorization code through the confidential PKCE client."""
     _configured(settings)

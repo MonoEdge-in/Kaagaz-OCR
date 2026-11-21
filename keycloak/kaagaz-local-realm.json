@@ -88,7 +88,8 @@
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "backchannel.logout.url": "http://api:8000/api/auth/keycloak/backchannel-logout",
-        "backchannel.logout.session.required": "true"
+        "backchannel.logout.session.required": "true",
+        "post.logout.redirect.uris": "http://localhost:3000/login"
       },
       "protocolMappers": [
         {

@@ -405,9 +405,10 @@ def link_account(
     # A person moved from Kaagaz's own old sign-in keeps an old last_login_at; clearing it makes
     # "signed in once" mean "since the link", which is what the People list's "Waiting for setup"
     # (and Resend setup email) rests on. The raised session_version signed them out anyway.
+    # Company sign-in has no password step: a flag set by the old create paths ends here (#737).
     conn.execute(
         text(
-            "UPDATE public.users SET last_login_at = NULL"
+            "UPDATE public.users SET last_login_at = NULL, must_change_password = false"
             " WHERE id = CAST(NULLIF(current_setting('kaagaz.user_id', true), '') AS uuid)"
         )
     )
