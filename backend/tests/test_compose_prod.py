@@ -28,6 +28,8 @@ PRIVATE_QUERY = [
     "state",
     "hub.verify_token",
     "hub.challenge",
+    "key",  # Changed on purpose (#735): Keycloak's emailed action links
+    "session_code",  # Changed on purpose (#735): Keycloak's login steps
 ]
 
 PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>"
@@ -279,6 +281,13 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "}",
         "}",
         "}",
+        # Changed on purpose (#735): Keycloak at /kc/ when it runs; its admin console never.
+        "handle /kc/admin* {",
+        "respond 404",
+        "}",
+        "handle /kc/* {",
+        "reverse_proxy keycloak:8080",
+        "}",
         "handle {",
         "reverse_proxy frontend:3000 {",
         "lb_try_duration 30s",
@@ -431,3 +440,36 @@ def test_the_laptop_keys_file_scopes_the_app_key_to_its_bucket() -> None:
         "kaagaz-local": ["Read:kaagaz-local", "Write:kaagaz-local", "List:kaagaz-local"],
         "kaagaz-local-admin": ["Admin"],
     }
+
+
+KC_SERVER = "docker-compose.keycloak-server.yml"
+
+
+def test_keycloak_runs_on_the_test_server_in_production_mode_behind_caddy() -> None:
+    """#735: the server overlay is one opt-in service, nothing published, its own database."""
+    assert services(KC_SERVER) == ["keycloak"]  # api, worker and whatsapp are not touched
+    block = service("keycloak", KC_SERVER)
+    assert "    ports:" not in block
+    assert '    command: ["start", "--import-realm"]\n' in block
+    assert "start-dev" not in block
+    for line in [
+        "KC_HTTP_RELATIVE_PATH: /kc",
+        "KC_PROXY_HEADERS: xforwarded",
+        'KC_HOSTNAME_STRICT: "true"',
+        "KC_DB: postgres",
+    ]:
+        assert f"      {line}\n" in block
+    assert re.search(r"^      KC_HOSTNAME: https://\$\{KAAGAZ_DOMAIN[^}]*\}/kc$", block, re.MULTILINE)
+    assert has(block, "mem_limit: 1g")
+    assert has(block, 'profiles: ["keycloak"]')
+    assert has(block, "networks: [edge, data]")
+
+
+def test_caddy_serves_keycloak_but_never_its_admin_console() -> None:
+    """#735: /kc/admin* is a 404, the rest of /kc/ goes to Keycloak, both before the catch-all."""
+    text = (ROOT / "infra" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+    admin = text.index("\thandle /kc/admin* {\n\t\trespond 404\n\t}\n")
+    keycloak = text.index("\thandle /kc/* {\n\t\treverse_proxy keycloak:8080\n\t}\n")
+    assert admin < keycloak < text.index("\thandle {\n")
+    query = text[text.index("request>uri query {") : text.index("}", text.index("request>uri query {"))]
+    assert "delete key\n" in query and "delete session_code\n" in query

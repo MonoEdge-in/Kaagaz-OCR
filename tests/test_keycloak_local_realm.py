@@ -36,7 +36,11 @@ class KeycloakLocalRealmTests(unittest.TestCase):
             values(api_template),
         )
         self.assertEqual(
-            {"KC_BOOTSTRAP_ADMIN_USERNAME": "local-admin", "KC_BOOTSTRAP_ADMIN_PASSWORD": ""},
+            {
+                "KC_BOOTSTRAP_ADMIN_USERNAME": "local-admin",
+                "KC_BOOTSTRAP_ADMIN_PASSWORD": "",
+                "KC_DB_PASSWORD": "",
+            },
             values(admin_template),
         )
 
