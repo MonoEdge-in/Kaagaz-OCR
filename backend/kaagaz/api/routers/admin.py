@@ -336,16 +336,25 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
 
 @router.post("/admin/users/{user_id}/resend-setup")
 def resend_setup(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
-    """Email the person a fresh link to set a password and an authenticator."""
+    """Email a member or reviewer a fresh link to set a password and an authenticator, while their
+    setup is unfinished. An admin's is the super admin's; a finished account is left alone."""
     target = str(user_id)
-    subject = accounts.subject_of(context, user.customer_id, target) if accounts.enabled(context) else None
-    if subject is None:
-        raise ApiError(409, "conflict", accounts.NOT_LINKED)
-    if not accounts.send_setup(context, subject):
-        raise ApiError(502, "keycloak_unavailable", "We could not send the email. Try again in a minute.")
+    _member_or_reviewer(context, user, target)
+    accounts.resend_setup(context, user.customer_id, target, not_linked=accounts.NOT_LINKED_FOR_ADMIN)
     with context.db.user(user.customer_id, user.user_id) as conn:
         _audit_user(conn, user, "auth.setup_email_sent", target)
     return {"setup_email_sent": True, "message": "Done. We emailed a new setup link. It works for 12 hours."}
+
+
+def _member_or_reviewer(context: AppContext, user: CurrentUser, target: str) -> RowMapping:
+    """The person's row: 404 for anyone not in this organisation, 403 for an admin."""
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        row = next((r for r in users_sql.list_users(conn, user.customer_id) if str(r["id"]) == target), None)
+    if row is None:
+        raise ApiError(404, "not_found")
+    if row["role"] == "admin":
+        raise ApiError(403, "forbidden", "Only your super admin can reset another admin's authenticator.")
+    return row
 
 
 @router.patch("/admin/users/{user_id}")
@@ -402,18 +411,27 @@ def update_user(
         for identity in reapproved:
             _audit_identity(conn, user, "auth.identity_reapproval", {**identity, "user_id": target})
         [reply] = _people(conn, context, user.customer_id, [row])  # the role may change the tag
+    mirror_error: ApiError | None = None
     if body.disabled is not None:  # #737: company sign-in follows
-        accounts.mirror_enabled(context, user.customer_id, enabled_now=not body.disabled, only=[target])
+        try:
+            accounts.mirror_enabled(context, user.customer_id, enabled_now=not body.disabled, only=[target])
+        except ApiError as error:
+            mirror_error = error
     if reapproved:
-        emails.after(
-            background,
-            "approval_waiting",
-            tell_admins,
-            context,
-            user.customer_id,
-            user.customer_name,
-            row["email"],
-        )
+        if mirror_error is None:
+            emails.after(
+                background,
+                "approval_waiting",
+                tell_admins,
+                context,
+                user.customer_id,
+                user.customer_name,
+                row["email"],
+            )
+        else:  # a reply that is an error runs no background task: send it now, then report
+            tell_admins(context, user.customer_id, user.customer_name, row["email"])
+    if mirror_error is not None:
+        raise mirror_error
     return reply
 
 
@@ -482,14 +500,12 @@ def reset_two_step(
             "bad_request",
             "You can't reset your own two-step code. Ask another admin, or use the command line.",
         )
+    row = _member_or_reviewer(context, user, target)
+    accounts.act(
+        context, user.customer_id, target, kc_admin.remove_otp, not_linked=accounts.NOT_LINKED_FOR_ADMIN
+    )
     with context.db.user(user.customer_id, user.user_id) as conn:
-        row = next((r for r in users_sql.list_users(conn, user.customer_id) if str(r["id"]) == target), None)
-    if row is None:
-        raise ApiError(404, "not_found")
-    if row["role"] == "admin":
-        raise ApiError(403, "forbidden", "Only your super admin can reset another admin's authenticator.")
-    accounts.act(context, user.customer_id, target, kc_admin.remove_otp)
-    with context.db.user(user.customer_id, user.user_id) as conn:
+        users_sql.bump_session_version(conn, user.customer_id, target)  # signed out everywhere
         # The spec's auth.totp_reset (#457; it was user.reset_totp, never the plan's
         # "user.reset_2fa": audit actions must match ^[a-z_.]{1,64}$, the audit_log CHECK).
         _audit_user(conn, user, "auth.totp_reset", target)

@@ -7,7 +7,7 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import RowMapping, text
@@ -21,8 +21,9 @@ from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns
 from kaagaz.pipeline import FinishedRun
 from tests.settings_factory import make_settings
+from tests.test_api_admin_sign_in import ADMIN_SESSION_REFUSED
 from tests.test_api_model_choice import add_model, allow
-from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, TestClient, answer_json
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, Signed, TestClient, answer_json
 from tests.test_api_usage import NOW, THIS_MONTH, add_spend, set_budget
 from tests.test_runs_db import totals
 
@@ -65,6 +66,8 @@ class _Keycloak:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
         self.existing: set[str] = set()
         self.email_fails = False
+        self.unfinished = True
+        monkeypatch.setattr(kc_admin, "setup_unfinished", lambda settings, subject: self.unfinished)
         for name in ("find_user_by_email", "create_user", "send_setup_email"):
             monkeypatch.setattr(kc_admin, name, getattr(self, f"_{name}"))
         for name in ("remove_otp", "set_enabled", "delete_user", "clear_lock"):
@@ -211,7 +214,10 @@ def test_adding_a_person_needs_company_sign_in_to_be_set_up(db: Database) -> Non
         headers=CSRF,
     )
     assert reply.status_code == 409
-    assert reply.json()["error"]["message"] == "Company sign-in is not set up on this server."
+    assert (
+        reply.json()["error"]["message"]
+        == "Company sign-in is not set up on this server. Ask your super admin."
+    )
 
 
 @pytest.mark.db
@@ -731,3 +737,100 @@ def test_disabling_a_user_ends_their_sessions(db: Database) -> None:
 
     assert api.user_state(admin.customer_id, member.user_id)["session_version"] > version
     assert member.client.get("/api/auth/me").status_code == 401
+
+
+def _member_in_keycloak(api: Api, keycloak: _Keycloak, admin: Signed, role: str = "member") -> dict[str, Any]:
+    person = admin.client.post(
+        "/api/admin/users",
+        json={
+            "email": f"{role}-{uuid.uuid4().hex[:10]}@example.test",
+            "display_name": "Mira Rao",
+            "role": role,
+        },
+        headers=CSRF,
+    ).json()
+    keycloak.calls.clear()
+    return person
+
+
+@pytest.mark.db
+def test_resend_setup_is_refused_once_the_person_finished_setting_up_and_for_an_admin(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    admin = api.new_admin()
+    member = _member_in_keycloak(api, keycloak, admin)
+    keycloak.unfinished = False
+    refused = admin.client.post(f"/api/admin/users/{member['id']}/resend-setup", headers=CSRF)
+    assert refused.status_code == 409
+    assert refused.json()["error"]["message"] == (
+        "They have already set up their account. Ask them to use Forgot password,"
+        " or reset their authenticator."
+    )
+    assert keycloak.calls == []
+    other_admin_id, _ = api.add_user(admin.customer_id, "admin")
+    keycloak.unfinished = True
+    for path in ("resend-setup", "reset-2fa"):
+        reply = admin.client.post(f"/api/admin/users/{other_admin_id}/{path}", headers=CSRF)
+        assert reply.status_code == 403
+        assert reply.json()["error"]["message"] == (
+            "Only your super admin can reset another admin's authenticator."
+        )
+    assert keycloak.calls == []
+
+
+@pytest.mark.db
+def test_a_person_not_on_company_sign_in_gets_a_next_step(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    admin = api.new_admin()
+    legacy_id, _ = api.add_user(admin.customer_id, "member")  # never moved
+    for path in ("resend-setup", "reset-2fa"):
+        reply = admin.client.post(f"/api/admin/users/{legacy_id}/{path}", headers=CSRF)
+        assert reply.status_code == 409
+        assert reply.json()["error"]["message"].endswith(
+            "Ask your super admin to move your organisation to company sign-in."
+        )
+    assert keycloak.calls == []
+
+
+@pytest.mark.db
+def test_resetting_an_authenticator_signs_the_person_out_everywhere(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    admin = api.new_admin()
+    member = _member_in_keycloak(api, keycloak, admin)
+    before = int(api.user_state(admin.customer_id, member["id"])["session_version"])
+    reply = admin.client.post(f"/api/admin/users/{member['id']}/reset-2fa", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+    assert int(api.user_state(admin.customer_id, member["id"])["session_version"]) == before + 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("action", ["resend-setup", "reset-2fa", "unlock", "disable"])
+def test_an_admin_of_another_organisation_reaches_nobody_and_keycloak_is_never_called(
+    db: Database, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    mine, theirs = api.new_admin(), api.new_admin()
+    person = _member_in_keycloak(api, keycloak, theirs)
+    if action == "disable":
+        reply = mine.client.patch(f"/api/admin/users/{person['id']}", json={"disabled": True}, headers=CSRF)
+    else:
+        reply = mine.client.post(f"/api/admin/users/{person['id']}/{action}", headers=CSRF)
+    assert reply.status_code in (404, 409), reply.text
+    assert keycloak.calls == []
+    assert api.user_state(theirs.customer_id, person["id"])["disabled"] is False
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("role", ["member", "reviewer"])
+@pytest.mark.parametrize("action", ["resend-setup", "reset-2fa"])
+def test_a_member_or_reviewer_cannot_use_the_new_admin_routes(db: Database, role: str, action: str) -> None:
+    api = Api(db)
+    signed = api.new_signed(role)
+    reply = signed.client.post(f"/api/admin/users/{ANY_ID}/{action}", headers=CSRF)
+    assert reply.status_code == 403
+    assert reply.json() == ADMIN_SESSION_REFUSED

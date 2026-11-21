@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from kaagaz.api import keycloak_accounts as accounts
 from kaagaz.api import totp
 from kaagaz.api.auth import verify_password
 from kaagaz.db import operator_orgs as orgs_sql
@@ -136,10 +137,12 @@ def test_resetting_an_admins_two_step_removes_their_authenticator_in_keycloak(of
     offline.kc.clear()
     offline.subjects.clear()  # an admin who is not on company sign-in has no authenticator to remove
     offline.last_step = None
+    offline.calls.clear()
     again = offline.post(f"{ADMIN}/reset-2fa", {"code": totp.code_at(OWN, STEP + 1)})
+    assert offline.calls == []  # not linked: nothing was committed, no code used up
     assert (again.status_code, again.json()["error"]["message"]) == (
         409,
-        "This person is not on company sign-in yet.",
+        accounts.NOT_LINKED,
     )
 
 

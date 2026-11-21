@@ -86,6 +86,8 @@ router = APIRouter(prefix="/operator/orgs", dependencies=[Depends(current_operat
 Context = Annotated[AppContext, Depends(get_context)]
 OperatorDb = Annotated[OperatorDatabase, Depends(get_operator_db)]
 
+EXISTS_REASON = "This email already has a company sign-in account."
+MOVE_AT_A_TIME = 50  # people moved per run: each takes a few calls to Keycloak
 STEP_UP_MESSAGE = "That two-step code was not accepted. Wait for the next code and try again."
 # A write's outcome that changed nothing, and its reply.
 _REFUSALS = {
@@ -294,11 +296,21 @@ def sign_in_summary(customer_id: uuid.UUID, operator: OperatorSession, context: 
 
 
 @router.post("/{customer_id}/move-everyone")
-def move_everyone(customer_id: uuid.UUID, operator: OperatorSession, context: Context) -> dict[str, Any]:
-    """Give each active person not yet on company sign-in an account, a link and the setup email.
-    An email Keycloak already has is never linked: it is listed for attention. Safe to run again:
-    people already linked are skipped, and a failure leaves no half-made person."""
+def move_everyone(
+    customer_id: uuid.UUID,
+    body: StepUpBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, Any]:
+    """Give each active person not yet on company sign-in an account, a link and the setup email,
+    after a fresh code. Everyone moved is signed out (their link raises the session version) and
+    can't use the old password. An email Keycloak already has is never linked: it is listed for
+    attention. At most ``MOVE_AT_A_TIME`` people are moved per run (an email already taken costs
+    nothing against it); press Move again for the rest. Safe to run again: people already linked
+    are skipped, and a failure leaves no half-made person. One audit row, counts only."""
     accounts.require(context)
+    step_up = _step_up(db, context, operator, body.code)
     status, people = _people(context, str(customer_id))
     if status != "active":
         raise ApiError(409, "conflict", "Enable the organisation first.")
@@ -307,19 +319,22 @@ def move_everyone(customer_id: uuid.UUID, operator: OperatorSession, context: Co
     attention: list[dict[str, str]] = []
     unsent: list[dict[str, str]] = []
     todo = [p for p in active if not p.linked]
-    for index, person in enumerate(todo):
+    done = 0  # how many of ``todo`` were tried
+    for person in todo:
+        if moved >= MOVE_AT_A_TIME:
+            break
+        done += 1
         try:
             result = accounts.link_new(
                 context, str(customer_id), person.user_id, email=person.email, name=person.name
             )
         except accounts.AccountExists:
-            attention.append(
-                {"email": person.email, "reason": "This email already has a company sign-in account."}
-            )
+            attention.append({"email": person.email, "reason": EXISTS_REASON, "kind": "exists"})
         except ApiError as error:
             attention.append({"email": person.email, "reason": error.message or "Could not be moved."})
             if error.status == 502:  # Keycloak is down: do not try everyone
-                attention += [{"email": rest.email, "reason": "Not tried."} for rest in todo[index + 1 :]]
+                attention += [{"email": rest.email, "reason": "Not tried."} for rest in todo[done:]]
+                done = len(todo)
                 break
         except (keycloak_sql.IdentityTaken, SQLAlchemyError):
             attention.append({"email": person.email, "reason": "Could not be linked."})
@@ -327,15 +342,27 @@ def move_everyone(customer_id: uuid.UUID, operator: OperatorSession, context: Co
             moved += 1
             if result == "email_failed":
                 unsent.append({"user_id": person.user_id, "email": person.email})
-    logger.info("move everyone: %d moved, %d connected, %d need attention", moved, connected, len(attention))
+    remaining = len(todo) - done
+    with db.operator() as conn:
+        orgs_sql.record_move_everyone(
+            conn,
+            operator.operator_id,
+            str(customer_id),
+            moved=moved,
+            attention=len(attention),
+            step=step_up.step,
+        )
     message = f"{moved} moved, {connected} already connected, {len(attention)} need attention."
     if unsent:
         message += f" {len(unsent)} setup email(s) were not sent: use Resend setup email."
+    if remaining:
+        message += f" {remaining} still to move. Press Move again to continue."
     return {
         "moved": moved,
         "connected": connected,
         "attention": attention,
         "email_not_sent": unsent,
+        "still_to_move": remaining,
         "message": message,
     }
 
@@ -344,14 +371,9 @@ def move_everyone(customer_id: uuid.UUID, operator: OperatorSession, context: Co
 def resend_setup(
     customer_id: uuid.UUID, user_id: uuid.UUID, operator: OperatorSession, context: Context
 ) -> dict[str, Any]:
-    """Email one linked person a fresh link to set a password and an authenticator."""
-    subject = (
-        accounts.subject_of(context, str(customer_id), str(user_id)) if accounts.enabled(context) else None
-    )
-    if subject is None:
-        raise ApiError(409, "conflict", accounts.NOT_LINKED)
-    if not accounts.send_setup(context, subject):
-        raise ApiError(502, "keycloak_unavailable", "We could not send the email. Try again in a minute.")
+    """Email one linked person a fresh link to set a password and an authenticator, while their
+    setup is unfinished (a finished account is left alone)."""
+    accounts.resend_setup(context, str(customer_id), str(user_id))
     return {"message": "Done. We emailed a new setup link. It works for 12 hours."}
 
 
@@ -388,8 +410,13 @@ def reset_admin_two_step(
     context: Context,
 ) -> dict[str, Any]:
     """Their authenticator is removed in company sign-in (they set one up again at the next
-    sign-in), every session ends; a security
-    notice is emailed to the admin while email is on (#457)."""
+    sign-in), every session ends; a security notice is emailed to the admin while email is on (#457).
+    """
+    with db.operator() as conn:  # only an admin of THIS organisation: anyone else is the same 404
+        admins = orgs_sql.list_admins(conn, operator.operator_id, str(customer_id))
+    if not any(str(row["user_id"]) == str(user_id) for row in admins):
+        raise ApiError(404, "not_found")
+    accounts.linked_subject(context, str(customer_id), str(user_id))  # before anything is changed
     step_up = _step_up(db, context, operator, body.code)
     reply = _change(db, context, operator, customer_id, user_id, "reset_totp", step_up)
     admin = reply["admin"]

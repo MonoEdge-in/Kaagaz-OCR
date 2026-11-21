@@ -90,14 +90,10 @@ def send(context: AppContext, to: str, purpose: str, message: Message) -> bool:
     try:
         mailer.send(to=to, subject=subject, text=text)
     except (BotoCoreError, ClientError) as error:
-        # Why: SES's own error code, else the exception's type; an invite's failure is an error
-        # (the person waits for it), the rest warnings.
+        # Why: SES's own error code, else the exception's type.
         why = error.response.get("Error", {}).get("Code") if isinstance(error, ClientError) else None
         failed = {"event": "email_failed", "purpose": purpose, "error": why or type(error).__name__}
-        log.log(
-            logging.ERROR if purpose == "invite" else logging.WARNING,
-            json.dumps(failed, separators=(",", ":")),
-        )
+        log.warning(json.dumps(failed, separators=(",", ":")))
         return False
     return True
 
@@ -192,10 +188,10 @@ def two_step_off(name: str) -> Message:
 
 def two_step_reset(name: str) -> Message:
     return (
-        "Your Kaagaz two-step sign-in was reset",
-        f"Hello {name},\n\nThe two-step code of your Kaagaz account was reset, and every browser"
-        " was signed out. You can sign in with your password and set up two-step sign-in"
-        " again.\n\nIf you did not ask for this, tell your organisation's admin now." + _SIGN_OFF,
+        "Your authenticator was reset",
+        f"Hello {name},\n\nYour admin reset your authenticator app. You've been signed out everywhere."
+        " Next time you sign in, set up your authenticator again.\n\nIf you did not expect this,"
+        " tell your organisation's admin now." + _SIGN_OFF,
     )
 
 

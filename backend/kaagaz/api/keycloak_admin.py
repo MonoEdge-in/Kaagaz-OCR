@@ -11,6 +11,7 @@ An existing person is never taken over: ``find_user_by_email`` lets the caller r
 """
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.parse
@@ -22,7 +23,10 @@ from kaagaz.settings import Settings
 
 SETUP_ACTIONS = ("UPDATE_PASSWORD", "CONFIGURE_TOTP")
 SETUP_LINK_SECONDS = 12 * 60 * 60  # "It works for 12 hours."
+NOT_SET_UP = "Company sign-in is not set up on this server. Ask your super admin."
 UNREACHABLE = "We could not reach the company sign-in service. Try again in a minute."
+
+logger = logging.getLogger(__name__)
 
 _token: tuple[float, str] | None = None  # (monotonic expiry, access token)
 
@@ -89,6 +93,18 @@ def send_setup_email(settings: Settings, user_id: str) -> None:
     _call(settings, "PUT", f"/users/{_id(user_id)}/execute-actions-email?{query}", list(SETUP_ACTIONS))
 
 
+def setup_unfinished(settings: Settings, user_id: str) -> bool:
+    """True while the person still has a required action (password, authenticator) or no authenticator.
+
+    Resending the setup email to someone who finished would put those actions back on a working
+    account, so callers refuse unless this is true."""
+    found = _call(settings, "GET", f"/users/{_id(user_id)}")
+    if isinstance(found, dict) and found.get("requiredActions"):
+        return True
+    credentials = _call(settings, "GET", f"/users/{_id(user_id)}/credentials")
+    return not any(isinstance(c, dict) and c.get("type") == "otp" for c in credentials or [])
+
+
 def remove_otp(settings: Settings, user_id: str) -> None:
     """Remove their authenticator; Keycloak asks them to set one up at the next sign-in."""
     path = f"/users/{_id(user_id)}/credentials"
@@ -121,7 +137,7 @@ def _base(settings: Settings) -> str:
     issuer = settings.keycloak_issuer or ""
     head, marker, realm = issuer.partition("/realms/")
     if not configured(settings) or not marker or not realm or "/" in realm:
-        raise KeycloakAdminError("Company sign-in is not set up on this server.")
+        raise KeycloakAdminError(NOT_SET_UP)
     return f"{head}/admin/realms/{realm}"
 
 
@@ -142,7 +158,8 @@ def _access_token(settings: Settings) -> str:
     )
     try:
         reply = _send(request)[0]
-    except _Refused:
+    except _Refused as refused:
+        logger.warning("keycloak token request refused: status %s", refused.status)
         raise KeycloakAdminError() from None
     token = reply.get("access_token") if isinstance(reply, dict) else None
     lifetime = reply.get("expires_in") if isinstance(reply, dict) else None
@@ -173,6 +190,7 @@ def _call(
         try:
             reply, location = _send(request)
         except _Refused as refused:
+            logger.warning("keycloak admin call refused: %s status %s", method, refused.status)
             if refused.status == 401 and attempt == 1:
                 _token = None  # an expired token: ask once more
                 continue

@@ -54,6 +54,15 @@ class KeycloakLocalRealmTests(unittest.TestCase):
         self.assertFalse(client["implicitFlowEnabled"])
         self.assertFalse(client["directAccessGrantsEnabled"])
         self.assertEqual([], client["redirectUris"])
+        # roles: the token carries the realm-management roles; kc-admin-api: Keycloak 26 refuses an
+        # admin call whose token lacks the Admin REST API audience.
+        self.assertEqual(["roles", "kc-admin-api"], client["defaultClientScopes"])
+        # Without these the token has no resource_access and every admin call is refused (#737).
+        self.assertFalse(client["fullScopeAllowed"])
+        self.assertEqual(
+            {"realm-management": [{"client": "kaagaz-provisioner", "roles": ["manage-users", "view-users"]}]},
+            REALM["clientScopeMappings"],
+        )
         self.assertNotIn("secret", client)
         [account] = REALM["users"]  # the only user: no people are imported
         self.assertEqual("kaagaz-provisioner", account["serviceAccountClientId"])

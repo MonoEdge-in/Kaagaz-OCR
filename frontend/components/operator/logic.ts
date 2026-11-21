@@ -334,3 +334,10 @@ export function moveSummaryText(summary: Pick<SignInSummary, "connected" | "to_m
 export function moveButtonText(count: number): string {
   return `Move ${formatNumber(count)} ${count === 1 ? "person" : "people"}`;
 }
+
+/** The server moves at most this many people per press. */
+export const MOVE_AT_A_TIME = 50;
+
+/** What moving does to the people moved, under the Move button's code field. */
+export const MOVE_EFFECT =
+  "Everyone moved is signed out now and can't use their old password. They sign in again after setting up from the email.";

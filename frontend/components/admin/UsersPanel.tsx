@@ -570,7 +570,9 @@ function UserRow({
     ...(can.reset2fa
       ? [{ label: "Reset authenticator", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
       : []),
-...(managed      ? [{ label: "Resend setup email", description: USER_MENU_HELP.resendSetup, onSelect: () => void resend() }]      : []),
+    ...(managed && user.role !== "admin"
+      ? [{ label: "Resend setup email", description: USER_MENU_HELP.resendSetup, onSelect: () => void resend() }]
+      : []),
     ...((user.signs_in_with ?? []).some((way) => way !== "password")
       ? [{ label: "Remove connected accounts", description: USER_MENU_HELP.connections, onSelect: () => setConfirming("connections") }]
       : []),

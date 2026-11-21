@@ -1786,8 +1786,8 @@ export const setSessionTimeout = (hours: number | null, code: string, orgId?: st
 /** Operator (#737): how many people are on company sign-in, moving the rest, and one person's setup email. */
 export const getSignInSummary = (orgId: string) =>
   request<SignInSummary>("GET", `/operator/orgs/${encodeURIComponent(orgId)}/sign-in`);
-export const moveEveryone = (orgId: string) =>
-  request<MoveResult>("POST", `/operator/orgs/${encodeURIComponent(orgId)}/move-everyone`);
+export const moveEveryone = (orgId: string, code: string) =>
+  request<MoveResult>("POST", `/operator/orgs/${encodeURIComponent(orgId)}/move-everyone`, { code });
 export const resendOrgSetup = (orgId: string, userId: string) =>
   request<ResultLine>("POST", `/operator/orgs/${encodeURIComponent(orgId)}/people/${encodeURIComponent(userId)}/resend-setup`);
 export const getGoogleSignIn = () => request<{ on: boolean }>("GET", "/operator/google-signin");
