@@ -141,8 +141,6 @@ def test_one_byte_over_is_refused_and_the_trash_counts_until_it_is_deleted_forev
     fill(db, customer, left=len(PDF_BYTES) + 1000 - 1)  # one byte short, the Trash counted
     _refused(upload(admin, PDF_BYTES), used=GIB - len(PDF_BYTES) + 1)
     api.storage.put(customer, held, io.BytesIO(b"x"))
-    # Changed on purpose (#737, 21 Nov 2026): delete forever needs a fresh sign-in proof.
-    api.prove(admin, "delete_forever")
     assert admin.client.delete(f"/api/documents/{held}/permanent", headers=CSRF).status_code == 204
     assert upload(admin, PDF_BYTES).status_code == 201
 

@@ -14,10 +14,9 @@ from typing import Any
 import httpx2 as httpx
 import pytest
 
-from kaagaz.api.auth import LOCKED_OPEN_COOKIE, LOCKED_OPEN_SECONDS
+from kaagaz.api.auth import LOCKED_OPEN_COOKIE, LOCKED_OPEN_SECONDS, _sign, load_user
 from kaagaz.api.routers.locked_open import OPENS_PER_HOUR
 from kaagaz.db.engine import Database
-from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_support import CSRF, PASSWORD, Api, Signed, TestClient
 from tests.test_operator_auth_db import _owner
 
@@ -262,26 +261,34 @@ def test_another_browser_and_signing_out_everywhere_end_it(db: Database) -> None
     assert _code(_page(org.given, org.locked)) == (401, "not_signed_in")  # the version went up
 
 
-def test_the_delete_forever_confirm_never_opens_a_locked_file_nor_the_other_way(db: Database) -> None:
+def test_a_look_alike_token_of_another_purpose_never_opens_a_locked_file(db: Database) -> None:
+    """#744 (22 Nov 2026): the signing purpose alone stops a token with the person's own, real
+    ``{uid, cid, ver, sid, exp}`` signed as a ``confirm`` token (what Delete forever once set)."""
     api = Api(db)
     org = _org(api)
-    assert _grant(org.admin, org.given.user_id) == (200, True)
-    assert _confirm(org.given) == 204
-    assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")
-    confirm = org.given.client.cookies.get("kaagaz_confirm", path="/api/documents")
-    assert confirm
-    org.given.client.cookies.set(LOCKED_OPEN_COOKIE, confirm, path="/api/documents")
-    assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")
-
-    reader = api.sign_in(org.c, "member")
-    assert _grant(org.admin, reader.user_id) == (200, True)
-    trashed = api.add_document(org.c, deleted_at=api.clock())
-    assert _open(reader).status_code == 200
-    check = reader.client.cookies.get(LOCKED_OPEN_COOKIE, path="/api/documents")
-    assert check
-    reader.client.cookies.set("kaagaz_confirm", check, path="/api/documents")
-    forever = reader.client.delete(f"/api/documents/{trashed}/permanent", headers=CSRF)
-    assert _code(forever) == (403, "keycloak_reauth_required")
+    given = org.given
+    user = load_user(api.db, given.customer_id, given.user_id, scope=given.scope)
+    assert user is not None
+    now = int(api.clock().timestamp())
+    payload = {
+        "uid": user.user_id,
+        "cid": user.customer_id,
+        "ver": user.session_version,
+        "sid": api.session_ids[(given.client, given.user_id)],
+        "exp": now + LOCKED_OPEN_SECONDS,
+    }
+    given.client.cookies.set(
+        LOCKED_OPEN_COOKIE, _sign(payload, b"confirm", api.settings.session_secret), path="/api/documents"
+    )
+    assert _code(_page(given, org.locked)) == (403, "locked_open_required")
+    for purpose in (b"keycloak_action_proof", b"whatsapp_proof"):  # live purposes too
+        look_alike = _sign(payload, purpose, api.settings.session_secret)
+        given.client.cookies.set(LOCKED_OPEN_COOKIE, look_alike, path="/api/documents")
+        assert _code(_page(given, org.locked)) == (403, "locked_open_required"), purpose
+    real = _sign(payload, b"locked_open", api.settings.session_secret)  # the same body, the right purpose
+    given.client.cookies.set(LOCKED_OPEN_COOKIE, real, path="/api/documents")
+    opened = _page(given, org.locked)
+    assert (opened.status_code, opened.content) == (200, PICTURE)
 
 
 # --- the company sign-in, the only way to open --------------------------------------------------

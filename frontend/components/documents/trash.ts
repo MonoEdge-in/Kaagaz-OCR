@@ -9,8 +9,7 @@ import type { DocumentSummary, FilePlaced, FolderRestored, Me, TrashedFolder } f
 
 /**
  * Who may delete for good: an admin session (every admin's, from /login), or a member or
- * reviewer an admin allowed (can_delete_forever). Each confirms with a fresh company sign-in first
- * (403 keycloak_reauth_required). The server says 403 to anyone else. Move to Trash and Restore follow each document's can_delete.
+ * reviewer an admin allowed (can_delete_forever). No fresh company sign-in (#744). The server says 403 to anyone else. Move to Trash and Restore follow each document's can_delete.
  */
 export function canDeleteForever(me: Me): boolean {
   if (me.user.role !== "admin") return me.user.can_delete_forever;

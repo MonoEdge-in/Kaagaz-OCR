@@ -1,4 +1,4 @@
-"""Session and confirm tokens, the sign-in settings and the sign-in dependencies (PRD 1 A1 to A7).
+"""Session tokens, the sign-in settings and the sign-in dependencies (PRD 1 A1 to A7).
 
 Pure: no database. The dependency tests build a bare FastAPI app whose
 ``load_user`` is replaced, so they check the wiring of ``current_user``,
@@ -22,18 +22,13 @@ from fastapi.testclient import TestClient
 
 from kaagaz.api import auth, errors
 from kaagaz.api.auth import (
-    CONFIRM_COOKIE,
-    CONFIRM_SECONDS,
     SESSION_COOKIE,
-    ConfirmClaims,
     CurrentUser,
     SessionClaims,
     new_session,
-    read_confirm,
     read_session,
     session_seconds,
     set_session_cookie,
-    sign_confirm,
     sign_session,
 )
 from kaagaz.api.context import AppContext
@@ -295,40 +290,6 @@ def test_cookie_is_secure_when_configured() -> None:
 def test_an_already_expired_session_is_not_set_as_a_cookie() -> None:
     with pytest.raises(ValueError):
         set_session_cookie(Response(), _session(expires_at=NOW), make_settings(), now=NOW)
-
-
-# --- the confirm token (council 4 Oct 2026) ----------------------------------------------------
-
-# Changed on purpose (A4, 7 Nov 2026): the browser session too.
-CONFIRM = {"uid": UID, "cid": CID, "ver": 3, "exp": NOW + CONFIRM_SECONDS, "sid": SID}
-
-
-def test_confirm_round_trips_and_lasts_5_minutes() -> None:
-    claims = ConfirmClaims(
-        user_id=UID, customer_id=CID, session_version=3, expires_at=NOW + 300, session_id=SID
-    )
-    token = sign_confirm(claims, SECRET)
-    assert CONFIRM_SECONDS == 300
-    assert _payload(token) == CONFIRM
-    assert read_confirm(token, SECRET, now=NOW + 299) == claims
-    assert read_confirm(token, SECRET, now=NOW + 300) is None
-    body, signature = token.split(".")
-    expected = hmac.new(SECRET.encode(), b"confirm\x00" + body.encode("ascii"), hashlib.sha256).digest()
-    assert signature == _b64url(expected)
-
-
-def test_a_confirm_token_is_never_a_session_and_the_reverse() -> None:
-    confirm = _signed(CONFIRM, b"confirm")
-    assert read_session(confirm, SECRET, now=NOW) is None
-    assert read_confirm(_signed(CONFIRM, b"session"), SECRET, now=NOW) is None
-    assert read_confirm(sign_session(_session(), SECRET), SECRET, now=NOW) is None
-
-
-def test_a_confirm_token_with_a_missing_bad_or_extra_field_is_refused() -> None:
-    payloads = [{key: value for key, value in CONFIRM.items() if key != missing} for missing in CONFIRM]
-    bad = ({"ver": True}, {"ver": 0}, {"exp": "1"}, {"uid": "x"}, {"sid": "x"}, {"role": "member"})
-    for payload in payloads + [{**CONFIRM, **changes} for changes in bad]:
-        assert read_confirm(_signed(payload, b"confirm"), SECRET, now=NOW) is None, payload
 
 
 # --- the settings ------------------------------------------------------------------------------------
@@ -650,9 +611,7 @@ def test_require_admin_session_refuses_a_non_admin_role_even_with_an_admin_scope
     assert auth.require_admin_session(_user(scope="admin")) == _user(scope="admin")
 
 
-def _forever(client: TestClient, confirm: dict[str, Any] | None = None) -> tuple[int, str | None]:
-    if confirm is not None:
-        client.cookies.set(CONFIRM_COOKIE, _signed(confirm, b"confirm", make_settings().session_secret))
+def _forever(client: TestClient) -> tuple[int, str | None]:
     reply = client.delete("/api/documents/forever")
     return reply.status_code, reply.json().get("error", {}).get("code")
 
@@ -662,8 +621,8 @@ def _forever(client: TestClient, confirm: dict[str, Any] | None = None) -> tuple
     [
         # A grant never counts for an admin: an admin's app session ends (16 Oct 2026).
         ({"delete_forever_allowed": True}, "app", (401, "not_signed_in")),
-        # Changed on purpose (21 Nov 2026): every admin needs the company sign-in's token, with or
-        # without a local two-step code (there is none: Keycloak asks for it at sign-in).
+        # Changed on purpose (#744, 22 Nov 2026): no company sign-in token is asked for any more; an
+        # admin session is enough, with or without a local two-step code (Keycloak asks at sign-in).
         ({"totp_enabled": False}, "admin", (200, None)),
         ({}, "admin", (200, None)),
         ({"role": "member"}, "app", (403, "forbidden")),
@@ -675,16 +634,19 @@ def test_who_may_delete_forever(
 ) -> None:
     client = _client(monkeypatch, _user(**stored))
     _cookie(client, _session(role=stored.get("role", "admin"), scope=scope, expires_at=NOW + 60))
-    assert _forever(client, CONFIRM) == expected
+    assert _forever(client) == expected
 
 
-def test_a_granted_member_needs_their_own_fresh_confirm_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_granted_member_deletes_forever_with_no_confirm_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Changed on purpose (#744, 22 Nov 2026): the confirm token is gone; the grant is the rule.
     client = _client(monkeypatch, _user(role="member", delete_forever_allowed=True))
     _cookie(client, _session(role="member", expires_at=NOW + 60))
-    assert _forever(client) == (403, "keycloak_reauth_required")  # no company sign-in yet
-    for stale in ({"exp": NOW}, {"uid": CID}, {"ver": 2}):  # expired, another user's, an older session's
-        assert _forever(client, {**CONFIRM, **stale}) == (403, "keycloak_reauth_required")
-    assert _forever(client, CONFIRM) == (200, None)
+    assert _forever(client) == (200, None)
+
+
+def test_delete_forever_is_not_a_company_sign_in_action() -> None:
+    # Changed on purpose (#744, 22 Nov 2026): the others still ask for a fresh sign-in.
+    assert {"locked_open", "whatsapp", "access", "locks"} == auth.KEYCLOAK_PROOF_ACTIONS
 
 
 def test_keycloak_admin_url_is_optional_checked_and_kept_without_a_trailing_slash() -> None:

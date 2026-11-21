@@ -210,7 +210,6 @@ def test_an_admins_folder_delete_sends_every_file_to_trash_and_counts_them(db: D
 def test_an_admins_delete_forever_deletes_the_files_they_cant_see(db: Database) -> None:
     org = _walled(Api(db))
     _trash_folder(org, org.folders["finance"])
-    Api.of(org.people["admin"]).prove(org.people["admin"], "delete_forever")
     reply = org.people["admin"].client.delete(
         f"/api/documents/trash/folders/{org.folders['finance']}/permanent", headers=CSRF
     )

@@ -34,15 +34,13 @@ Why some choices:
   delete only moves it to Trash; nothing is removed and storage is not touched,
   so a restore brings everything back. Because both act on every version, only
   an admin or a user who uploaded every version may do them (``can_delete`` in
-  the summary, kaagaz/api/views.py). Only an admin session with two-step sign-in, or an
-  admin session without it (#538) or a member or reviewer an admin allowed, either having
-  typed their password in the last 5 minutes (``CanDeleteForever``), can delete forever,
-  and only a family in Trash (409 ``not_in_trash``
-  otherwise); its files go inside the same transaction, so if storage cannot be
+  the summary, kaagaz/api/views.py). Only an admin session, or a member or reviewer an admin
+  allowed, can delete forever (``CanDeleteForever``; no fresh sign-in, #744), and only a family
+  in Trash (409 ``not_in_trash`` otherwise); its files go inside the same transaction, so if storage cannot be
   reached every row stays and the admin can try again.
 * **Upload as new file** (#697, Tushar, 19 Nov 2026; NEEDS VRUSHIT'S REVIEW): a resumable start
-  may say ``replace_trash``. At its complete, who may delete forever (``_may_replace_from_trash``,
-  else 403 before anything is stored) but with no typed password: when the upload's own bytes find
+  may say ``replace_trash``. At its complete, who may delete forever (``require_delete_forever``,
+  else 403 before anything is stored), with no fresh sign-in either: when the upload's own bytes find
   a copy in Trash, unlocked and seen by the person, its family is deleted forever under its lock
   (``document.replace_from_trash``), then the upload is stored as a new file where it was sent and
   read (its ``document.upload`` row says ``replaces``). Anything else is answered as before. The
@@ -175,7 +173,7 @@ from kaagaz.api.auth import (
     CurrentUser,
     Reviewer,
     User,
-    require_admin_session,
+    require_delete_forever,
 )
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
@@ -710,15 +708,6 @@ def _department(context: AppContext, user: CurrentUser, department_id: str) -> s
     return department_id
 
 
-def _may_replace_from_trash(user: CurrentUser) -> None:
-    """#697: who may delete forever (``require_delete_forever``: an admin session, or a member or
-    reviewer an admin allowed), with no typed password: the upload's own bytes name the copy."""
-    if user.role == "admin":
-        require_admin_session(user)
-    elif not user.delete_forever_allowed:
-        raise ApiError(403, "forbidden")
-
-
 def _replace_from_trash(context: AppContext, user: CurrentUser, document_id: str) -> bool:
     """#697: the family of ``document_id`` (the upload's duplicate) deleted forever and audited, under
     its family lock, only while it is in Trash, unlocked and seen by the person; else False and
@@ -765,7 +754,7 @@ def _accept(
     ``replace_trash`` (#697, module notes): its copy in Trash is deleted forever first, then it is
     stored again as a new file."""
     if replace_trash:
-        _may_replace_from_trash(user)  # before anything is stored
+        require_delete_forever(user)  # before anything is stored
     result, reading = _store(context, user, upload, policy, folder_id, batch_id, asked)
     replaces = None
     if replace_trash and result.duplicate and _replace_from_trash(context, user, result.document_id):
@@ -2440,10 +2429,9 @@ def _placed_details(placed: trash.Placed) -> dict[str, audit.DetailValue] | None
 @router.delete("/documents/{document_id}/permanent", status_code=204)
 def delete_document_forever(document_id: uuid.UUID, user: CanDeleteForever, context: Context) -> Response:
     """Delete every version of a family in Trash for good, rows and files (today's
-    full delete). It can't be undone, so it needs an admin session whose admin has
-    two-step sign-in on, or a typed password from an admin session without it (#538) or a
-    user an admin allowed (``require_delete_forever``). The audit row says ``by_grant`` when
-    a grant was used, ``by_password`` for an admin's typed password."""
+    full delete). It can't be undone, so it needs an admin session or a user an admin
+    allowed (``require_delete_forever``), and no fresh sign-in (#744). The audit row says
+    ``by_grant`` when a grant was used."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.user(customer_id, user.user_id) as conn:
         if user.role != "admin":  # PRD 7 (#595): a hidden file is not found; an Admin's is PR 10's

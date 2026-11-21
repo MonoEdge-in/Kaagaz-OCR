@@ -41,7 +41,7 @@ MESSAGES = {
     "mfa_enrol_required": "Set up two-step sign-in to continue. Sign in again to set it up.",
     "gone": "This is not available any more.",
     "password_change_required": "Set a new password to continue.",
-    # A risky action (delete forever, locks, access, WhatsApp, locked files) needs a fresh company sign-in.
+    # A risky action (locks, access, WhatsApp, locked files) needs a fresh company sign-in.
     "keycloak_reauth_required": "Confirm it's you with your company sign-in first.",
     "csrf": "This request was refused. Reload the page and try again.",
     "not_found": "We couldn't find that.",
