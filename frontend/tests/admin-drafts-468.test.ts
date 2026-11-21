@@ -56,23 +56,22 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Add a user: email, name and role, never the password", () => {
-  const typed = { email: "asha@example.com", display_name: "Asha", role: "reviewer" as const, password: "Temp-password-123" };
+describe("Add a user: email, name and role", () => {
+  const typed = { email: "asha@example.com", display_name: "Asha", role: "reviewer" as const };
 
-  it("keeps the three fields and never the temporary password", () => {
+  it("keeps the three fields (there is no password to add any more)", () => {
     expect(newUserDraft(typed)).toEqual({ email: "asha@example.com", display_name: "Asha", role: "reviewer" });
     saveDraft(ADMIN, ADD_USER_DRAFT, newUserDraft(typed));
-    expect([...storage.items.values()].join("")).not.toContain("Temp-password-123");
     expect([...storage.items.values()].join("")).not.toContain("password");
   });
 
-  it("keeps nothing until an email or a name is typed (a password alone is not kept)", () => {
+  it("keeps nothing until an email or a name is typed", () => {
     expect(newUserDraft({ ...typed, email: "", display_name: "" })).toBeNull();
   });
 
-  it("comes back for the same admin, with an empty password; another admin never sees it", () => {
+  it("comes back for the same admin; another admin never sees it", () => {
     saveDraft(ADMIN, ADD_USER_DRAFT, newUserDraft(typed));
-    expect(newUserFromDraft(readDraft(ADMIN, ADD_USER_DRAFT))).toEqual({ ...typed, password: "" });
+    expect(newUserFromDraft(readDraft(ADMIN, ADD_USER_DRAFT))).toEqual(typed);
     expect(readDraft(OTHER, ADD_USER_DRAFT)).toBeNull();
     // Changed on purpose (#468 review, PT5): reading no longer drops other people's drafts; the
     // session does that once who is signed in is known (keepDraftsOf).
@@ -83,7 +82,6 @@ describe("Add a user: email, name and role, never the password", () => {
       email: "",
       display_name: "",
       role: "member",
-      password: "",
     });
     expect(newUserFromDraft(null).role).toBe("member");
   });
@@ -198,7 +196,7 @@ describe("switching admin tabs with unsaved changes asks first", () => {
   it("AdminView asks before leaving Settings or AI settings, and drops their draft on leaving", () => {
     const view = read("components/admin/AdminView.tsx");
     expect(view).toContain("tabChangeAllowed(unsaved, () => window.confirm(LEAVE_UNSAVED))");
-    expect(view).toContain("<SettingsPanel providers={me.providers} onUnsaved={setUnsaved} />");
+    expect(view).toContain("<SettingsPanel onUnsaved={setUnsaved} />");
     expect(view).toContain('<AiSettingsPanel scope="organisation" onUnsaved={setUnsaved} />');
     // Changed on purpose (#468 review, SF3): only the draft of the tab being left.
     expect(view).toContain('if (active === "settings") clearDraft(me.user.id, SETTINGS_DRAFT);');

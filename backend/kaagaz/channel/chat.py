@@ -152,8 +152,6 @@ class Chat:
         body = (message.body or "").strip()
         lang = language(body) if message.kind == "text" else None
         lang = lang or "en"
-        if user.must_change_password:
-            return Outgoing(say("change_password", lang), lang=lang)
         if message.kind in ("interactive", "button"):
             return self._tapped(user, linked, message, body)
         with self.context.db.user(user.customer_id, user.user_id) as conn:

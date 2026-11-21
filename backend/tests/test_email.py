@@ -113,27 +113,14 @@ def test_memory_mailer_keeps_what_was_sent() -> None:
 
 TEMPLATES = (
     emails.confirm_email,
-    emails.invite,
-    emails.reset_password,
-    emails.password_changed,
-    emails.password_was_reset,
-    emails.two_step_on,
-    emails.two_step_off,
     emails.two_step_reset,
-    # Changed on purpose (#457 phase 1): a connected Google account's notices, and the admins'.
-    emails.google_connected,
-    emails.google_waiting,
-    emails.google_approved,
-    emails.google_declined,
-    emails.google_disconnected,
-    emails.connection_waiting,
     # Changed on purpose (#603): WhatsApp connected, and turned on for the organisation.
     emails.whatsapp_connected,
     emails.whatsapp_turned_on,
     emails.access_given,  # Changed on purpose (PRD 7, #601): the kind of access only
 )
 # What an email may be told: never a document, its name or content, never an id.
-# Changed on purpose (#507): the invite's Google line is a yes or no.
+
 # Changed on purpose (PRD 7, #601): who gave access to whom, and its kind (a fixed list).
 ALLOWED_ARGUMENTS = {"name", "organisation", "link", "google", "admin", "person", "kind"}
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -163,16 +150,7 @@ def test_no_email_can_be_given_a_document_and_none_holds_an_id(
 
 def test_a_security_notice_has_no_link() -> None:
     for notice in (
-        emails.password_changed,
-        emails.password_was_reset,
-        emails.two_step_on,
-        emails.two_step_off,
         emails.two_step_reset,
-        emails.google_connected,
-        emails.google_waiting,
-        emails.google_approved,
-        emails.google_declined,
-        emails.google_disconnected,
         emails.whatsapp_connected,  # Changed on purpose (#603)
     ):
         _, text = notice(name="Ramesh")
@@ -180,20 +158,12 @@ def test_a_security_notice_has_no_link() -> None:
 
 
 def test_an_email_to_an_address_not_yet_proven_is_never_given_a_name() -> None:
-    """Confirm, invite and reset go to an address nobody has proven yet, so a name someone
+    """Confirm goes to an address nobody has proven yet, so a name someone
     typed (at sign-up, say, with another person's address) never rides on them (#457 review)."""
-    templates: tuple[Callable[..., tuple[str, str]], ...] = (
-        emails.confirm_email,
-        emails.invite,
-        emails.reset_password,
-    )
+    templates: tuple[Callable[..., tuple[str, str]], ...] = (emails.confirm_email,)
     for template in templates:
         assert "name" not in inspect.signature(template).parameters, template.__name__
-        _, text = template(
-            **{"organisation": "Sharma Traders", "link": "https://kaagaz.example.com/x#t=abc"}
-            if template is emails.invite
-            else {"link": "https://kaagaz.example.com/x#t=abc"}
-        )
+        _, text = template(link="https://kaagaz.example.com/x#t=abc")
         assert text.startswith("Hello,\n\n")
 
 
@@ -219,7 +189,7 @@ class _Refusing(MemoryMailer):
         ),
     ],
 )
-def test_a_failed_send_says_why_and_an_invite_is_an_error(
+def test_a_failed_send_says_why_as_a_warning(
     caplog: pytest.LogCaptureFixture, error: Exception, said: str
 ) -> None:
     """SES's own error code, else the exception's type; never the address."""
@@ -227,11 +197,11 @@ def test_a_failed_send_says_why_and_an_invite_is_an_error(
         AppContext, SimpleNamespace(mailer=_Refusing(error), settings=SimpleNamespace(email_enabled=True))
     )
     caplog.set_level(logging.WARNING, logger="kaagaz.api.emails")
-    for purpose in ("invite", "reset"):
+    for purpose in ("confirm", "reset"):
         assert emails.send(context, "ramesh@example.com", purpose, ("S", "T")) is False
-    [invite, reset] = caplog.records
-    assert invite.getMessage() == f'{{"event":"email_failed","purpose":"invite","error":"{said}"}}'
-    assert (invite.levelno, reset.levelno) == (logging.ERROR, logging.WARNING)
+    [confirm, reset] = caplog.records
+    assert confirm.getMessage() == f'{{"event":"email_failed","purpose":"confirm","error":"{said}"}}'
+    assert (confirm.levelno, reset.levelno) == (logging.WARNING, logging.WARNING)
     assert "ramesh" not in caplog.text
 
 

@@ -48,18 +48,9 @@ describe("the document page's Details", () => {
   });
 });
 
-describe("keyboard focus after an action", () => {
-  it("puts focus back in the field after a failed sign-in", () => {
-    const form = read("app/login/SignInForm.tsx");
-    const failed = form.slice(form.indexOf("const message = signInErrorMessage(caught);"));
-    expect(failed).toMatch(
-      /flushSync\(\(\) => \{[\s\S]*?setBusy\(false\);\s*\}\);[\s\S]*?document\.getElementById\(askCode \? FIELD_IDS\.code : FIELD_IDS\.password\)\?\.focus\(\);/,
-    );
-  });
-
-  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): Verify and Verify all are gone from
-  // the document page with Values found, and their focus rule with them.
-});
+// Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): Verify and Verify all are gone from the
+// document page with Values found, and their focus rule with them. The sign-in page has no form any
+// more (21 Nov 2026), so its focus-after-a-failed-sign-in rule went too.
 
 describe("More details", () => {
   it("gives the page count once: from the count line when there is one", () => {

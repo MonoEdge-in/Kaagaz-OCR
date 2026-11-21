@@ -8,7 +8,6 @@ untouched. The idle check without a database: test_session_timeout.
 The platform value belongs to no customer: every test that sets it puts it back.
 """
 
-import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -18,11 +17,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from kaagaz.api import totp
+from kaagaz.api.auth import SESSION_COOKIE, read_session
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate, new_customer
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, PASSWORD, Api, Signed, TestClient
+from tests.test_api_support import CSRF, Api, Signed, TestClient
 from tests.test_migration_0004_db import _current, _head
 from tests.test_operator_auth_db import _Operator, _owner
 
@@ -171,11 +171,11 @@ def test_a_used_session_slides_and_a_lowered_value_ends_an_idle_one_at_its_next_
     assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in")
 
 
-def _max_age(reply: Any) -> int:
-    assert reply.status_code == 200, reply.text
-    found = re.search(r"kaagaz_session=[^;]+;.*?Max-Age=(\d+)", reply.headers["set-cookie"])
-    assert found is not None
-    return int(found[1])
+def _lifetime(api: Api, client: TestClient) -> int:
+    """Seconds the client's session lasts from now, read from its signed cookie."""
+    claims = read_session(client.cookies[SESSION_COOKIE], api.settings.session_secret, 0)
+    assert claims is not None
+    return claims.expires_at - int(api.clock().timestamp())
 
 
 def test_with_hours_set_a_sign_in_lasts_24_hours_for_members_and_admins_else_as_before(db: Database) -> None:
@@ -184,13 +184,11 @@ def test_with_hours_set_a_sign_in_lasts_24_hours_for_members_and_admins_else_as_
     customer, _ = api.customer()
 
     def lengths() -> tuple[int, int]:
-        _, email = api.add_user(customer, "member")
-        member = api.client().post(
-            "/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF
-        )
-        enrolled = api.enrol_admin(customer)
-        admin = api.admin_login(api.client(), enrolled.email, code=api.code(enrolled.secret))
-        return _max_age(member), _max_age(admin)
+        member_id, _ = api.add_user(customer, "member")
+        member, admin = api.client(), api.client()
+        api.mint_session(member, customer, member_id)
+        api.mint_session(admin, customer, api.enrol_admin(customer).user_id)
+        return _lifetime(api, member), _lifetime(api, admin)
 
     assert lengths() == (12 * HOUR, 60 * 60)  # no hours anywhere: as before
     path = f"/api/operator/orgs/{customer}/session-timeout"

@@ -9,11 +9,8 @@
 // a dialog that gives Cancel the focus. The arrow keys move into the menu from the
 // avatar and between its actions, Home and End to the first and last, as a row's
 // menu does (RowMenu's onMenuKey); a theme or palette radio keeps its own arrows.
-// #457: Change password and Two-step sign-in for every role open their dialogs
-// (ChangePasswordDialog, TwoStepDialog), and focus comes back to the avatar when they close; a
-// toast says when it is done, and `onChanged` loads who is signed in again after a two-step
-// change. Ways to sign in shows only while a provider is on (Me's providers). Each of the three
-// has its own icon, from the handoff's set.
+// Change password and Two-step sign-in (21 Nov 2026) open Keycloak's own pages, the only place
+// they live now, and come back here (keycloakAccountHref).
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -26,14 +23,12 @@ import { Icon } from "@/components/ui/Icon";
 import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { PalettePicker } from "@/components/ui/PalettePicker";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
-import { Toast } from "@/components/ui/Toast";
-import { ApiError, logout, logoutEverywhere } from "@/lib/api";
+import { ApiError, keycloakLogoutUrl, logout, logoutEverywhere } from "@/lib/api";
+import { keycloakAccountHref } from "@/lib/keycloak";
 import { clearDrafts } from "@/lib/drafts";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
-import { ChangePasswordDialog } from "./ChangePasswordDialog";
-import { TwoStepDialog } from "./TwoStepDialog";
-import { signedOutPath } from "./gate";
+import { signOutDestination } from "./gate";
 import { initials, roleName } from "./nav";
 import styles from "./Shell.module.css";
 
@@ -57,18 +52,13 @@ export function menuKeyTarget<T>(items: readonly T[], current: T | null, key: st
   return next === null ? null : (items[next] ?? null);
 }
 
-export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
+export function AccountMenu({ me }: { me: Me }) {
   const pathname = usePathname();
   const avatar = useRef<HTMLButtonElement>(null);
   const [signingOut, setSigningOut] = useState<SignOutKind | null>(null);
   const [failure, setFailure] = useState<{ kind: SignOutKind; message: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [changingPassword, setChangingPassword] = useState(false);
-  const [twoStep, setTwoStep] = useState(false);
-  const [done, setDone] = useState<string | null>(null);
   const name = me.user.display_name;
-  const managed = me.user.auth_authority === "keycloak";
-  const limited = me.user.auth_source === "legacy_limited";
 
   // "everywhere" raises the account's session version on the server, which
   // ends this browser's session too, so both end on the sign-in page. It is a
@@ -93,10 +83,18 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
         return;
       }
     }
+    // Company sign-in ends too: Keycloak's own sign-out page, which lands on /login (#737).
+    const keycloakUrl =
+      me.user.auth_authority === "keycloak"
+        ? await keycloakLogoutUrl().then(
+            (reply) => reply.url,
+            () => null,
+          )
+        : null;
     clearStored(); // the upload tray's drops (PRD 5 U1) are this person's
     clearDrafts(); // and so is unsent work kept in this tab (lib/drafts.ts, issue 468)
     announceSession(null);
-    leavePage(signedOutPath(pathname));
+    leavePage(signOutDestination(pathname, keycloakUrl));
   }
 
   // Issue 373: Down or Up on the avatar opens the menu and moves into it; inside, the arrow
@@ -149,27 +147,16 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
         <PalettePicker />
 
         {/* Spec 17 Oct 2026: the member's own AI settings, within what the admin left open. */}
-        {!limited && <Link
+        <Link
           href="/settings/ai"
           className={`btn btn-quiet btn-block ${styles.signOut}`}
           onClick={() => document.getElementById(MENU_ID)?.hidePopover()}
         >
           <Icon name="admin" />
           <span>AI settings</span>
-        </Link>}
-        {/* #457 phase 1: Account, Ways to sign in (email and password, and Google), while one is on. */}
-        {!limited && (me.providers.length > 0 || me.keycloak_enabled === true || managed) && (
-          <Link
-            href="/settings/sign-in"
-            className={`btn btn-quiet btn-block ${styles.signOut}`}
-            onClick={() => document.getElementById(MENU_ID)?.hidePopover()}
-          >
-            <KIcon name="link" />
-            <span>Ways to sign in</span>
-          </Link>
-        )}
+        </Link>
         {/* #603: Account, WhatsApp, while the server has WhatsApp on. */}
-        {!limited && me.whatsapp === true && (
+        {me.whatsapp === true && (
           <Link
             href="/settings/whatsapp"
             className={`btn btn-quiet btn-block ${styles.signOut}`}
@@ -179,28 +166,14 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
             <span>WhatsApp</span>
           </Link>
         )}
-        {!limited && !managed && <button
-          type="button"
-          className={`btn btn-quiet btn-block ${styles.signOut}`}
-          onClick={() => {
-            document.getElementById(MENU_ID)?.hidePopover();
-            setChangingPassword(true);
-          }}
-        >
+        <a href={keycloakAccountHref("UPDATE_PASSWORD", pathname)} className={`btn btn-quiet btn-block ${styles.signOut}`}>
           <KIcon name="key" />
           <span>Change password</span>
-        </button>}
-        {!limited && !managed && <button
-          type="button"
-          className={`btn btn-quiet btn-block ${styles.signOut}`}
-          onClick={() => {
-            document.getElementById(MENU_ID)?.hidePopover();
-            setTwoStep(true);
-          }}
-        >
+        </a>
+        <a href={keycloakAccountHref("CONFIGURE_TOTP", pathname)} className={`btn btn-quiet btn-block ${styles.signOut}`}>
           <KIcon name="lock" />
           <span>Two-step sign-in</span>
-        </button>}
+        </a>
 
         <div className={styles.signOuts}>
           <button
@@ -244,30 +217,6 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
           again on each one.
         </p>
       </ConfirmDialog>
-      {changingPassword && (
-        <ChangePasswordDialog
-          me={me}
-          onClose={() => setChangingPassword(false)}
-          onClosed={() => avatar.current?.focus()}
-          onDone={(message) => {
-            setChangingPassword(false);
-            setDone(message);
-          }}
-        />
-      )}
-      {twoStep && (
-        <TwoStepDialog
-          me={me}
-          onClose={() => setTwoStep(false)}
-          onClosed={() => avatar.current?.focus()}
-          onDone={(message) => {
-            setTwoStep(false);
-            setDone(message);
-            onChanged();
-          }}
-        />
-      )}
-      <Toast message={done} onClose={() => setDone(null)} />
     </>
   );
 }

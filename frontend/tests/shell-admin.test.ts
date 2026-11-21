@@ -7,10 +7,8 @@ import {
   adminGate,
   allowForeverQuestion,
   breakdowns,
-  generatePassword,
   kpiTiles,
   settingsChanged,
-  twoStepNote,
   describeAction,
   describeDetails,
   describeTarget,
@@ -22,6 +20,7 @@ import {
   parseUploadLimit,
   retryErrorText,
   tabAfterKey,
+  companySignIn,
   userActions,
   userStatus,
   validateNewUser,
@@ -45,6 +44,7 @@ const user = (changes: Partial<AdminUser> = {}): AdminUser => ({
   two_step_turned_off: false,
   must_change_password: false,
   can_delete_forever: false,
+  company_sign_in: "connected",
   ...changes,
 });
 
@@ -63,61 +63,48 @@ describe("lockedUntilText and isLocked", () => {
   });
 });
 
-// Changed on purpose (#457 phase 3): anyone may have codes, so every row says Two-step: On or Off.
+// Changed on purpose (21 Nov 2026): sign-in is the company's, so the status says only Active, Locked or
+// Disabled, and whether the person can delete for good; the Company sign-in column has the rest.
 describe("userStatus", () => {
   const texts = (u: AdminUser, now = NOW) => userStatus(u, now).map((part) => part.text);
 
   it("says Active for a normal account", () => {
-    expect(userStatus(user(), NOW)).toEqual([{ text: "Active", tone: "ready" }, { text: "Two-step: Off", tone: "neutral" }]);
+    expect(userStatus(user(), NOW)).toEqual([{ text: "Active", tone: "ready" }]);
   });
 
   it("says Locked until 14:05 while locked", () => {
-    expect(userStatus(user({ locked_until: LOCK_END }), NOW)).toEqual([
-      { text: "Locked until 14:05", tone: "danger" },
-      { text: "Two-step: Off", tone: "neutral" },
-    ]);
+    expect(userStatus(user({ locked_until: LOCK_END }), NOW)).toEqual([{ text: "Locked until 14:05", tone: "danger" }]);
   });
 
   it("goes back to Active once the lock has passed, even before a reload", () => {
-    expect(texts(user({ locked_until: LOCK_END }), Date.parse("2026-09-29T08:36:00Z"))).toEqual([
-      "Active",
-      "Two-step: Off",
-    ]);
+    expect(texts(user({ locked_until: LOCK_END }), Date.parse("2026-09-29T08:36:00Z"))).toEqual(["Active"]);
   });
 
   it("says Disabled for a disabled account, lock or not", () => {
     expect(userStatus(user({ disabled: true, locked_until: LOCK_END }), NOW)).toEqual([
       { text: "Disabled", tone: "danger" },
-      { text: "Two-step: Off", tone: "neutral" },
     ]);
   });
 
-  // Changed on purpose (plain words, 25 Oct 2026): "Two-step", as the rest of the product, not "2FA".
-  it("says two-step on or off for admins", () => {
-    expect(texts(user({ role: "admin", totp_enabled: true }))).toEqual(["Active", "Two-step: On"]);
-    expect(texts(user({ role: "admin" }))).toEqual(["Active", "Two-step: Off"]);
-    expect(texts(user({ role: "admin", disabled: true }))).toEqual(["Disabled", "Two-step: Off"]);
+  it("no longer says two-step or a temporary password: there is no password or code of Kaagaz's", () => {
+    expect(texts(user({ role: "admin", totp_enabled: true, must_change_password: true }))).toEqual(["Active"]);
   });
 
-  it("says two-step on or off for other roles too", () => {
-    expect(texts(user({ role: "reviewer" }))).toEqual(["Active", "Two-step: Off"]);
-    expect(texts(user({ role: "member", totp_enabled: true }))).toEqual(["Active", "Two-step: On"]);
-  });
-
-  it("marks an account that still has a temporary password", () => {
-    expect(texts(user({ must_change_password: true }))).toEqual(["Active", "Two-step: Off", "Temporary password"]);
+  it("says whether the company sign-in is connected, or waiting for setup", () => {
+    expect(companySignIn(user())).toBe("Connected");
+    expect(companySignIn(user({ company_sign_in: "waiting" }))).toBe("Waiting for setup");
+    expect(companySignIn(user({ company_sign_in: "not_moved" }))).toBe("Not moved yet");
   });
 });
 
 describe("userActions", () => {
   const actions = (u: AdminUser, isSelf = false) => userActions(u, { isSelf, now: NOW });
 
-  it("offers disable and reset password for another user", () => {
+  it("offers disable and reset authenticator for another user", () => {
     expect(actions(user())).toEqual({
       toggleDisabled: true,
       unlock: false,
-      resetPassword: true,
-      reset2fa: false,
+      reset2fa: true,
     });
   });
 
@@ -126,8 +113,9 @@ describe("userActions", () => {
     expect(actions(user({ locked_until: "2026-09-29T08:00:00Z" })).unlock).toBe(false);
   });
 
-  it("offers Reset 2FA only when 2FA is on", () => {
-    expect(actions(user({ role: "admin", totp_enabled: true })).reset2fa).toBe(true);
+  it("offers Reset authenticator to members and reviewers, not to an admin (#737)", () => {
+    expect(actions(user({ role: "member" })).reset2fa).toBe(true);
+    expect(actions(user({ role: "reviewer", totp_enabled: true })).reset2fa).toBe(true);
     expect(actions(user({ role: "admin" })).reset2fa).toBe(false);
   });
 
@@ -135,34 +123,27 @@ describe("userActions", () => {
     expect(actions(user({ role: "admin", totp_enabled: true }), true)).toEqual({
       toggleDisabled: false,
       unlock: false,
-      resetPassword: false,
       reset2fa: false,
     });
   });
 });
 
 describe("Delete forever, granted (council 4 Oct 2026)", () => {
-  const control = (u: AdminUser, isSelf = false, adminTwoStep = true) =>
-    foreverControl(u, { isSelf, adminTwoStep });
+  const control = (u: AdminUser, isSelf = false) => foreverControl(u, { isSelf });
 
   it("offers Allow, or Stop once allowed, for a member or reviewer; nothing for an admin or yourself", () => {
-    expect(control(user())).toEqual({ kind: "allow", disabledReason: null });
-    expect(control(user({ role: "reviewer", can_delete_forever: true }), false, false).kind).toBe("stop");
+    expect(control(user())).toEqual({ kind: "allow" });
+    expect(control(user({ role: "reviewer", can_delete_forever: true })).kind).toBe("stop");
     expect([control(user({ role: "admin" })).kind, control(user(), true).kind]).toEqual(["none", "none"]);
-    expect(control(user(), false, false)).toEqual({
-      kind: "allow",
-      disabledReason: "Turn on two-step sign-in in Account to allow this.",
-    });
   });
 
   it("asks first, says it covers all of Trash, and shows the chip and the audit words", () => {
     expect(allowForeverQuestion("Ravi")).toBe(
       "Let Ravi delete documents in Trash for good? This covers every document in Trash, " +
-        "not only theirs, and can't be undone. They will type their password each time.",
+        "not only theirs, and can't be undone. They confirm with their company sign-in each time.",
     );
     expect(userStatus(user({ can_delete_forever: true }), NOW).map((part) => part.text)).toEqual([
       "Active",
-      "Two-step: Off",
       "Can delete for good",
     ]);
     expect(describeAction("user.delete_forever_on")).toBe("Allowed a user to delete for good");
@@ -185,7 +166,6 @@ describe("adminGate", () => {
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
-    providers: [], // #457 review: the sign-in providers switched on
   });
 
   it("opens the admin screen only for an admin session", () => {
@@ -224,32 +204,24 @@ describe("validateNewUser", () => {
     email: "ravi@sharma.in",
     display_name: "Ravi",
     role: "member" as const,
-    password: "twelve chars",
   };
 
-  it("accepts a complete user", () => {
+  it("accepts a complete user: there is no password to type (#737)", () => {
     expect(validateNewUser(good)).toEqual({});
   });
 
   it("names each problem against its field", () => {
-    expect(validateNewUser({ ...good, email: "ravi", display_name: "  ", password: "short" })).toEqual({
+    expect(validateNewUser({ ...good, email: "ravi", display_name: "  " })).toEqual({
       email: "Enter a valid e-mail address.",
       display_name: "Enter a name.",
-      password: "Use at least 12 characters.",
     });
-  });
-
-  it("needs a password of at least 12 characters", () => {
-    expect(validateNewUser({ ...good, password: "elevenchars" }).password).toBeDefined();
-    expect(validateNewUser({ ...good, password: "twelvechars!" }).password).toBeUndefined();
   });
 });
 
 describe("firstInvalidField", () => {
   it("picks the first problem in screen order, for focus", () => {
-    expect(firstInvalidField({ password: "x", email: "y" })).toBe("email");
-    expect(firstInvalidField({ password: "x", display_name: "y" })).toBe("display_name");
-    expect(firstInvalidField({ password: "x" })).toBe("password");
+    expect(firstInvalidField({ display_name: "x", email: "y" })).toBe("email");
+    expect(firstInvalidField({ display_name: "y" })).toBe("display_name");
     expect(firstInvalidField({})).toBeNull();
   });
 });
@@ -332,22 +304,6 @@ describe("kpiTiles and breakdowns", () => {
   });
 });
 
-describe("generatePassword (AD3)", () => {
-  it("makes 16 characters with no look-alike letters or digits", () => {
-    const password = generatePassword();
-    expect(password).toHaveLength(16);
-    expect(password).toMatch(/^[A-HJ-NP-Za-km-z2-9]+$/);
-    expect(generatePassword()).not.toBe(password);
-  });
-
-  it("drops the bytes that would favour some characters", () => {
-    // 55 characters: 255 is over 256 - 256 % 55 = 220, so it is skipped; 0 is "A", 56 is "B".
-    let call = 0;
-    const random = (bytes: Uint8Array) => bytes.fill(call++ === 0 ? 255 : 56);
-    expect(generatePassword(4, random)).toBe("BBBB");
-    expect(generatePassword(2, (bytes) => bytes.fill(0))).toBe("AA");
-  });
-});
 
 describe("settingsChanged (AD6) and twoStepNote (AD7)", () => {
   const saved = { max_upload_mb: 25, autofile: { granted: true, on: false } };
@@ -360,10 +316,6 @@ describe("settingsChanged (AD6) and twoStepNote (AD7)", () => {
     expect(settingsChanged({ max_upload_mb: null, autofile: { granted: false, on: false } }, "", true)).toBe(false);
   });
 
-  it("says plainly where two-step sign-in stands", () => {
-    // Changed on purpose (MFA required, 16 Oct 2026): two-step is required for admins.
-    expect(twoStepNote()).toBe("Admins without two-step sign-in set it up at their next sign-in.");
-  });
 });
 
 // Changed on purpose (UI quality council, 15 Oct 2026): only known keys, in words; ids,

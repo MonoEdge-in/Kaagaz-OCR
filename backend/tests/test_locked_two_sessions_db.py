@@ -27,7 +27,7 @@ from kaagaz.jobs.worker import Superseded
 from kaagaz.pipeline import FinishedRun, PageRecord, RunTotals
 from kaagaz.reading.spans import PageInfo
 from tests.db_support import insert_document, name_session, new_customer, wait_until_blocked
-from tests.test_api_support import CSRF, PASSWORD, Api
+from tests.test_api_support import CSRF, Api
 from tests.test_isolation_access_views import _app, _walled
 from tests.test_operator_auth_db import _owner
 
@@ -295,9 +295,9 @@ def test_a_lock_deadlocked_with_a_review_save_is_run_again_and_locks(db: Databas
     with _app(db).user(c, admin.user_id) as conn:  # the review save, as POST /review/{id}
         current = review_sql.lock_value(conn, c, value)
         assert current is not None
-        body = {"password": PASSWORD}
+        api.prove(admin, "locks")
         thread, out = _in_thread(
-            "lock", db, lambda: admin.client.post(f"/api/documents/{file}/lock", json=body, headers=CSRF)
+            "lock", db, lambda: admin.client.post(f"/api/documents/{file}/lock", json={}, headers=CSRF)
         )
         _wait_for_waiting(db, "kaagaz_lock(")  # the lock waits on the value the save holds
         review_sql.resolve_value(

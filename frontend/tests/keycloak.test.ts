@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ApiError, confirmPassword, proveForWhatsApp, saveAdminWhatsApp } from "@/lib/api";
+import { ApiError, saveAdminWhatsApp } from "@/lib/api";
+import { needsProof } from "@/components/account/WhatsAppConnect";
 import {
   beginKeycloakReauth,
   isKeycloakAction,
@@ -100,40 +101,48 @@ describe("company verification messages", () => {
   });
 });
 
+describe("WhatsApp's lost proof", () => {
+  it("treats 403 proof_needed like keycloak_reauth_required, and nothing else", () => {
+    expect(needsProof(new ApiError(403, "proof_needed", "x"))).toBe(true);
+    expect(needsProof(new ApiError(403, "keycloak_reauth_required", "x"))).toBe(true);
+    expect(needsProof(new ApiError(400, "proof_needed", "x"))).toBe(false);
+    expect(needsProof(new ApiError(403, "forbidden", "x"))).toBe(false);
+    expect(needsProof(new TypeError("offline"))).toBe(false);
+  });
+});
+
 describe("mapped proof requests", () => {
-  it("omits Kaagaz passwords from mapped WhatsApp, delete, and settings proofs", async () => {
+  it("omits Kaagaz passwords from the WhatsApp settings proof", async () => {
     const bodies: unknown[] = [];
     vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(String(init.body)));
       return new Response(null, { status: 204 });
     });
-    await proveForWhatsApp();
-    await confirmPassword();
     await saveAdminWhatsApp(
       { enabled: true, roles: ["member"], management: false, voice: true, uploads: false },
-      undefined,
       true,
     );
     expect(bodies).toEqual([
-      {},
-      {},
       { enabled: true, roles: ["member"], management: false, voice: true, uploads: false, rules_confirmed: true },
     ]);
   });
 
   it("wires fresh verification into the mapped account, admin and document flows", () => {
     const whatsapp = source("components/account/WhatsAppConnect.tsx");
-    expect(whatsapp).toContain("if (managed && !reauthAvailable)");
+    expect(whatsapp).toContain('params.reauth === "whatsapp" && !params.reauth_error');
+    expect(whatsapp).not.toContain("if (!reauthAvailable)"); // Disconnect asks for no sign-in
     expect(whatsapp).toContain('beginKeycloakReauth("whatsapp"');
     expect(whatsapp).toContain("if (reauthAvailable)");
-    expect(whatsapp).toContain("!managed && !me.google");
+    expect(whatsapp).not.toContain("proveForWhatsApp");
     const adminWhatsApp = source("components/admin/WhatsAppPanel.tsx");
     expect(adminWhatsApp).toContain('beginKeycloakReauth("whatsapp"');
-    expect(adminWhatsApp).toContain("!managed && tickNeedsPassword");
+    expect(adminWhatsApp).toContain("isKeycloakReauthRequired(caught)");
+    expect(adminWhatsApp).not.toContain("PasswordField");
     expect(source("components/admin/UsersPanel.tsx")).toContain('reauth !== "whatsapp"');
-    expect(source("components/access/SelfPasswordDialog.tsx")).toContain("if (isKeycloakManaged(me)) return await send();");
+    expect(source("components/access/proofStep.ts")).toContain('beginKeycloakReauth("access"');
     expect(source("components/documents/LockDialog.tsx")).toContain('beginKeycloakReauth("locks"');
     expect(source("components/viewer/LockedOpenPrompt.tsx")).toContain('beginKeycloakReauth("locked_open"');
+    expect(source("components/viewer/LockedOpenPrompt.tsx")).not.toContain("PasswordField");
     expect(source("components/documents/DocumentsTable.tsx")).toContain('beginKeycloakReauth("delete_forever"');
   });
 });

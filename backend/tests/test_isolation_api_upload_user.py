@@ -11,7 +11,7 @@ import httpx2 as httpx
 import pytest
 
 from kaagaz.db.engine import Database
-from tests.test_api_support import CSRF, PASSWORD, PDF_BYTES, Api, Signed
+from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 
 pytestmark = pytest.mark.db
 
@@ -44,8 +44,7 @@ def test_an_upload_for_the_user_signed_in_before_is_409_and_nothing_is_kept(db: 
     stored = api.storage.count()
 
     # B signs in on A's browser: the same client, so the cookie is now B's.
-    signed_in = a.client.post("/api/auth/login", json={"email": b_email, "password": PASSWORD}, headers=CSRF)
-    assert signed_in.status_code == 200
+    assert api.admin_login(a.client, b_email).status_code == 200
     b_actions = api.audit_actions(b_customer)
 
     for url in ("/api/documents", f"/api/documents/{b_document}/versions"):

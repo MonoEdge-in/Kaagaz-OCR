@@ -21,13 +21,14 @@ import hashlib
 import io
 import json
 import uuid
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx2 as httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
@@ -40,9 +41,19 @@ from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
-from kaagaz.api.auth import hash_password
+from kaagaz.api.auth import (
+    SESSION_COOKIE,
+    hash_password,
+    load_user,
+    new_session,
+    set_confirm_cookie,
+    set_keycloak_proof_cookie,
+    set_whatsapp_proof_cookie,
+    sign_session,
+)
 from kaagaz.api.ports import Answers
 from kaagaz.api.secret_box import SecretBox
+from kaagaz.db import audit
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.models import ChatChoice
@@ -50,7 +61,15 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.search.scope import Scope
 from kaagaz.settings import Settings
-from tests.db_support import APP_ROLE, insert_document, insert_folder, insert_tag, new_customer, tag_document
+from tests.db_support import (
+    APP_ROLE,
+    insert_document,
+    insert_folder,
+    insert_tag,
+    mark_keycloak,
+    new_customer,
+    tag_document,
+)
 from tests.fakes import MemoryQueue, MemoryStorage
 from tests.settings_factory import make_settings
 
@@ -259,6 +278,13 @@ class MovingClock:
 
 
 class Api:
+    _signed_in_by: ClassVar["weakref.WeakKeyDictionary[TestClient, Api]"] = weakref.WeakKeyDictionary()
+
+    @classmethod
+    def of(cls, signed: "Signed") -> "Api":
+        """The Api that signed this person in (``mint_session``), for a helper that has only the person."""
+        return cls._signed_in_by[signed.client]
+
     def __init__(
         self,
         db: Database,
@@ -275,6 +301,7 @@ class Api:
         ``mailer``: a MemoryMailer for the email tests (#457), with ``email_enabled`` settings.
         ``storage``: one that also takes resumable uploads (#484), for a test that sends one."""
         self.db = db
+        self.session_ids: dict[tuple[TestClient, str], str] = {}
         self.settings = settings or make_settings()
         self.clock = clock or MovingClock()
         self.storage = storage or ApiFakeStorage()
@@ -315,16 +342,70 @@ class Api:
             )
         return str(row["id"]), email
 
+    def mint_session(self, client: TestClient, customer_id: str, user_id: str) -> None:
+        """Sign this user in on ``client`` the way the Keycloak callback ends (``routers/keycloak.py``
+        ``_login``): the user's authority is Keycloak and the cookie is a ``keycloak`` session at the
+        required assurance. No route is used, because the only sign-in is Keycloak's own page."""
+        # As the owner: the API may not write auth_authority (0103).
+        mark_keycloak(self.db, customer_id, user_id)
+        with self.app_db.user(customer_id, user_id) as conn:  # the callback's own: the idle clock starts
+            users_sql.attempt_succeeded(conn, customer_id, user_id, now=self.clock())
+            audit.record(
+                conn, customer_id, actor_user_id=user_id, action="auth.login", target_type="user",
+                target_id=user_id, details={"via": "keycloak"},
+            )  # fmt: skip
+        user = load_user(self.db, customer_id, user_id, scope="app")
+        assert user is not None
+        claims = new_session(
+            user_id=user_id,
+            customer_id=customer_id,
+            role=user.role,
+            scope="admin" if user.role == "admin" else "app",
+            session_version=user.session_version,
+            settings=self.settings,
+            now=int(self.clock().timestamp()),
+            idle_hours=user.idle_hours,
+            auth_source="keycloak",
+            assurance=self.settings.keycloak_required_acr,
+        )
+        client.cookies.set(SESSION_COOKIE, sign_session(claims, self.settings.session_secret))
+        self.session_ids[(client, user_id)] = claims.session_id
+        self._signed_in_by[client] = self
+
     def sign_in(self, customer_id: str, role: str = "member") -> Signed:
-        """A new user of this role, signed in: an app session, or for an admin (who must have
-        two-step sign-in, 0035) an enrolled admin's admin session."""
+        """A new user of this role, signed in: an app session, or for an admin an admin session."""
         if role == "admin":
             return self.admin_sign_in(customer_id)
         user_id, email = self.add_user(customer_id, role)
         client = self.client()
-        reply = client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
-        assert reply.status_code == 200, reply.text
+        self.mint_session(client, customer_id, user_id)
         return Signed(client, customer_id, user_id, email)
+
+    def prove(self, signed: Signed, action: str) -> None:
+        """A fresh Keycloak proof for ``action`` on this person's client, as ``routers/keycloak.py``
+        ``_reauth`` sets it: the proof cookie, and for the two that have one (delete forever, WhatsApp)
+        theirs too. Locked-open has none: the page POSTs /documents/locked-open after the proof."""
+        user = load_user(self.db, signed.customer_id, signed.user_id, scope=signed.scope)
+        assert user is not None
+        session_id = self.session_ids[(signed.client, signed.user_id)]
+        now = int(self.clock().timestamp())
+        acr = self.settings.keycloak_required_acr or ""
+        response = Response()
+        set_keycloak_proof_cookie(
+            response, user, session_id=session_id, action=action, auth_time=now, assurance=acr,
+            settings=self.settings, now=now,
+        )  # fmt: skip
+        if action == "delete_forever":
+            set_confirm_cookie(response, user, self.settings, now=now, session_id=session_id)
+        elif action == "whatsapp":
+            set_whatsapp_proof_cookie(response, user, self.settings, now=now)
+        host = signed.client.base_url.host
+        domain = host if "." in host else host + ".local"  # as http.cookiejar names a bare host
+        for header in response.headers.getlist("set-cookie"):
+            parts = [part.strip() for part in header.split(";")]
+            name, _, value = parts[0].partition("=")
+            path = next((part[5:] for part in parts if part.lower().startswith("path=")), "/")
+            signed.client.cookies.set(name, value.strip('"'), domain=domain, path=path)
 
     def new_signed(self, role: str = "member") -> Signed:
         customer_id, _ = self.customer()
@@ -361,17 +442,21 @@ class Api:
     def admin_login(
         self, client: TestClient, email: str, *, password: str = PASSWORD, code: str | None = None
     ) -> httpx.Response:
-        body: dict[str, str] = {"email": email, "password": password}
-        if code is not None:
-            body["code"] = code
-        return client.post("/api/auth/login", json=body, headers=CSRF)  # one sign-in (16 Oct 2026)
+        """Sign the person with this e-mail in on ``client`` (``mint_session``), whatever their role.
+        ``password`` and ``code`` are not used: Keycloak is the only sign-in, so there is no route
+        to send them to. Kept so a test that signs a known e-mail in again reads as before."""
+        with self.db.engine.begin() as conn:  # the owner: the e-mail alone names the person
+            row = conn.execute(
+                text("SELECT customer_id, id FROM users WHERE email = :e"), {"e": email.strip().lower()}
+            ).one()
+        self.mint_session(client, str(row[0]), str(row[1]))
+        return httpx.Response(200)
 
     def admin_sign_in(self, customer_id: str) -> Signed:
         """A new enrolled admin, signed in with this step's code (an admin session)."""
         admin = self.enrol_admin(customer_id)
         client = self.client()
-        reply = self.admin_login(client, admin.email, code=self.code(admin.secret))
-        assert reply.status_code == 200, reply.text
+        self.mint_session(client, customer_id, admin.user_id)
         return Signed(client, customer_id, admin.user_id, admin.email, "admin", admin.secret)
 
     def new_admin_of(self, customer_id: str) -> Signed:
@@ -552,6 +637,23 @@ class Api:
             tag_document(conn, customer_id, document_id, tag_id)
 
 
+def proof_action(url: str) -> str:
+    """The risky action a route asks a fresh company sign-in for: ``locks`` (lock, unlock, who may
+    open a locked file), else ``access`` (who can see what)."""
+    return "locks" if "lock" in url and "locked-open" not in url else "access"
+
+
+def after_proof(signed: "Signed", url: str, body: Any) -> Any:
+    """A test marks a call it makes after the company sign-in with ``"proved": True`` in its body: that
+    key is taken out and the proof for the route's action is set first (``Api.prove``). The API takes
+    no password, so a body is otherwise sent as it is."""
+    if isinstance(body, dict) and body.get("proved") is True:
+        Api.of(signed).prove(signed, proof_action(url))
+        return {key: value for key, value in body.items() if key != "proved"}
+    signed.client.cookies.delete("kaagaz_keycloak_proof", path="/api")  # each call stands on its own
+    return body
+
+
 def wrong_code(api: Api, secret: bytes) -> str:
     """A well-formed 6-digit code that matches none of the steps accepted right now."""
     accepted = {api.code(secret, offset) for offset in (-1, 0, 1)}
@@ -567,24 +669,12 @@ EMAIL_ROUTES = (
     ("POST", "/api/auth/email/confirm"),
     ("POST", "/api/auth/email/send-confirm"),
     ("POST", "/api/auth/email/resend-confirm"),
-    ("POST", "/api/auth/forgot"),
-    ("POST", "/api/auth/reset"),
-    ("POST", "/api/auth/invite/accept"),
 )
 
 
-# Ways to sign in (#457 phase 1): 404 while no provider is switched on, whoever asks
-# (tests/test_api_oidc_*.py). The provider is read by a dependency, so route_calls leaves it.
-OIDC_ROUTES = (
-    ("GET", "/api/auth/oidc/{provider}/start"),
-    ("GET", "/api/auth/oidc/{provider}/callback"),
-    ("POST", "/api/auth/oidc/{provider}/connect"),
-    ("POST", "/api/auth/oidc/{provider}/confirm"),  # PRD 7 (#605): Google opens locked files
-    ("GET", "/api/auth/oidc/notice"),
-    ("POST", "/api/auth/oidc/code"),
-    ("GET", "/api/auth/identities"),
-    ("POST", f"/api/auth/identities/{ANY_ID}/remove"),
-)
+# Google sign-in is gone (21 Nov 2026): no provider routes are left. Kept, empty, for the tests that add it
+# to their sets of routes that are off.
+OIDC_ROUTES: tuple[tuple[str, str], ...] = ()
 
 
 # Kaagaz on WhatsApp (#603): Meta's webhook, 404 while WhatsApp is off, whoever asks
@@ -594,8 +684,6 @@ WHATSAPP_ROUTES = (
     ("GET", "/api/whatsapp/webhook"),
     ("POST", "/api/whatsapp/webhook"),
     ("GET", "/api/whatsapp/me"),
-    ("POST", "/api/whatsapp/prove"),
-    ("POST", "/api/whatsapp/prove/google"),
     ("POST", "/api/whatsapp/codes"),
     ("POST", "/api/whatsapp/codes/verify"),
     ("GET", "/api/whatsapp/codes/phone"),

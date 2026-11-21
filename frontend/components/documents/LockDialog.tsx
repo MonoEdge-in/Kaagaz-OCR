@@ -2,13 +2,12 @@
 
 // Lock and Unlock (PRD 7 section 6, Admins, PR 13's screens on PR 12's routes). The lock dialog
 // lists everyone who can see the file (or any of the selection's files) today, unticked, and the
-// Admin locking it ticked by default (decision 4); the Admin's own password covers the whole
-// batch. A bulk lock is all or nothing: a 409 names each file it refused, and why. Unlocking
+// Admin locking it ticked by default (decision 4); a fresh company sign-in covers the whole
+// batch (403 keycloak_reauth_required starts it). A bulk lock is all or nothing: a 409 names each file it refused, and why. Unlocking
 // warns that everyone who can see its folder can open it again, and Ask can use it again.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { PasswordField } from "@/components/ui/PasswordField";
 import { BusyLabel } from "@/components/documents/BusyLabel";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import libraryStyles from "@/components/documents/Library.module.css";
@@ -23,8 +22,7 @@ import {
 } from "@/components/viewer/locked";
 import styles from "@/components/viewer/Locked.module.css";
 import { lockDocument, lockDocuments, lockPreview, lockPreviewMany, unlockDocument } from "@/lib/api";
-import { useSession } from "@/lib/session";
-import { beginKeycloakReauth, isKeycloakManaged, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
+import { beginKeycloakReauth, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import type { LockPerson } from "@/lib/types";
 
 interface Named {
@@ -43,11 +41,8 @@ export function LockDialog({
   onClosed?(): void;
   onLocked(message: string): void;
 }) {
-  const { me } = useSession();
-  const managed = isKeycloakManaged(me);
   const [people, setPeople] = useState<LockPerson[] | null>(null);
   const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
-  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const ids = documents.map((each) => each.id).join(",");
@@ -88,13 +83,13 @@ export function LockDialog({
     const [only] = documents;
     try {
       if (documents.length === 1 && only) {
-        await lockDocument(only.id, openTo, managed ? undefined : password);
+        await lockDocument(only.id, openTo);
         onLocked(lockedMessage(1));
       } else {
-        onLocked(lockedMessage((await lockDocuments(ids.split(","), openTo, managed ? undefined : password)).locked));
+        onLocked(lockedMessage((await lockDocuments(ids.split(","), openTo)).locked));
       }
     } catch (caught) {
-      if (managed && isKeycloakReauthRequired(caught)) {
+      if (isKeycloakReauthRequired(caught)) {
         try {
           await beginKeycloakReauth("locks", window.location.pathname);
           return;
@@ -107,7 +102,6 @@ export function LockDialog({
       const refused = refusalsOf(caught);
       const names = new Map(documents.map((each) => [each.id, each.display_name]));
       setErrors(refused.length > 0 ? refusedLines(refused, names) : [lockFailureText(caught)]);
-      setPassword("");
       setBusy(false);
     }
   }
@@ -122,7 +116,7 @@ export function LockDialog({
       <form className={libraryStyles.dialogForm} onSubmit={(event) => void lock(event)}>
         <p>{lockExplainText(documents.length)}</p>
         <p>{LOCK_TEXT.photograph}</p>
-        {managed && <p className="hint">Company sign-in may ask you to verify. No files change during verification; reopen this dialog, reselect files if needed, and confirm again.</p>}
+        <p className="hint">Company sign-in may ask you to verify. No files change during verification; reopen this dialog, reselect files if needed, and confirm again.</p>
         <fieldset className={styles.tickBar}>
           <legend>{LOCK_TEXT.who}</legend>
           {people === null ? (
@@ -140,13 +134,6 @@ export function LockDialog({
             </ul>
           )}
         </fieldset>
-        {!managed && <PasswordField
-          id="lock-password"
-          label={LOCK_TEXT.password}
-          autoComplete="current-password"
-          value={password}
-          onChange={setPassword}
-        />}
         {errors.map((line) => (
           <p key={line} className="error-text" role="alert">
             {line}
@@ -156,7 +143,7 @@ export function LockDialog({
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
             {LOCK_TEXT.cancel}
           </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || people === null || (!managed && password === "")}>
+          <button type="submit" className="btn btn-primary" disabled={busy || people === null}>
             <BusyLabel busy={busy} idle={LOCK_TEXT.lock(documents.length)} working={LOCK_TEXT.locking} />
           </button>
         </div>
@@ -176,9 +163,6 @@ export function UnlockDialog({
   onClosed?(): void;
   onUnlocked(message: string): void;
 }) {
-  const { me } = useSession();
-  const managed = isKeycloakManaged(me);
-  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -187,10 +171,10 @@ export function UnlockDialog({
     setBusy(true);
     setError(null);
     try {
-      await unlockDocument(document.id, managed ? undefined : password);
+      await unlockDocument(document.id);
       onUnlocked(LOCK_TEXT.unlocked);
     } catch (caught) {
-      if (managed && isKeycloakReauthRequired(caught)) {
+      if (isKeycloakReauthRequired(caught)) {
         try {
           await beginKeycloakReauth("locks", window.location.pathname);
           return;
@@ -201,7 +185,6 @@ export function UnlockDialog({
         }
       }
       setError(lockFailureText(caught));
-      setPassword("");
       setBusy(false);
     }
   }
@@ -210,14 +193,7 @@ export function UnlockDialog({
     <ActionDialog title={LOCK_TEXT.unlockTitle(document.display_name)} onClose={onClose} onClosed={onClosed} canClose={() => !busy}>
       <form className={libraryStyles.dialogForm} onSubmit={(event) => void unlock(event)}>
         <p>{LOCK_TEXT.unlockWarning}</p>
-        {managed && <p className="hint">Company sign-in may ask you to verify. No file changes until you return, reopen this dialog, and confirm again.</p>}
-        {!managed && <PasswordField
-          id="unlock-password"
-          label={LOCK_TEXT.password}
-          autoComplete="current-password"
-          value={password}
-          onChange={setPassword}
-        />}
+        <p className="hint">Company sign-in may ask you to verify. No file changes until you return, reopen this dialog, and confirm again.</p>
         {error && (
           <p className="error-text" role="alert">
             {error}
@@ -227,7 +203,7 @@ export function UnlockDialog({
           <button type="button" className="btn" onClick={onClose} disabled={busy}>
             {LOCK_TEXT.cancel}
           </button>
-          <button type="submit" className="btn btn-primary" disabled={busy || (!managed && password === "")}>
+          <button type="submit" className="btn btn-primary" disabled={busy}>
             <BusyLabel busy={busy} idle={LOCK_TEXT.unlock} working={LOCK_TEXT.unlocking} />
           </button>
         </div>

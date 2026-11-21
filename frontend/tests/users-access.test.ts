@@ -56,11 +56,11 @@ describe("the menu", () => {
     expect(managementItem(user({ disabled: true, management: true }))).toBeNull();
   });
 
-  it("asks first, and asks for your password only when you make yourself Management", () => {
+  it("asks first, and starts the company sign-in when the server asks", () => {
     expect(items).toMatch(/label: "Make Management"[^}]*onSelect: \(\) => setConfirming\("makeManagement"\)/);
     expect(items).toMatch(/label: "Stop Management"[^}]*onSelect: \(\) => setConfirming\("stopManagement"\)/);
-    // Which way asks first is asksFirst's (tests/access-password-step.test.ts), with these values.
-    expect(panel).toContain("asksFirst({ myId, targetId: user.id, on })");
+    // The server says when a fresh sign-in is needed (tests/access-proof-step.test.ts).
+    expect(panel).toContain("proofStep.run(() => setManagement(user.id, on))");
     expect(panel).toContain("makeManagement: makeManagementQuestion,");
     expect(panel).toContain('stopManagement: "Stop Management",');
     // Stop takes something away: the danger style; Make is the plain action.

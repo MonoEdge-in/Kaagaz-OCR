@@ -31,7 +31,7 @@ function csp(nonce: string, script = "", collect = ""): string {
 }
 
 // The pages components/analytics/ga.ts tracks (PAGE_TITLES); not while ?step=code.
-const GA_PAGES = new Set(["/login", "/signup", "/forgot-password"]);
+const GA_PAGES = new Set(["/login"]);
 
 // Security checklist (15 Oct 2026): report only, so the browser logs what would be blocked and
 // blocks nothing, until it is checked on the live site.

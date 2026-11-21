@@ -126,7 +126,6 @@ const admin = (totp_enabled: boolean): Me => ({
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: "admin" },
-  providers: [],
 });
 const binned = {
   id: "d1",
@@ -223,10 +222,6 @@ const button = (words: string) =>
   ) ?? null;
 const byId = (id: string) => all().find((element) => element.getAttribute("id") === id) ?? null;
 const press = (element: FakeElement | null) => act(async () => void fire(element!, "click", { button: 0 }));
-async function type(box: FakeElement | null, text: string) {
-  box!.value = text;
-  await act(async () => void fire(box!, "input"));
-}
 async function tick(box: FakeElement | null) {
   box!.checked = !box!.checked;
   await act(async () => void fire(box!, "click", { button: 0 }));
@@ -283,19 +278,17 @@ describe("a folder in the Trash list", () => {
     ]);
   });
 
-  it("deletes forever after the question, with the password for an admin without two-step", async () => {
-    serve({ "POST /api/auth/confirm-password": [[204]], "DELETE /api/documents/trash/folders/f1/permanent": [[204]] });
+  it("deletes forever after the question, with no password to type", async () => {
+    serve({ "DELETE /api/documents/trash/folders/f1/permanent": [[204]] });
     await show(admin(false), [year]);
     await press(byLabel("More actions for folder 2025"));
     await press(byLabel("Delete forever"));
     const dialog = all().find((element) => element.tagName === "DIALOG");
     expect(dialog?.textContent).toContain("Delete “2025” and its 4 files for good? They can't be brought back.");
-    const box = byId("forever-folder-password-f1");
-    expect(box).not.toBeNull();
-    await type(box, "secret");
+    expect(byId("forever-folder-password-f1")).toBeNull();
     const inDialog = dialog?.all().filter((element) => element.tagName === "BUTTON") ?? [];
     await press(inDialog.find((element) => element.textContent.startsWith("Delete forever")) ?? null);
-    expect(calls).toEqual(["POST /api/auth/confirm-password", "DELETE /api/documents/trash/folders/f1/permanent"]);
+    expect(calls).toEqual(["DELETE /api/documents/trash/folders/f1/permanent"]);
     expect(done).toEqual(["Deleted 2025 for good."]);
   });
 

@@ -1,15 +1,15 @@
 """Locked files: lock, unlock and who may open one (PRD 7 section 6, PR 12, #605).
 
-Admins only, from an admin session, each after typing their own password again (p2:29; one entry
-covers a whole batch). The order of every write is the access API's (kaagaz/api/routers/access.py):
-the file found first with no lock held (a person who can't see it gets 404, as for one that never
-was, then 403; an Admin finds any file by ``kaagaz_admin_document``), then the password, proved with
-no connection held (``prove_password``: counted on the sign-in lock), then one transaction: the tree
-lock, the people checked again, one owner-rights function of 0093 that takes the family locks and
-reads every file again under them (all or nothing), the audit rows, and a Word or PowerPoint file's
-stored PDF deleted last, so storage that is down rolls the lock back; run again on a deadlock. The
-jobs are queued after the commit, so a worker never reads the state before it; a queue that is down
-leaves them to the stuck sweep.
+Admins only, from an admin session, each after a fresh Keycloak sign-in for ``locks`` (p2:29;
+one proof covers a whole batch). The order of every write is the access API's
+(kaagaz/api/routers/access.py): the file found first with no lock held (a person who can't see it
+gets 404, as for one that never was, then 403; an Admin finds any file by
+``kaagaz_admin_document``), then the proof (``require_proof``, 403 ``keycloak_reauth_required``),
+then one transaction: the tree lock, the people checked again, one owner-rights function of 0093
+that takes the family locks and reads every file again under them (all or nothing), the audit
+rows, and a Word or PowerPoint file's stored PDF deleted last, so storage that is down rolls the lock back;
+run again on a deadlock. The jobs are queued after the commit, so a worker never reads the state before it; a
+queue that is down leaves them to the stuck sweep.
 
 * ``POST /documents/{id}/lock`` and ``POST /documents/lock``: lock files, every version, and allow
   ``open_to`` to open them (left out: the Admin alone, "ticked by default"); 409 ``in_trash``,
@@ -20,7 +20,7 @@ leaves them to the stuck sweep.
   current version is read again, billed to the Admin, past the hourly limit and the cooldown (the
   reading pause still holds it in the worker), audited ``document.reprocess`` (via unlock).
 * ``GET``, ``PUT`` and ``DELETE /documents/{id}/lock-grants/{user}``: who may open a locked file, on
-  every version. The Admin giving it to themselves types their password and the other Admins and
+  every version. The Admin giving it to themselves needs the Keycloak proof and the other Admins and
   Management are emailed when it lets them open the file (PRD 7 decision 11, question 17).
 """
 
@@ -38,15 +38,13 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.access import (
     MAX_FILES,
-    Password,
     _admin_document,
     _enabled,
     _self_grant,
     _tell,
     _watchers,
 )
-from kaagaz.api.routers.admin import MAX_PASSWORD
-from kaagaz.api.routers.auth import prove_password
+from kaagaz.api.routers.auth import require_proof
 from kaagaz.api.views import iso
 from kaagaz.db import audit, listing
 from kaagaz.db import folders as folders_sql
@@ -58,7 +56,6 @@ from kaagaz.ingestion.ports import Job
 logger = logging.getLogger(__name__)
 router = APIRouter()
 Context = Annotated[AppContext, Depends(get_context)]
-TypedPassword = Annotated[str, Field(min_length=1, max_length=MAX_PASSWORD)]
 OpenTo = Annotated[list[uuid.UUID] | None, Field(default=None, max_length=locks_sql.MAX_OPEN_TO)]
 
 ADMIN_ONLY = "Only an admin can lock or unlock a file."
@@ -76,7 +73,6 @@ class LockBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     open_to: OpenTo = None  # left out: the Admin who locks it (p2:30)
-    password: TypedPassword | None = None
 
 
 class BulkLockBody(LockBody):
@@ -86,17 +82,9 @@ class BulkLockBody(LockBody):
 class UnlockBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    password: TypedPassword | None = None
-
 
 class BulkUnlockBody(UnlockBody):
     document_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_FILES)
-
-
-class GrantBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    password: Password = None  # needed when the Admin allows themselves
 
 
 def _found(conn: Connection, user: CurrentUser, document_ids: list[str]) -> None:
@@ -231,12 +219,12 @@ def _audit(
 @router.post("/documents/lock")
 def lock_files(body: BulkLockBody, user: User, context: Context) -> dict[str, int]:
     """Lock up to MAX_FILES files at once, all or nothing: ``{locked}``, the files locked now (one
-    locked already is left as it is). One password entry covers the batch."""
+    locked already is left as it is). One proof covers the batch."""
     _admin_batch(user)
     documents = list(dict.fromkeys(str(each) for each in body.document_ids))
     with context.db.user(user.customer_id, user.user_id) as conn:
         _found(conn, user, documents)
-    prove_password(context, user, body.password, action="locks")
+    require_proof(user, "locks")
     outcome = _lock(context, user, documents, body.open_to, batch=True)
     return {"locked": len({version.document_id for version in outcome.versions})}
 
@@ -248,7 +236,7 @@ def unlock_files(body: BulkUnlockBody, user: User, context: Context) -> dict[str
     documents = list(dict.fromkeys(str(each) for each in body.document_ids))
     with context.db.user(user.customer_id, user.user_id) as conn:
         _found(conn, user, documents)
-    prove_password(context, user, body.password, action="locks")
+    require_proof(user, "locks")
     outcome = _unlock(context, user, documents, batch=True)
     return {"unlocked": len({version.document_id for version in outcome.versions})}
 
@@ -259,7 +247,7 @@ def lock_file(document_id: uuid.UUID, body: LockBody, user: User, context: Conte
     target = str(document_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
         _found(conn, user, [target])
-    prove_password(context, user, body.password, action="locks")
+    require_proof(user, "locks")
     outcome = _lock(context, user, [target], body.open_to, batch=False)
     people = 1 if body.open_to is None else len(set(body.open_to))
     return {"locked": True, "versions": len(outcome.versions), "open_to": people}
@@ -271,7 +259,7 @@ def unlock_file(document_id: uuid.UUID, body: UnlockBody, user: User, context: C
     target = str(document_id)
     with context.db.user(user.customer_id, user.user_id) as conn:
         _found(conn, user, [target])
-    prove_password(context, user, body.password, action="locks")
+    require_proof(user, "locks")
     outcome = _unlock(context, user, [target], batch=False)
     return {"unlocked": True, "reading": any(version.queue for version in outcome.versions)}
 
@@ -303,7 +291,6 @@ def list_lock_grants(document_id: uuid.UUID, user: User, context: Context) -> di
 def grant_lock(
     document_id: uuid.UUID,
     user_id: uuid.UUID,
-    body: GrantBody,
     user: User,
     background: BackgroundTasks,
     context: Context,
@@ -314,13 +301,11 @@ def grant_lock(
     mine = person == user.user_id
     with context.db.user(customer_id, user.user_id) as conn:
         _admin_document(conn, user, target)
-    if body.password is not None:
-        prove_password(context, user, body.password, action="locks")
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         found = _enabled(conn, user, person)
         if mine:
-            _self_grant(user, body.password, action="locks")
+            _self_grant(user, action="locks")
         outcome = locks_sql.grant(conn, target, person)
         if outcome == "not_found":
             raise ApiError(404, "not_found")

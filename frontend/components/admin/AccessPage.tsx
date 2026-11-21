@@ -4,21 +4,19 @@
 // with Give access and one Remove a row: their departments (with the Head tick), the private
 // folders they are named on, and the files given to them. Read from GET /admin/users/{id}/access,
 // with the users list for their email and for who added what. Every change asks first where it
-// takes something away, goes through the password step when it gives the admin themselves access,
+// takes something away, needs a fresh company sign-in when it gives the admin themselves access,
 // then reads the page again. A turned-off person can be given nothing (409 disabled): the Give
 // buttons, Management and the Head ticks go. Locked files wait for PR 12. Admin sessions only.
 
 import Link from "next/link";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
-import { asksFirst } from "@/components/access/passwordStep";
+import { useProofStep } from "@/components/access/proofStep";
 import {
   ACCESS_PAGE,
   ACCESS_REMOVED,
   DISABLED_BANNER,
   REMOVE_AS_HEAD,
-  MANAGEMENT_WHAT,
   accessErrorText,
   accessTitle,
   byLine,
@@ -31,7 +29,6 @@ import {
   noDepartmentsText,
   noFilesText,
   noFoldersText,
-  quoted,
   removeDepartmentQuestion,
   removeFileQuestion,
   removeFolderQuestion,
@@ -149,7 +146,7 @@ export function AccessPageView({
   const [confirming, setConfirming] = useState<Confirming | null>(null);
   const [giving, setGiving] = useState<Giving | null>(null);
   const closeNotice = useCallback(() => setNotice(null), []);
-  const passwordStep = usePasswordStep();
+  const proofStep = useProofStep();
 
   if (failed === "missing") {
     return (
@@ -196,7 +193,7 @@ export function AccessPageView({
   const open = !user.disabled; // a turned-off person can be given nothing
 
   /** Sends one change and reads the page again, whatever happened (another admin may have changed
-   * it). Null (the password step cancelled) changes nothing; a reply with `changed: false` (it was
+   * it). Null (the company sign-in was started) changes nothing; a reply with `changed: false` (it was
    * so already) says nothing. */
   async function change(send: () => Promise<unknown>, done: string) {
     setBusy(true);
@@ -212,17 +209,16 @@ export function AccessPageView({
       setBusy(false);
     }
   }
-  const first = (on?: boolean) => asksFirst({ myId, targetId: user.id, on });
   const setHead = (department: { id: string; name: string }, on: boolean) =>
     change(
-      () => passwordStep.run(department.name, (password) => putMembership(user.id, department.id, { head: on, password }), first(on)),
+      () => proofStep.run(() => putMembership(user.id, department.id, { head: on })),
       headToast(user.name, department.name, on),
     );
 
   const ask = (text: string, button: string, go: () => void, danger = true) => setConfirming({ text, button, danger, go });
   const management = (on: boolean) =>
     change(
-      () => passwordStep.run(MANAGEMENT_WHAT, (password) => setManagement(user.id, on, password), first(on)),
+      () => proofStep.run(() => setManagement(user.id, on)),
       managementToast(user.name, on),
     );
 
@@ -372,20 +368,18 @@ export function AccessPageView({
           onClose={() => setGiving(null)}
           onGive={(place) => {
             setGiving(null);
-            const self = (what: string, send: (password?: string) => Promise<unknown>) => passwordStep.run(what, send, first());
             if (place.kind === "department")
-              void change(() => self(place.name, (password) => putMembership(user.id, place.id, { password })), canNowSeeToast(user.name, place.name));
+              void change(() => proofStep.run(() => putMembership(user.id, place.id)), canNowSeeToast(user.name, place.name));
             if (place.kind === "folder")
-              void change(() => self(quoted(place.name), (password) => addNamed(place.id, user.id, password)), canNowSeeToast(user.name, place.name));
+              void change(() => proofStep.run(() => addNamed(place.id, user.id)), canNowSeeToast(user.name, place.name));
             if (place.kind === "file")
               void change(
-                () => self(quoted(place.name), (password) => giveFile(place.id, user.id, password)),
+                () => proofStep.run(() => giveFile(place.id, user.id)),
                 sharedToast(1, [{ id: user.id, name: user.name }]),
               );
           }}
         />
       )}
-      {passwordStep.dialog}
       <Toast notice={notice} onClose={closeNotice} />
     </div>
   );

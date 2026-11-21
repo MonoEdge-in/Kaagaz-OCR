@@ -36,6 +36,8 @@ MAX_TOKEN_AGE_SECONDS = 600
 MIN_KEY_BITS = 2048
 MAX_SUBJECT = 255
 MAX_SID = 255
+# Must match the realm's "Broker identity provider session note" mapper claim.
+PROVIDER_CLAIM = "authentication_provider"
 
 _OPENER = build_opener()
 _cache: dict[str, tuple[float, Any]] = {}
@@ -89,6 +91,19 @@ def authorize_url(
     return f"{metadata['authorization_endpoint']}?{query}"
 
 
+def logout_url(settings: Settings) -> str:
+    """Keycloak's end-session address for this browser (RP-initiated logout, #737): the client and
+    where to land (the callback's own origin plus /login), nothing else. No ID token is kept
+    server-side, so there is no hint; Keycloak asks the person to confirm in its own page."""
+    _configured(settings)
+    redirect = urllib.parse.urlsplit(settings.keycloak_redirect_uri or "")
+    landing = f"{redirect.scheme}://{redirect.netloc}/login"
+    query = urllib.parse.urlencode(
+        {"client_id": settings.keycloak_client_id, "post_logout_redirect_uri": landing}
+    )
+    return f"{_discovery(settings)['end_session_endpoint']}?{query}"
+
+
 def id_token_for(settings: Settings, code: str, verifier: str) -> str:
     """Exchange a one-use authorization code through the confidential PKCE client."""
     _configured(settings)
@@ -140,6 +155,11 @@ def verified_identity(settings: Settings, token: str, *, nonce: str, now: int, s
         # The first post-enrollment OTP flow may still carry only the password AMR. One fresh
         # company sign-in then executes both authenticators and succeeds without trusting ACR.
         raise OidcError("mfa_verify_again")
+    # No brokered or social sign-in is allowed: the realm emits this claim only for one, so any
+    # value refuses; absent or empty is the local password-plus-OTP execution.
+    provider_claim = claims.get(PROVIDER_CLAIM)
+    if provider_claim is not None and provider_claim != "":
+        raise OidcError("organization_provider_policy_unconfigured")
     provider = "local"
     return Identity(
         issuer=settings.keycloak_issuer or "",

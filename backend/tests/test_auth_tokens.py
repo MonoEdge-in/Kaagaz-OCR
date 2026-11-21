@@ -1,4 +1,4 @@
-"""Session and enrol tokens, the sign-in settings and the sign-in dependencies (PRD 1 A1 to A7).
+"""Session and confirm tokens, the sign-in settings and the sign-in dependencies (PRD 1 A1 to A7).
 
 Pure: no database. The dependency tests build a bare FastAPI app whose
 ``load_user`` is replaced, so they check the wiring of ``current_user``,
@@ -7,6 +7,7 @@ PostgreSQL (tests/test_users_db.py covers the query behind ``load_user``).
 """
 
 import base64
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -23,21 +24,16 @@ from kaagaz.api import auth, errors
 from kaagaz.api.auth import (
     CONFIRM_COOKIE,
     CONFIRM_SECONDS,
-    ENROL_SECONDS,
     SESSION_COOKIE,
     ConfirmClaims,
     CurrentUser,
-    EnrolClaims,
     SessionClaims,
-    new_enrol,
     new_session,
     read_confirm,
-    read_enrol,
     read_session,
     session_seconds,
     set_session_cookie,
     sign_confirm,
-    sign_enrol,
     sign_session,
 )
 from kaagaz.api.context import AppContext
@@ -55,7 +51,6 @@ UID = "11111111-1111-4111-8111-111111111111"
 CID = "22222222-2222-4222-8222-222222222222"
 SID = "33333333-3333-4333-8333-333333333333"  # Changed on purpose (#502, 0076): the session id
 NOW = 1_800_000_000
-SEALED = "v1:bm90LWEtcmVhbC1zZWFsZWQtc2VjcmV0LWJ1dC13ZWxsLWZvcm1lZA=="
 ENV_EXAMPLE = Path(__file__).resolve().parents[2] / ".env.example"
 
 
@@ -72,17 +67,6 @@ def _session(**changes: Any) -> SessionClaims:
         "assurance": None,
     }
     return SessionClaims(**{**fields, **changes})
-
-
-def _enrol(**changes: Any) -> EnrolClaims:
-    fields: dict[str, Any] = {
-        "user_id": UID,
-        "customer_id": CID,
-        "session_version": 3,
-        "sealed_secret": SEALED,
-        "expires_at": NOW + 600,
-    }
-    return EnrolClaims(**{**fields, **changes})
 
 
 def _b64url(raw: bytes) -> str:
@@ -167,7 +151,6 @@ def test_a_changed_payload_is_refused() -> None:
 @pytest.mark.parametrize("token", ["", ".", "abc", "abc.", ".abc", "a.b.c", "é.é", "!!!.???"])
 def test_garbage_tokens_are_refused(token: str) -> None:
     assert read_session(token, SECRET, now=NOW) is None
-    assert read_enrol(token, SECRET, now=NOW) is None
 
 
 def test_an_old_sprint_1_cookie_is_refused() -> None:
@@ -192,7 +175,7 @@ def test_the_signed_helper_matches_the_code() -> None:
 
 
 def test_a_session_with_an_extra_field_is_refused() -> None:
-    assert read_session(_signed(_session_payload(sec=SEALED), b"session"), SECRET, now=NOW) is None
+    assert read_session(_signed(_session_payload(sec="x"), b"session"), SECRET, now=NOW) is None
 
 
 @pytest.mark.parametrize(
@@ -314,74 +297,6 @@ def test_an_already_expired_session_is_not_set_as_a_cookie() -> None:
         set_session_cookie(Response(), _session(expires_at=NOW), make_settings(), now=NOW)
 
 
-# --- the enrol token -----------------------------------------------------------------------------
-
-
-def test_enrol_round_trips() -> None:
-    assert read_enrol(sign_enrol(_enrol(), SECRET), SECRET, now=NOW) == _enrol()
-
-
-def test_enrol_payload_is_exactly_the_agreed_json() -> None:
-    assert _payload(sign_enrol(_enrol(), SECRET)) == {
-        "uid": UID,
-        "cid": CID,
-        "ver": 3,
-        "sec": SEALED,
-        "exp": NOW + 600,
-    }
-
-
-def test_enrol_mac_is_over_the_enrol_purpose_and_the_body() -> None:
-    body, signature = sign_enrol(_enrol(), SECRET).split(".")
-    expected = hmac.new(SECRET.encode(), b"enrol\x00" + body.encode("ascii"), hashlib.sha256).digest()
-    assert signature == _b64url(expected)
-
-
-def test_enrol_token_lasts_10_minutes() -> None:
-    assert ENROL_SECONDS == 600
-    claims = new_enrol(user_id=UID, customer_id=CID, session_version=3, sealed_secret=SEALED, now=NOW)
-    assert claims == _enrol(expires_at=NOW + 600)
-    token = sign_enrol(claims, SECRET)
-    assert read_enrol(token, SECRET, now=NOW + 599) == claims
-    assert read_enrol(token, SECRET, now=NOW + 600) is None
-
-
-def test_an_enrol_token_is_never_a_session_and_a_session_never_an_enrol_token() -> None:
-    enrol = sign_enrol(_enrol(), SECRET)
-    session = sign_session(_session(scope="admin"), SECRET)
-    assert read_session(enrol, SECRET, now=NOW) is None
-    assert read_enrol(session, SECRET, now=NOW) is None
-    # Even a session-shaped payload under the enrol purpose, or the reverse, is refused.
-    assert read_session(_signed(_session_payload(), b"enrol"), SECRET, now=NOW) is None
-    enrol_payload = {"uid": UID, "cid": CID, "ver": 3, "sec": SEALED, "exp": NOW + 600}
-    assert read_enrol(_signed(enrol_payload, b"session"), SECRET, now=NOW) is None
-
-
-@pytest.mark.parametrize("missing", ["uid", "cid", "ver", "sec", "exp"])
-def test_an_enrol_token_missing_any_field_is_refused(missing: str) -> None:
-    payload = {"uid": UID, "cid": CID, "ver": 3, "sec": SEALED, "exp": NOW + 600}
-    del payload[missing]
-    assert read_enrol(_signed(payload, b"enrol"), SECRET, now=NOW) is None
-
-
-@pytest.mark.parametrize(
-    "changes",
-    [
-        {"ver": True},
-        {"ver": 0},
-        {"ver": "3"},
-        {"sec": ""},
-        {"sec": 5},
-        {"uid": "x"},
-        {"exp": True},
-        {"role": "admin"},
-    ],
-)
-def test_an_enrol_token_with_a_bad_or_extra_field_is_refused(changes: dict[str, Any]) -> None:
-    payload = {"uid": UID, "cid": CID, "ver": 3, "sec": SEALED, "exp": NOW + 600, **changes}
-    assert read_enrol(_signed(payload, b"enrol"), SECRET, now=NOW) is None
-
-
 # --- the confirm token (council 4 Oct 2026) ----------------------------------------------------
 
 # Changed on purpose (A4, 7 Nov 2026): the browser session too.
@@ -402,14 +317,11 @@ def test_confirm_round_trips_and_lasts_5_minutes() -> None:
     assert signature == _b64url(expected)
 
 
-def test_a_confirm_token_is_never_a_session_or_an_enrol_token_and_the_reverse() -> None:
+def test_a_confirm_token_is_never_a_session_and_the_reverse() -> None:
     confirm = _signed(CONFIRM, b"confirm")
     assert read_session(confirm, SECRET, now=NOW) is None
-    assert read_enrol(confirm, SECRET, now=NOW) is None
     assert read_confirm(_signed(CONFIRM, b"session"), SECRET, now=NOW) is None
-    assert read_confirm(_signed(CONFIRM, b"enrol"), SECRET, now=NOW) is None
     assert read_confirm(sign_session(_session(), SECRET), SECRET, now=NOW) is None
-    assert read_confirm(sign_enrol(_enrol(), SECRET), SECRET, now=NOW) is None
 
 
 def test_a_confirm_token_with_a_missing_bad_or_extra_field_is_refused() -> None:
@@ -471,14 +383,50 @@ def test_keycloak_defaults_match_stock_realm_and_worker_mfa_policy_is_optional()
             KEYCLOAK_ISSUER="http://keycloak.localhost:8081/realms/kaagaz-local",
             KEYCLOAK_CLIENT_ID="kaagaz-web",
             KEYCLOAK_CLIENT_SECRET="a-valid-test-keycloak-client-secret-000",
+            KEYCLOAK_ADMIN_CLIENT_ID="kaagaz-provisioner",
+            KEYCLOAK_ADMIN_CLIENT_SECRET="a-valid-test-keycloak-admin-secret-0000",
             KEYCLOAK_REDIRECT_URI="http://localhost:3000/api/auth/keycloak/callback",
             KEYCLOAK_FLOW_ENCRYPTION_KEY="a-distinct-keycloak-flow-key-for-tests-000",
             CUSTOMER_MFA_REQUIRED="true",
         )
     )
     assert settings.keycloak_required_acr == "1"
-    assert settings.keycloak_provider_claim == "auth_provider"
     assert settings.customer_mfa_required is True
+
+
+def _keycloak_env(**changes: str | None) -> dict[str, str]:
+    values: dict[str, str | None] = {
+        "KEYCLOAK_ENABLED": "true",
+        "KEYCLOAK_ISSUER": "http://keycloak.localhost:8081/realms/kaagaz-local",
+        "KEYCLOAK_CLIENT_ID": "kaagaz-web",
+        "KEYCLOAK_CLIENT_SECRET": "a-valid-test-keycloak-client-secret-000",
+        "KEYCLOAK_REDIRECT_URI": "http://localhost:3000/api/auth/keycloak/callback",
+        "KEYCLOAK_FLOW_ENCRYPTION_KEY": "a-distinct-keycloak-flow-key-for-tests-000",
+        "KEYCLOAK_ADMIN_CLIENT_ID": "kaagaz-provisioner",
+        "KEYCLOAK_ADMIN_CLIENT_SECRET": "a-valid-test-keycloak-admin-secret-0000",
+        **changes,
+    }
+    return _example_env(**values)
+
+
+def test_keycloak_admin_client_is_read_and_its_secret_is_hidden() -> None:
+    settings = Settings.from_env(_keycloak_env())
+    assert settings.keycloak_admin_client_id == "kaagaz-provisioner"
+    assert settings.keycloak_admin_client_secret == "a-valid-test-keycloak-admin-secret-0000"
+    assert "keycloak-admin-secret" not in repr(settings)
+
+
+@pytest.mark.parametrize("name", ["KEYCLOAK_ADMIN_CLIENT_ID", "KEYCLOAK_ADMIN_CLIENT_SECRET"])
+def test_keycloak_admin_client_is_required_when_keycloak_is_on(name: str) -> None:
+    with pytest.raises(SettingsError, match=name):
+        Settings.from_env(_keycloak_env(**{name: None}))
+
+
+def test_a_short_keycloak_admin_secret_is_refused_without_the_value() -> None:
+    short = "only-31-characters-long-0000000"
+    with pytest.raises(SettingsError, match="KEYCLOAK_ADMIN_CLIENT_SECRET") as caught:
+        Settings.from_env(_keycloak_env(KEYCLOAK_ADMIN_CLIENT_SECRET=short))
+    assert short not in str(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -594,7 +542,7 @@ def _client(
         if stored is None:
             return None
         fields = {field: getattr(stored, field) for field in CurrentUser.__dataclass_fields__}
-        return CurrentUser(**{**fields, "scope": scope})
+        return CurrentUser(**{**fields, "scope": scope, "auth_authority": "keycloak"})
 
     monkeypatch.setattr(auth, "load_user", load_user)
     settings = make_settings()
@@ -613,10 +561,6 @@ def _client(
     def any_route(user: auth.User) -> dict[str, Any]:
         return {"id": user.user_id, "scope": user.scope, "ver": user.session_version}
 
-    @app.get("/password")
-    def password_route(user: auth.UserAllowPasswordChange) -> dict[str, Any]:
-        return {"id": user.user_id, "must_change": user.must_change_password}
-
     @app.get("/admin-area", dependencies=[Depends(auth.require_admin_session)])
     def admin_route() -> dict[str, str]:
         return {"ok": "yes"}
@@ -633,7 +577,11 @@ def _client(
 
 
 def _cookie(client: TestClient, claims: SessionClaims) -> None:
-    client.cookies.set(SESSION_COOKIE, sign_session(claims, make_settings().session_secret))
+    """The session cookie of a Keycloak sign-in (the only one: any other source is refused)."""
+    live = dataclasses.replace(
+        claims, auth_source="keycloak", assurance=make_settings().keycloak_required_acr
+    )
+    client.cookies.set(SESSION_COOKIE, sign_session(live, make_settings().session_secret))
 
 
 def test_current_user_passes_a_matching_session_through(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -660,7 +608,7 @@ def test_a_session_version_that_no_longer_matches_is_401(
 ) -> None:
     client = _client(monkeypatch, _user(session_version=stored_ver))
     _cookie(client, _session(expires_at=NOW + 60))
-    for path in ("/any", "/password", "/admin-area"):
+    for path in ("/any", "/admin-area"):
         reply = client.get(path)
         assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), path
 
@@ -677,44 +625,14 @@ def test_a_user_that_is_gone_or_disabled_is_401(monkeypatch: pytest.MonkeyPatch)
     assert client.get("/any").status_code == 401
 
 
-def test_the_password_change_gate_is_inside_current_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _client(monkeypatch, _user(role="member", must_change_password=True))
-    _cookie(client, _session(role="member", expires_at=NOW + 60))
-    reply = client.get("/any")
-    assert (reply.status_code, reply.json()["error"]["code"]) == (403, "password_change_required")
-    assert client.get("/password").json() == {"id": UID, "must_change": True}
-
-
-def test_the_password_change_gate_also_covers_admin_routes(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _client(monkeypatch, _user(must_change_password=True))
-    _cookie(client, _session(scope="admin", expires_at=NOW + 60))
-    for path in ("/admin-area", "/admin-param"):
-        reply = client.get(path)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (403, "password_change_required"), path
-
-
 def test_an_admins_app_session_is_signed_out(monkeypatch: pytest.MonkeyPatch) -> None:
     """One sign-in (16 Oct 2026): every admin session has scope "admin". An admin's app
     session from before rested on the password alone, so it ends, on every route."""
     client = _client(monkeypatch, _user())
     _cookie(client, _session(scope="app", expires_at=NOW + 60))
-    for path in ("/any", "/password", "/admin-area", "/admin-param"):
-        reply = client.get(path)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), path
-
-
-def test_an_admin_without_two_step_gets_only_the_set_up_answer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """MFA required for admins (0035): 403 mfa_enrol_required everywhere but /auth/me,
-    /auth/password and /auth/logout (current_user_allow_password_change)."""
-    client = _client(monkeypatch, _user(totp_enabled=False))
-    _cookie(client, _session(scope="admin", expires_at=NOW + 60))
     for path in ("/any", "/admin-area", "/admin-param"):
         reply = client.get(path)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (403, "mfa_enrol_required"), path
-    assert client.get("/password").json() == {"id": UID, "must_change": False}
-    member = _client(monkeypatch, _user(role="member", totp_enabled=False))
-    _cookie(member, _session(role="member", expires_at=NOW + 60))
-    assert member.get("/any").status_code == 200  # two-step stays optional for everyone else
+        assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), path
 
 
 def test_an_admin_session_opens_admin_and_app_routes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -742,23 +660,11 @@ def _forever(client: TestClient, confirm: dict[str, Any] | None = None) -> tuple
 @pytest.mark.parametrize(
     ("stored", "scope", "expected"),
     [
-        # A grant never counts for an admin: a password-only admin stays refused.
+        # A grant never counts for an admin: an admin's app session ends (16 Oct 2026).
         ({"delete_forever_allowed": True}, "app", (401, "not_signed_in")),
-        ({"delete_forever_allowed": True, "totp_enabled": False}, "admin", (403, "mfa_enrol_required")),
-        # Changed on purpose (#538, Tushar, 7 Nov 2026): turned off by the admin (30 Oct 2026),
-        # signed in on the password, the typed-password token now counts in an admin session.
-        (
-            {"delete_forever_allowed": True, "totp_enabled": False, "two_step_turned_off": True},
-            "admin",
-            (200, None),
-        ),
-        ({"totp_enabled": False, "two_step_turned_off": True}, "app", (401, "not_signed_in")),
-        # Required by the organisation (0068) but not set up: refused as before, token or not.
-        (
-            {"totp_enabled": False, "two_step_turned_off": True, "two_step_required": True},
-            "admin",
-            (403, "two_step_required"),
-        ),
+        # Changed on purpose (21 Nov 2026): every admin needs the company sign-in's token, with or
+        # without a local two-step code (there is none: Keycloak asks for it at sign-in).
+        ({"totp_enabled": False}, "admin", (200, None)),
         ({}, "admin", (200, None)),
         ({"role": "member"}, "app", (403, "forbidden")),
         ({"role": "reviewer", "delete_forever_allowed": True}, "app", (200, None)),
@@ -775,7 +681,7 @@ def test_who_may_delete_forever(
 def test_a_granted_member_needs_their_own_fresh_confirm_token(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client(monkeypatch, _user(role="member", delete_forever_allowed=True))
     _cookie(client, _session(role="member", expires_at=NOW + 60))
-    assert _forever(client) == (403, "password_confirm_required")  # none typed
+    assert _forever(client) == (403, "keycloak_reauth_required")  # no company sign-in yet
     for stale in ({"exp": NOW}, {"uid": CID}, {"ver": 2}):  # expired, another user's, an older session's
-        assert _forever(client, {**CONFIRM, **stale}) == (403, "password_confirm_required")
+        assert _forever(client, {**CONFIRM, **stale}) == (403, "keycloak_reauth_required")
     assert _forever(client, CONFIRM) == (200, None)

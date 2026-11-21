@@ -11,7 +11,6 @@ import {
   maskedNumber,
   normalizeNumber,
   numberProblem,
-  pageNotice,
   stateText,
 } from "@/components/account/whatsapp";
 import {
@@ -21,7 +20,6 @@ import {
   TURN_ON_TEXT,
   formChanged,
   formOf,
-  tickNeedsPassword,
   turnOnTitle,
   whatsappCellState,
   withRole,
@@ -54,7 +52,7 @@ describe("the Connect screen", () => {
   it("says the privacy text and asks for the tick in the spec's words", () => {
     expect(PRIVACY_TEXT).toBe(
       "Your questions, voice notes and answers pass through WhatsApp (Meta) and stay in your chat, on your phone, " +
-        "its backups and WhatsApp Web. Files are never sent on WhatsApp; you open them in Kaagaz with your password. " +
+        "its backups and WhatsApp Web. Files are never sent on WhatsApp; you open them in Kaagaz after signing in. " +
         "Kaagaz cannot delete them later. Anyone who can open WhatsApp on this phone can ask about your files. " +
         "Keep your phone locked.",
     );
@@ -62,7 +60,7 @@ describe("the Connect screen", () => {
   });
 
   it("says each state plainly, a connection by its last 4 digits only", () => {
-    const base = { google: false, totp: false };
+    const base = {};
     expect(stateText({ ...base, state: "off" })).toContain("isn't turned on for your organisation");
     expect(stateText({ ...base, state: "not_allowed" })).toContain("for your role");
     expect(stateText({ ...base, state: "none" })).toContain("Files never leave Kaagaz");
@@ -76,14 +74,6 @@ describe("the Connect screen", () => {
     expect(connected).toBe("Connected: ••••3210, since 14 Nov 2026.");
   });
 
-  it("goes on to the number after Google, or says why not", () => {
-    expect(pageNotice({ proved: "google" })).toEqual({ proved: true, error: null });
-    expect(pageNotice({ error: "not_yours" }).error).toBe(
-      "That Google account isn't the one connected to your Kaagaz account.",
-    );
-    expect(pageNotice({ error: "something new" }).error).toBe("Confirming with Google didn't work. Try again.");
-    expect(pageNotice({})).toEqual({ proved: false, error: null });
-  });
 });
 
 const SAVED: WhatsAppAdmin = {
@@ -112,15 +102,6 @@ describe("the Admin's switches", () => {
     const form = formOf(SAVED);
     expect(withRole(form, "admin", true).roles).toEqual(["member", "reviewer", "admin"]);
     expect(withRole(withRole(form, "admin", true), "member", false).roles).toEqual(["reviewer", "admin"]);
-  });
-
-  it("ask for the password when Admins or Management are newly ticked", () => {
-    const form = formOf(SAVED);
-    expect(tickNeedsPassword(SAVED, form)).toBe(false);
-    expect(tickNeedsPassword(SAVED, withRole(form, "admin", true))).toBe(true);
-    expect(tickNeedsPassword(SAVED, { ...form, management: true })).toBe(true);
-    expect(tickNeedsPassword({ ...SAVED, management: true }, { ...form, management: true })).toBe(false);
-    expect(tickNeedsPassword(SAVED, { ...form, voice: false })).toBe(false);
   });
 
   it("know when the form changed", () => {

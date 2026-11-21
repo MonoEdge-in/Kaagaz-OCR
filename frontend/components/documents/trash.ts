@@ -9,21 +9,12 @@ import type { DocumentSummary, FilePlaced, FolderRestored, Me, TrashedFolder } f
 
 /**
  * Who may delete for good: an admin session (every admin's, from /login), or a member or
- * reviewer an admin allowed (can_delete_forever). An admin without two-step sign-in on (#538)
- * and a granted user type their password first (foreverNeedsPassword). The server says 403
- * to anyone else. Move to Trash and Restore follow each document's can_delete.
+ * reviewer an admin allowed (can_delete_forever). Each confirms with a fresh company sign-in first
+ * (403 keycloak_reauth_required). The server says 403 to anyone else. Move to Trash and Restore follow each document's can_delete.
  */
 export function canDeleteForever(me: Me): boolean {
   if (me.user.role !== "admin") return me.user.can_delete_forever;
   return sessionScope(me) === "admin";
-}
-
-/** An admin without two-step sign-in on (#538), or a granted member or reviewer, types their
- * password before deleting for good. */
-export function foreverNeedsPassword(me: Me): boolean {
-  if (me.user.auth_authority === "keycloak") return false;
-  if (me.user.role !== "admin") return me.user.can_delete_forever;
-  return sessionScope(me) === "admin" && !me.user.totp_enabled;
 }
 
 /** What must happen first to delete forever, for the note in Trash; null if nothing. */
@@ -40,33 +31,6 @@ export function selectable(item: Pick<DocumentSummary, "can_delete">, inTrash: b
 /** 403 forbidden: an admin stopped this user's Delete forever; ask who is signed in again. */
 export function lostTheRight(caught: unknown): boolean {
   return caught instanceof ApiError && caught.code === "forbidden";
-}
-
-/** 403 password_confirm_required: no typed password counts now (it is 5 minutes old, or none was
- * typed); the question stays open and asks for it again (#538). */
-export function passwordAgain(caught: unknown): boolean {
-  return caught instanceof ApiError && caught.code === "password_confirm_required";
-}
-
-export type ForeverOutcome =
-  | { kind: "password"; error: unknown } // the password was refused: nothing was deleted
-  | { kind: "ran"; result: BulkResult };
-
-/** runEach, after checking a granted user's password once (a 5-minute cookie); a refused one deletes nothing. */
-export async function runForever(
-  ids: readonly string[],
-  password: string | null,
-  calls: { confirm(password: string): Promise<unknown>; remove(id: string): Promise<unknown> },
-  onProgress?: (handled: number) => void,
-): Promise<ForeverOutcome> {
-  if (password !== null) {
-    try {
-      await calls.confirm(password);
-    } catch (caught) {
-      return { kind: "password", error: caught };
-    }
-  }
-  return { kind: "ran", result: await runEach(ids, calls.remove, onProgress) };
 }
 
 /** "1 document", "3 documents". */

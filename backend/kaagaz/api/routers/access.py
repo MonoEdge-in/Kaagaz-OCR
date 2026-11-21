@@ -11,8 +11,8 @@ holds; a no-op raises nothing.
 
 Why the self-grant step (PRD 7, decision 11): an Admin who gives themselves access (Management, a
 membership or the Head tick, a name on a private folder, a file, or opening a Department only
-department or a private folder to themselves) types their password (403 ``password_required``;
-``prove_password``: 400 ``wrong_password``, counted on the sign-in lock, and ``password_locked``);
+department or a private folder to themselves) confirms with a fresh Keycloak sign-in for
+``access`` (403 ``keycloak_reauth_required``, ``routers/auth.py`` ``require_proof``);
 the audit row says ``self``; and every enabled Management person and every other Admin is emailed
 the kind of access only. Every Management grant is emailed too (lead decision 3).
 
@@ -39,8 +39,7 @@ from kaagaz.api import emails
 from kaagaz.api.auth import AdminSession, CurrentUser, User, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.routers.admin import MAX_PASSWORD
-from kaagaz.api.routers.auth import prove_password
+from kaagaz.api.routers.auth import require_proof
 from kaagaz.api.views import CURSOR, admin_user, iso, timeline
 from kaagaz.db import access as access_sql
 from kaagaz.db import audit, listing, lock_places
@@ -52,11 +51,9 @@ admin_router = APIRouter(dependencies=[Depends(require_admin_session)])
 router = APIRouter()
 
 Context = Annotated[AppContext, Depends(get_context)]
-Password = Annotated[str | None, Field(default=None, min_length=1, max_length=MAX_PASSWORD)]
 MAX_NAMED = 50
 MAX_FILES = 100  # lead decision 12: bulk giving, 100 files x 20 people
 MAX_PEOPLE = 20
-SELF_GRANT = "Type your password to give yourself access."
 ADMIN_ONLY = "Only an admin can do this."
 NOT_A_DEPARTMENT = "Choose a department: a top-level folder of kind department."
 
@@ -65,14 +62,12 @@ class ManagementBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     on: bool
-    password: Password = None
 
 
 class MemberBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     head: bool | None = None  # left out: a new member is not Head, a member keeps their tick
-    password: Password = None
     # PR 13 (#605): the department's locked files the person may open too (the give pop-up)
     locked_files: list[uuid.UUID] = Field(default=[], max_length=MAX_FILES)
 
@@ -81,7 +76,6 @@ class SwitchBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     on: bool
-    password: Password = None
 
 
 class PrivateBody(BaseModel):
@@ -92,16 +86,11 @@ class PrivateBody(BaseModel):
     # PR 10c (lead decision from PR 11b): people named before (the preview's named_before) taken off
     # in the same step, so they never see the folder once it is private.
     drop_named: list[uuid.UUID] = Field(default=[], max_length=MAX_NAMED)
-    password: Password = None
 
 
-class PasswordBody(BaseModel):
+class NamedBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    password: Password = None
-
-
-class NamedBody(PasswordBody):
     # PR 13 (#605): the private folder's locked files the person may open too (the give pop-up)
     locked_files: list[uuid.UUID] = Field(default=[], max_length=MAX_FILES)
 
@@ -116,7 +105,6 @@ class KeptMoveBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     folder_id: uuid.UUID | None  # required; null: the top level
-    password: Password  # when the move opens the file to the Admin making it
 
 
 class BulkGiveBody(BaseModel):
@@ -124,29 +112,14 @@ class BulkGiveBody(BaseModel):
 
     document_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_FILES)
     user_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_PEOPLE)
-    password: Password = None
 
 
 # --- the steps every write shares ---------------------------------------------------------------
 
 
-def _password_given(context: AppContext, user: CurrentUser, password: str | None) -> None:
-    """A password sent is checked first, with no connection held (it opens its own short ones),
-    whether or not this write turns out to need it (an Admin opening a wall to themselves is known
-    only under the tree lock)."""
-    if password is not None:
-        prove_password(context, user, password, action="access")
-
-
-def _self_grant(user: CurrentUser, password: str | None, *, action: str = "access") -> None:
-    """The Admin gives themselves access: the password must have come (checked by
-    ``_password_given``), else 403."""
-    if user.auth_authority == "keycloak":
-        if user.reauth_action != action:
-            raise ApiError(403, "keycloak_reauth_required")
-        return
-    if password is None:
-        raise ApiError(403, "password_required", SELF_GRANT)
+def _self_grant(user: CurrentUser, *, action: str = "access") -> None:
+    """The Admin gives themselves access: their fresh Keycloak proof for ``action``, else 403."""
+    require_proof(user, action)
 
 
 def _enabled(conn: Connection, user: CurrentUser, target: str) -> access_sql.Person:
@@ -348,12 +321,11 @@ def set_management(
     """Management on or off (``AdminUser``). Switched off: 409 ``disabled``. Every grant is emailed."""
     target, customer_id = str(user_id), user.customer_id
     mine = body.on and target == user.user_id
-    _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         found = _enabled(conn, user, target)
         if mine:
-            _self_grant(user, body.password)
+            _self_grant(user)
         row = users_sql.set_management(conn, customer_id, target, on=body.on)
         if row is None:  # can't happen: switched on, under the tree lock
             raise ApiError(404, "not_found")
@@ -380,7 +352,6 @@ def add_member(
     """Add the person to the department, or set their Head tick (left out: a new member is not
     Head, and a member keeps theirs): ``{head, changed}``."""
     target, department, customer_id = str(user_id), str(department_id), user.customer_id
-    _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
         _department(conn, user, department)
         folders_sql._lock_tree(conn, customer_id)
@@ -391,7 +362,7 @@ def add_member(
         gains = before is None or (head and not before)
         mine = target == user.user_id and gains
         if mine:
-            _self_grant(user, body.password)
+            _self_grant(user)
         added = access_sql.join(conn, customer_id, department, target, head=body.head, by=user.user_id)
         _give_locked(
             conn,
@@ -401,7 +372,6 @@ def add_member(
             (department, None),
             head=head,
             via="member",
-            password=body.password,
         )
         if added is not None:
             details: dict[str, audit.DetailValue] = {"head": head}
@@ -445,7 +415,6 @@ def set_department_only(
     """Department only on or off: ``{id, department_only, members, warnings}`` (``no_members``:
     on, with nobody in it). Off, an Admin who gains the files takes the self-grant step."""
     department, customer_id = str(department_id), user.customer_id
-    _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
         _department(conn, user, department)
         folders_sql._lock_tree(conn, customer_id)
@@ -457,7 +426,7 @@ def set_department_only(
             after = access_sql.place_audience(conn, department, None, department_only=body.on)
             gained = user.user_id in after - before
             if gained:
-                _self_grant(user, body.password)
+                _self_grant(user)
             access_sql.set_department_only(conn, customer_id, department, on=body.on)
             details: dict[str, audit.DetailValue] = {"members": members, "losing": len(before - after)}
             if gained:
@@ -507,8 +476,7 @@ def set_private(
     so making it private again brings them back): ``{folder, private, named, you_lose_access}``.
     Admins only. Refused: 409 ``department`` (use Department only), ``inside_private``,
     ``holds_private``. ``drop_named`` (with ``on``): people on its kept list taken off in the same
-    transaction, each audited ``access.named_remove``; one not on it is ignored. The password is
-    proved between two transactions, holding no connection."""
+    transaction, each audited ``access.named_remove``; one not on it is ignored."""
     target, customer_id = str(folder_id), user.customer_id
     named = list(dict.fromkeys(str(each) for each in body.named))
     dropped = list(dict.fromkeys(str(each) for each in body.drop_named))
@@ -516,7 +484,6 @@ def set_private(
         raise ApiError(400, "bad_request", "Name people only on a private folder.")
     with context.db.user(customer_id, user.user_id) as conn:
         _admin_folder(conn, user, target, "Only an admin can make a folder private.")
-    _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         place = _folder_seen(conn, user, target)
@@ -541,7 +508,7 @@ def set_private(
         )
         mine = user.user_id in newly or user.user_id in after - before
         if mine:
-            _self_grant(user, body.password)
+            _self_grant(user)
         if switched:
             details: dict[str, audit.DetailValue] = {"named": len(newly), "losing": len(before - after)}
             if mine:
@@ -625,20 +592,17 @@ def _change_named(
     user: CurrentUser,
     folder_id: str,
     person: str,
-    password: str | None,
     *,
     add: bool,
     give: Callable[[Connection, access_sql.Place], None] | None = None,
 ) -> tuple[bool, str | None, list[tuple[str, str]]]:
-    """Name or unname: the checks in a short first transaction, the password proved with no
-    connection held, then the write under the tree lock, with the folder and the Head tick read
-    again there. (changed, whom to tell: "" the Admin themselves, a named Admin's name, None
-    nobody; and ``_watchers``). A person unknown or switched off is 404 (one answer, for a Head
-    too)."""
+    """Name or unname: the checks in a short first transaction, then the write under the tree lock, with the
+    folder and the Head tick read again there. (changed, whom to tell: "" the Admin themselves, a named
+    Admin's name, None nobody; and ``_watchers``). A person unknown or switched off is 404 (one answer, for a
+    Head too)."""
     customer_id = user.customer_id
     with context.db.user(customer_id, user.user_id) as conn:
         _private_seen(conn, user, folder_id)
-    _password_given(context, user, password)
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         place = _private_seen(conn, user, folder_id)
@@ -652,7 +616,7 @@ def _change_named(
             raise ApiError(404, "not_found")
         mine = person == user.user_id
         if mine and user.role == "admin":
-            _self_grant(user, password)
+            _self_grant(user)
         changed = access_sql.name(conn, customer_id, folder_id, person, by=user.user_id)
         if changed:
             _audit(conn, user, "access.named_add", ("folder", folder_id), person, _self(user, person))
@@ -679,12 +643,12 @@ def add_named(
 
     def give(conn: Connection, place: access_sql.Place) -> None:
         where = (place.department_id, place.id)
-        _give_locked(conn, user, person, wanted, where, head=False, via="named", password=body.password)
+        _give_locked(conn, user, person, wanted, where, head=False, via="named")
 
     if wanted:
         require_admin_session(user)
     changed, tell, watchers = _change_named(
-        context, user, str(folder_id), person, body.password, add=True, give=give if wanted else None
+        context, user, str(folder_id), person, add=True, give=give if wanted else None
     )
     if tell is not None:
         _tell(background, context, user, "named", tell or None, watchers)
@@ -694,7 +658,7 @@ def add_named(
 @router.delete("/folders/{folder_id}/named/{user_id}", status_code=204)
 def remove_named(folder_id: uuid.UUID, user_id: uuid.UUID, user: User, context: Context) -> Response:
     """Take a person off a private folder's list; 404 when they are not on it."""
-    _change_named(context, user, str(folder_id), str(user_id), None, add=False)
+    _change_named(context, user, str(folder_id), str(user_id), add=False)
     return Response(status_code=204)
 
 
@@ -791,26 +755,23 @@ def _give(
 def give_file(
     document_id: uuid.UUID,
     user_id: uuid.UUID,
-    body: PasswordBody,
     user: User,
     background: BackgroundTasks,
     context: Context,
 ) -> dict[str, Any]:
     """Give a file to a person on every version it has now (and every later one): ``{versions,
-    changed}``. In Trash: 409 ``in_trash``; a person switched off: 409 ``disabled``. The password
-    is proved between two transactions, holding no connection."""
+    changed}``. In Trash: 409 ``in_trash``; a person switched off: 409 ``disabled``."""
     target, person, customer_id = str(document_id), str(user_id), user.customer_id
     mine = person == user.user_id
     with context.db.user(customer_id, user.user_id) as conn:
         _admin_document(conn, user, target)
-    _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         document = _admin_document(conn, user, target)
         _live(document)
         found = _enabled(conn, user, person)
         if mine:
-            _self_grant(user, body.password)
+            _self_grant(user)
         versions, given = _give(conn, user, document, [person])
         watchers = _watchers(conn, context, user)
     if given and (mine or found.admin):
@@ -849,7 +810,6 @@ def give_files(
     with context.db.user(customer_id, user.user_id) as conn:
         for document in documents:
             _admin_document(conn, user, document)
-    _password_given(context, user, body.password)
     with context.db.user(customer_id, user.user_id) as conn:
         folders_sql._lock_tree(conn, customer_id)
         found = [_admin_document(conn, user, document) for document in documents]
@@ -857,7 +817,7 @@ def give_files(
             _live(each)
         persons = {person: _enabled(conn, user, person) for person in people}
         if mine:
-            _self_grant(user, body.password)
+            _self_grant(user)
         given: list[str] = []
         for each in sorted(found, key=lambda row: (row.family_id, row.id)):
             given += _give(conn, user, each, people)[1]
@@ -1159,12 +1119,12 @@ def move_kept(
 ) -> dict[str, Any]:
     """Move the file's whole family into ``folder_id`` (null: the top level): ``{id, folder_id}``. A
     folder that isn't there is 404; a file in Trash, 409 ``in_trash``. A move that opens the file to
-    the Admin making it asks their password (403 ``password_required``), as giving themselves
-    access does; it is audited ``self`` and Management and the other Admins are told. Audited
-    ``document.move`` with the counts of who loses and gains it, as a move from the Documents list."""
+    the Admin making it asks for their fresh Keycloak proof (403 ``keycloak_reauth_required``), as
+    giving themselves access does; it is audited ``self`` and Management and the other Admins are
+    told. Audited ``document.move`` with the counts of who loses and gains it, as a move from the
+    Documents list."""
     target, customer_id = str(document_id), user.customer_id
     folder = None if body.folder_id is None else str(body.folder_id)
-    _password_given(context, user, body.password)  # holding no connection
     with context.db.user(customer_id, user.user_id) as conn:
         _admin_document(conn, user, target, ADMIN_ONLY)
         folders_sql._lock_tree(conn, customer_id)  # a move can change who sees it (0085)
@@ -1174,7 +1134,7 @@ def move_kept(
             raise ApiError(404, "not_found", "The folder you chose isn't there any more. Choose another.")
         _live(_admin_document(conn, user, target, ADMIN_ONLY))
         details: dict[str, audit.DetailValue] = {"folder_id": folder}
-        details |= _kept_moved(conn, user, target, folder, body.password)
+        details |= _kept_moved(conn, user, target, folder)
         if not listing.admin_move_family(conn, customer_id, target, folder_id=folder):
             # In Trash meanwhile (the function read it again under the family's lock): refused before
             # the audit, so nothing is written.
@@ -1187,11 +1147,11 @@ def move_kept(
 
 
 def _kept_moved(
-    conn: Connection, user: CurrentUser, document_id: str, folder_id: str | None, password: str | None
+    conn: Connection, user: CurrentUser, document_id: str, folder_id: str | None
 ) -> dict[str, audit.DetailValue]:
     """The names list's move as the move rules see it (documents._move_rule's, an Admin's, under the
     tree lock): its audit's ``losing`` and ``gaining`` counts when it changes who can see the file,
-    and ``self`` when it opens it to the Admin making it, who then must have typed their password
+    and ``self`` when it opens it to the Admin making it, who then must have their Keycloak proof
     (``_self_grant``)."""
     found = access_sql.document_hold(conn, user.customer_id, document_id)
     if found is None:  # can't happen: an Admin found it above
@@ -1207,7 +1167,7 @@ def _kept_moved(
     losing, gaining = access_sql.moved(conn, user.customer_id, move, held)
     details: dict[str, audit.DetailValue] = {"losing": len(losing), "gaining": len(gaining)}
     if user.user_id in gaining:
-        _self_grant(user, password)
+        _self_grant(user)
         details["self"] = True
     return details
 
@@ -1286,18 +1246,17 @@ def _give_locked(
     *,
     head: bool,
     via: str,
-    password: str | None,
 ) -> None:
     """The locked files ticked in the give pop-up (PRD 7 section 6), in the place's own write, under
     its tree lock: each must be a locked file the place gives (409 ``not_in_place``, nothing
     written); then the person may open it, on every version (``kaagaz_lock_grant``), audited
-    ``lock.grant`` {via}. Its routes ask for an Admin's session; the Admin themselves: the password,
+    ``lock.grant`` {via}. Its routes ask for an Admin's session; the Admin themselves: the Keycloak proof,
     as any self-grant. None ticked: nothing (the person gets the place's other files)."""
     wanted = list(dict.fromkeys(str(each) for each in files))
     if not wanted:
         return
     if person == user.user_id:
-        _self_grant(user, password)
+        _self_grant(user)
     in_place = lock_places.locked(conn, user.customer_id, place[0], place[1], head=head, user_id=None)
     if not set(wanted) <= {str(row["id"]) for row in in_place}:
         raise ApiError(409, "not_in_place", "Choose only locked files of this place.")

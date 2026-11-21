@@ -7,7 +7,7 @@ import pytest
 
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as base
-from tests.db_support import migrate
+from tests.db_support import clear_keycloak_state, migrate
 from tests.test_api_support import CSRF, Api
 from tests.test_operator_auth_db import _owner
 
@@ -39,8 +39,12 @@ def test_the_downgrade_refuses_while_a_remove_is_kept(fresh: tuple[str, Database
     document = api.add_document(admin.customer_id, name="march-bill.pdf")
     assert admin.client.delete(f"/api/admin/learned/{document}", headers=CSRF).status_code == 204
 
-    with pytest.raises(subprocess.CalledProcessError):
+    # Changed on purpose (#737, 21 Nov 2026): sign-in marks people Keycloak, which 0103 won't downgrade;
+    # clear it so the refusal below is the kept row's own.
+    clear_keycloak_state(db, admin.customer_id)
+    with pytest.raises(subprocess.CalledProcessError) as refused:
         base._downgrade(url, BEFORE)
+    assert b"an admin removed what Kaagaz learned" in refused.value.stderr
     # As the table owner: the app may never delete a Remove.
     assert _owner(db, "SELECT count(*) FROM learning_removals", {}) == [(1,)]
     _owner(db, "DELETE FROM learning_removals", {})

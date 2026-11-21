@@ -22,6 +22,12 @@ export function keycloakLoginHref(enabled: boolean, next: unknown): string | nul
   return `/api/auth/keycloak/start?next=${encodeURIComponent(keycloakNextPath(next))}`;
 }
 
+/** Keycloak's own page for the person's password or authenticator app (the server passes the action
+ * on only when it is one of these two), then back here. */
+export function keycloakAccountHref(action: "UPDATE_PASSWORD" | "CONFIGURE_TOTP", next: unknown): string {
+  return `/api/auth/keycloak/start?next=${encodeURIComponent(keycloakNextPath(next))}&action=${action}`;
+}
+
 /** The callback returns to this page with a fixed action marker; selections are not persisted. */
 export function keycloakReauthReturnPath(path: unknown, action: KeycloakProofAction): string {
   const pathname = keycloakNextPath(path);

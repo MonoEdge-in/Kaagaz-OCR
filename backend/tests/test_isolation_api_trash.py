@@ -1,7 +1,7 @@
 """Customer B, signed in as an admin, uses customer A's exact document ids on the
 trash routes (PRD 1 F5) and gets 404, and A's documents are unchanged.
 
-B signs in on the admin screen, so "delete forever" (an admin session only)
+B signs in on the admin screen and proves it fresh, so "delete forever" (an admin session only)
 reaches the lookup instead of stopping at the session check. A has one family
 in Trash and one live document, so each route is tried on the state it would
 act on. This runs through the whole API (session, routes, SQL and row level
@@ -42,6 +42,9 @@ def test_b_gets_404_on_every_trash_route_with_a_s_ids_and_a_is_unchanged(db: Dat
     live = api.add_document(a.customer_id, uploaded_by=a.user_id)
     before = _state(db, a.customer_id)
 
+    # Changed on purpose (#737, 21 Nov 2026): delete forever needs a fresh sign-in proof first; B has
+    # it, so B still reaches the lookup and gets 404.
+    api.prove(b, "delete_forever")
     replies = [
         b.client.delete(f"/api/documents/{live}", headers=CSRF),
         b.client.post(f"/api/documents/{binned}/restore", headers=CSRF),
@@ -56,6 +59,8 @@ def test_b_gets_404_on_every_trash_route_with_a_s_ids_and_a_is_unchanged(db: Dat
 
     assert a.client.post(f"/api/documents/{binned}/restore", headers=CSRF).status_code == 200
     assert a.client.delete(f"/api/documents/{live}", headers=CSRF).status_code == 204
+    # Changed on purpose (#737, 21 Nov 2026): the control also needs the proof.
+    api.prove(a, "delete_forever")
     assert a.client.delete(f"/api/documents/{live}/permanent", headers=CSRF).status_code == 204
     assert _state(db, a.customer_id) == {binned: None, older: None}
     assert not api.storage.has(a.customer_id, live)

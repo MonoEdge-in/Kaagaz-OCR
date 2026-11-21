@@ -31,7 +31,7 @@ from tests.db_support import rule_on
 from tests.settings_factory import make_settings
 from tests.test_amount_guard_db import TOTAL, add_bill
 from tests.test_answering_fixed_queries_db import NOW
-from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, Signed, answer_json
+from tests.test_api_support import ANY_ID, CSRF, Api, Signed, answer_json
 from tests.test_isolation_access_api import _audit, _call, _version
 from tests.test_isolation_access_views import Org, _app, _walled
 from tests.test_isolation_content_views import _content
@@ -186,7 +186,7 @@ def _family(api: Api, org: Org) -> tuple[str, str]:
 
 
 def _lock(admin: Signed, document: str, open_to: list[str] | None = None) -> tuple[int, Any]:
-    body: dict[str, Any] = {"password": PASSWORD}
+    body: dict[str, Any] = {"proved": True}
     if open_to is not None:
         body["open_to"] = open_to
     return _call(admin, "POST", f"/api/documents/{document}/lock", body)
@@ -356,7 +356,7 @@ def test_a_lock_is_all_or_nothing(db: Database) -> None:
         org.people["admin"],
         "POST",
         "/api/documents/lock",
-        {"document_ids": [good, sheet], "password": PASSWORD},
+        {"document_ids": [good, sheet], "proved": True},
     )
     assert status == 409 and reply["error"]["details"]["refused"] == [{"id": sheet, "reason": "kind"}]
     assert (
@@ -585,9 +585,8 @@ def test_every_route_of_a_file_is_classified_and_refuses_a_locked_one(
     api.storage.page_images[(org.c, v2, 1)] = b"RIFF made-up page"
     for checked in (False, True):  # PR 13: a live 10-minute check opens nothing REFUSED
         if checked:
-            opened = plain.client.post(
-                "/api/documents/locked-open", json={"password": PASSWORD}, headers=CSRF
-            )
+            Api.of(plain).prove(plain, "locked_open")
+            opened = plain.client.post("/api/documents/locked-open", headers=CSRF)
             assert opened.status_code == 200, opened.text
         for method, path in sorted(REFUSED | OPENED):
             body = _BODIES.get(path)
@@ -631,21 +630,21 @@ def test_a_version_change_on_a_locked_family_says_unlock_it_first(locked: tuple[
 # --- lock, unlock and grants: the routes, their audit and their jobs -----------------------------
 
 
-def test_locking_is_an_admins_with_the_password_audited_and_raises_the_access_version(db: Database) -> None:
+def test_locking_is_an_admins_with_the_company_sign_in_audited_and_raises_the_access_version(
+    db: Database,
+) -> None:
     api = Api(db)
     org = _walled(api)
     file = org.files["loose"]
     api.add_page(org.c, file)
     admin, plain = org.people["admin"], org.people["plain"]
-    assert _call(plain, "POST", f"/api/documents/{file}/lock", {"password": PASSWORD})[0] == 403
+    assert _call(plain, "POST", f"/api/documents/{file}/lock", {"proved": True})[0] == 403
     assert (
-        _call(
-            org.people["member"], "POST", f"/api/documents/{org.files['sal']}/lock", {"password": PASSWORD}
-        )[0]
+        _call(org.people["member"], "POST", f"/api/documents/{org.files['sal']}/lock", {"proved": True})[0]
         == 404
     )
-    status, reply = _call(admin, "POST", f"/api/documents/{file}/lock", {"password": "not the password"})
-    assert (status, reply["error"]["code"]) == (400, "wrong_password")
+    status, reply = _call(admin, "POST", f"/api/documents/{file}/lock", {})  # no company sign-in yet
+    assert (status, reply["error"]["code"]) == (403, "keycloak_reauth_required")
     before = _version(db, org.c)
     status, reply = _lock(admin, file)  # open_to left out: the Admin alone (ticked by default)
     assert (status, reply) == (200, {"locked": True, "versions": 1, "open_to": 1})
@@ -672,7 +671,7 @@ def test_unlocking_reads_the_current_version_again_billed_to_the_admin_past_the_
             " VALUES (:c, 'document.reprocess', 'document', :d)",
             {"c": org.c, "d": org.files["top"]},
         )
-    status, reply = _call(admin, "POST", f"/api/documents/{v2}/unlock", {"password": PASSWORD})
+    status, reply = _call(admin, "POST", f"/api/documents/{v2}/unlock", {"proved": True})
     assert (status, reply) == (200, {"unlocked": True, "reading": True})
     rows = {
         str(row[0]): tuple(row[1:])
@@ -688,7 +687,7 @@ def test_unlocking_reads_the_current_version_again_billed_to_the_admin_past_the_
     assert [job.document_id for job in api.queue.jobs] == [v2]
     assert [row[2] for row in _audit(db, org.c, "lock.unlock")] == [v2]
     assert _audit(db, org.c, "document.reprocess")[-1][2:] == (v2, None, {"via": "unlock"})
-    status, reply = _call(admin, "POST", f"/api/documents/{v2}/unlock", {"password": PASSWORD})
+    status, reply = _call(admin, "POST", f"/api/documents/{v2}/unlock", {"proved": True})
     assert (status, reply["error"]["code"]) == (409, "not_locked")
 
 
@@ -703,11 +702,8 @@ def test_a_lock_grant_is_given_and_taken_on_every_version_and_audited(
     assert _audit(db, org.c, "lock.grant")[-1][2:4] == (v2, member.user_id)
     assert (
         _call(admin, "PUT", f"/api/documents/{v2}/lock-grants/{admin.user_id}", {})[0] == 403
-    )  # self: password
-    assert (
-        _call(admin, "PUT", f"/api/documents/{v2}/lock-grants/{admin.user_id}", {"password": PASSWORD})[0]
-        == 200
-    )
+    )  # self: needs the company sign-in
+    assert _call(admin, "PUT", f"/api/documents/{v2}/lock-grants/{admin.user_id}", {"proved": True})[0] == 200
     names = {
         each["user"]["id"] for each in _call(admin, "GET", f"/api/documents/{v2}/lock-grants")[1]["items"]
     }
@@ -1004,12 +1000,12 @@ def test_a_bulk_lock_and_unlock_reply_with_their_counts_and_audit_each_file(db: 
     admin, files = org.people["admin"], sorted([org.files["loose"], org.files["top"]])
     for file in files:
         api.add_page(org.c, file)
-    reply = _call(admin, "POST", "/api/documents/lock", {"document_ids": files, "password": PASSWORD})
+    reply = _call(admin, "POST", "/api/documents/lock", {"document_ids": files, "proved": True})
     assert reply == (200, {"locked": 2})
     locks = _audit(db, org.c, "lock.lock")
     assert sorted(row[2] for row in locks) == files
     assert all(row[4] == {"versions": 1, "open_to": 1, "batch": 2} for row in locks)
-    reply = _call(admin, "POST", "/api/documents/unlock", {"document_ids": files, "password": PASSWORD})
+    reply = _call(admin, "POST", "/api/documents/unlock", {"document_ids": files, "proved": True})
     assert reply == (200, {"unlocked": 2})
     unlocks = _audit(db, org.c, "lock.unlock")
     assert sorted(row[2] for row in unlocks) == files
@@ -1028,7 +1024,7 @@ def test_a_bulk_unlock_with_one_refused_file_changes_nothing(db: Database) -> No
         api.add_page(org.c, file)
         assert _lock(admin, file)[0] == 200
     assert _call(admin, "DELETE", f"/api/documents/{trashed}")[0] < 300  # Trash keeps the lock
-    body = {"document_ids": [kept, trashed, open_file], "password": PASSWORD}
+    body = {"document_ids": [kept, trashed, open_file], "proved": True}
     status, reply = _call(admin, "POST", "/api/documents/unlock", body)
     refused = [{"id": trashed, "reason": "in_trash"}, {"id": open_file, "reason": "not_locked"}]
     assert status == 409 and reply["error"]["details"]["refused"] == sorted(
@@ -1055,7 +1051,7 @@ def test_an_unlocks_read_is_queued_after_it_commits_so_the_worker_reads_it(
         seen.append((status, None if record is None else record.locked))
         enqueue(job, express=express)
 
-    body = {"document_ids": [v2], "password": PASSWORD}
+    body = {"document_ids": [v2], "proved": True}
     with mock.patch.object(api.queue, "enqueue", worker_takes_it):
         assert _call(org.people["admin"], "POST", "/api/documents/unlock", body) == (200, {"unlocked": 1})
     assert seen == [(None, False)]  # received (not settled) and not locked: it is read
@@ -1070,7 +1066,7 @@ def test_an_ordinary_read_again_still_works_after_a_bulk_unlock(db: Database) ->
     for file in files:
         api.add_page(org.c, file)
         assert _lock(admin, file)[0] == 200
-    body = {"document_ids": files, "password": PASSWORD}
+    body = {"document_ids": files, "proved": True}
     assert _call(admin, "POST", "/api/documents/unlock", body)[0] == 200
     status, reply = _call(admin, "POST", f"/api/documents/{org.files['sales']}/reprocess")
     assert status == 200, reply
@@ -1184,7 +1180,7 @@ def test_lock_unlock_and_a_locked_copy_work_with_the_database_rule_on(db: Databa
             assert (
                 body["duplicate"] is True and body["document"] is None and body.get("locked") == expected
             ), name
-        status, reply = _call(admin, "POST", f"/api/documents/{v2}/unlock", {"password": PASSWORD})
+        status, reply = _call(admin, "POST", f"/api/documents/{v2}/unlock", {"proved": True})
         assert (status, reply) == (200, {"unlocked": True, "reading": True})
         state = "SELECT count(*) FROM documents WHERE id IN (:a, :b) AND locked_at IS NULL"
         assert _owner(db, state, {"a": v1, "b": v2})[0][0] == 2

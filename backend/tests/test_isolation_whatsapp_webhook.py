@@ -8,6 +8,7 @@ from sqlalchemy import text
 from kaagaz.adapters.whatsapp import MetaWhatsApp
 from kaagaz.channel.loop import Channel
 from kaagaz.db.engine import Database
+from tests.db_support import mark_keycloak
 from tests.test_api_support import Api
 from tests.whatsapp_fake import (
     NUMBER_KEY,
@@ -34,6 +35,8 @@ def test_a_delivery_is_stored_and_answered_only_in_the_organisation_of_each_numb
         for _ in range(2):
             customer, _ = api.customer()
             person, _ = api.add_user(customer, "member")
+            # Changed on purpose (#737, 21 Nov 2026): WhatsApp is for company sign-in people only.
+            mark_keycloak(db, customer, person)
             number = new_number()
             connect(db, customer, person, number)
             people.append((customer, person, number))

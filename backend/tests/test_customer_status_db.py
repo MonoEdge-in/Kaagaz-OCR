@@ -22,7 +22,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx2 as httpx
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -52,7 +51,7 @@ from tests.fakes import (
     MemoryStorage,
     fake_sheet_pages,
 )
-from tests.test_api_support import CSRF, PASSWORD, Api, TestClient
+from tests.test_api_support import Api
 from tests.test_document_stories_db import put
 from tests.test_embed_missing_db import CURRENT, SameVector, drain, tags
 from tests.test_indexing_db import FakeModel
@@ -112,10 +111,6 @@ def _audit(db: Database, customer_id: str) -> list[tuple[Any, ...]]:
             {"c": customer_id},
         )
         return [tuple(row) for row in rows]
-
-
-def _login(client: TestClient, email: str) -> httpx.Response:
-    return client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
 
 
 # --- the migration ------------------------------------------------------------------------
@@ -218,19 +213,13 @@ def test_the_checks_keep_the_three_columns_together(db: Database, statement: str
 # --- sign-in and sessions ------------------------------------------------------------------
 
 
-def test_a_disabled_customer_can_not_sign_in_and_its_sessions_end_while_b_goes_on(db: Database) -> None:
+def test_a_disabled_customer_s_sessions_end_while_b_goes_on(db: Database) -> None:
     api = Api(db)
     member = api.new_signed()
     a = member.customer_id
     admin = api.admin_sign_in(a)
     b_member = api.new_signed()
-    reviewer_id, reviewer_email = api.add_user(a, "reviewer")
-    temporary_id, temporary_email = api.add_user(a, "admin")
-    with db.customer(a) as conn:
-        conn.execute(
-            text("UPDATE users SET must_change_password = true WHERE customer_id = :c AND id = :u"),
-            {"c": a, "u": temporary_id},
-        )
+    _, reviewer_email = api.add_user(a, "reviewer")
     version = api.user_state(a, member.user_id)["session_version"]
 
     assert _cli(db, "disable-customer", a) == (0, f"customer {a}: disabled\n")
@@ -239,19 +228,15 @@ def test_a_disabled_customer_can_not_sign_in_and_its_sessions_end_while_b_goes_o
         assert client.get(path).status_code == 401, path
     assert admin.client.get("/api/admin/users").status_code == 401
     assert b_member.client.get("/api/auth/me").status_code == 200
-    refused = _login(api.client(), reviewer_email)
-    assert refused.status_code == 401
-    assert refused.json()["error"]["code"] == "bad_credentials"
-    api.clock.advance(30)  # a code that was never used
-    assert admin.totp_secret is not None
-    assert api.admin_login(api.client(), admin.email, code=api.code(admin.totp_secret)).status_code == 401
-    assert api.admin_login(api.client(), temporary_email).status_code == 401  # not the 403 that says "right"
-    assert ("auth.login_failed", "user", reviewer_id, {"reason": "customer_disabled"}) in api.audit_rows(a)
+    # Keycloak's callback refusing a disabled organisation, and letting it in again once enabled, runs
+    # the REAL ``_login`` in tests/test_keycloak_callback_db.py; here only the session side is checked.
     assert api.user_state(a, member.user_id)["session_version"] == version + 1
 
     assert _cli(db, "enable-customer", a) == (0, f"customer {a}: enabled\n")
     assert member.client.get("/api/auth/me").status_code == 401  # ended for good
-    assert _login(api.client(), reviewer_email).status_code == 200
+    assert (
+        api.admin_login(api.client(), reviewer_email).status_code == 200
+    )  # a new session can be minted (the real callback: test_keycloak_callback_db)
 
 
 # --- the worker and the sweeps -------------------------------------------------------------

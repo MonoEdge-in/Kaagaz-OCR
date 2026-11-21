@@ -9,7 +9,6 @@ import base64
 import json
 import re
 from pathlib import Path
-from typing import Any
 
 import pytest
 from sqlalchemy import text
@@ -17,23 +16,10 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import (
-    NOTICE_SECONDS,
-    OIDC_SECONDS,
-    PENDING_SECONDS,
     SESSION_COOKIE,
-    ConfirmClaims,
-    FlowClaims,
-    PendingClaims,
     SessionClaims,
     hash_password,
-    read_flow,
-    read_notice,
-    read_pending,
     read_session,
-    sign_confirm,
-    sign_flow,
-    sign_notice,
-    sign_pending,
     sign_session,
     verify_password,
 )
@@ -43,7 +29,6 @@ from tests.settings_factory import make_settings
 from tests.test_api_support import (
     CSRF,
     NOW,
-    PASSWORD,
     Api,
     ApiFakeQueue,
     ApiFakeStorage,
@@ -132,72 +117,35 @@ SECRET = "a-test-secret-that-is-long-enough-000000"
 CID = "22222222-2222-4222-8222-222222222222"
 
 
-def _flow(**changes: Any) -> FlowClaims:
-    values: dict[str, Any] = {
-        "provider": "google",
-        "mode": "connect",
-        "state": "made-up-state",
-        "nonce": "made-up-nonce",
-        "verifier": "v" * 64,
-        "next_path": "/settings/sign-in",
-        "user_id": UID,
-        "customer_id": CID,
-        "session_version": 3,
-        "expires_at": 1_000 + OIDC_SECONDS,
-    }
-    return FlowClaims(**{**values, **changes})
+REMOVED_SIGN_IN_ROUTES = [
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/admin/login"),
+    ("POST", "/api/auth/admin/enrol"),
+    ("GET", "/api/auth/signup"),
+    ("POST", "/api/auth/signup"),
+    ("POST", "/api/auth/2fa/start"),
+    ("POST", "/api/auth/2fa/off"),
+    ("POST", "/api/auth/password"),
+    ("POST", "/api/auth/confirm-password"),
+    ("POST", "/api/auth/forgot"),
+    ("POST", "/api/auth/reset"),
+    ("GET", "/api/auth/oidc/google/start"),
+    ("GET", "/api/auth/oidc/google/callback"),
+    ("POST", "/api/auth/oidc/google/connect"),
+    ("POST", "/api/auth/oidc/google/confirm"),
+    ("POST", "/api/auth/oidc/code"),
+    ("GET", "/api/auth/identities"),
+    ("POST", "/api/auth/keycloak/link/start"),
+    ("POST", "/api/whatsapp/prove"),
+    ("POST", "/api/whatsapp/prove/google"),
+]
 
 
-def test_flow_round_trip() -> None:
-    connect = _flow()
-    signin = _flow(mode="signin", user_id=None, customer_id=None, session_version=None, next_path="/")
-    assert read_flow(sign_flow(connect, SECRET), SECRET, now=1_000) == connect
-    assert read_flow(sign_flow(signin, SECRET), SECRET, now=1_000) == signin
-
-
-def test_flow_refused_when_expired_tampered_or_signed_for_another_purpose() -> None:
-    token = sign_flow(_flow(), SECRET)
-    assert read_flow(token, SECRET, now=1_000 + OIDC_SECONDS) is None  # expired
-    assert read_flow(token, "another-secret-that-is-long-enough-0000", now=1_000) is None
-    body, signature = token.split(".")
-    assert read_flow(body + "x." + signature, SECRET, now=1_000) is None
-    confirm = sign_confirm(
-        ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=2_000, session_id=UID),
-        SECRET,
-    )
-    assert read_flow(confirm, SECRET, now=1_000) is None
-    assert read_session(token, SECRET, now=1_000) is None
-
-
-def test_flow_mode_must_be_signin_or_connect() -> None:
-    assert read_flow(sign_flow(_flow(mode="link"), SECRET), SECRET, now=1_000) is None
-    # a connect carries its user, a sign-in carries none
-    assert read_flow(sign_flow(_flow(user_id=None), SECRET), SECRET, now=1_000) is None
-    assert read_flow(sign_flow(_flow(mode="signin"), SECRET), SECRET, now=1_000) is None
-
-
-def test_pending_round_trip_and_expiry() -> None:
-    claims = PendingClaims(
-        provider="google", user_id=UID, customer_id=CID, session_version=3, expires_at=1_000 + PENDING_SECONDS
-    )
-    token = sign_pending(claims, SECRET)
-    assert read_pending(token, SECRET, now=1_000) == claims
-    assert read_pending(token, SECRET, now=1_000 + PENDING_SECONDS) is None
-    assert read_flow(token, SECRET, now=1_000) is None
-
-
-def test_pending_is_not_a_session() -> None:
-    claims = PendingClaims(
-        provider="google", user_id=UID, customer_id=CID, session_version=1, expires_at=2_000
-    )
-    assert read_session(sign_pending(claims, SECRET), SECRET, now=1_000) is None
-
-
-def test_notice_round_trip_and_expiry() -> None:
-    token = sign_notice("ramesh.k@gmail.com", 1_000 + NOTICE_SECONDS, SECRET)
-    assert read_notice(token, SECRET, now=1_000) == "ramesh.k@gmail.com"
-    assert read_notice(token, SECRET, now=1_000 + NOTICE_SECONDS) is None
-    assert read_pending(token, SECRET, now=1_000) is None
+@pytest.mark.parametrize(("method", "path"), REMOVED_SIGN_IN_ROUTES)
+def test_the_old_sign_in_routes_are_gone(method: str, path: str) -> None:
+    """Keycloak is the only sign-in (21 Nov 2026): none of Kaagaz's own is left to answer."""
+    reply = _offline_client().request(method, path, json={}, headers=CSRF)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
 
 
 # --- rate limiter ----------------------------------------------------------------
@@ -232,15 +180,13 @@ def test_rate_limiter_refuses_a_zero_limit() -> None:
 
 
 def test_post_without_csrf_header_is_refused() -> None:
-    reply = _offline_client().post("/api/auth/login", json={"email": "a@b.c", "password": "x"})
+    reply = _offline_client().post("/api/auth/logout", json={})
     assert reply.status_code == 403
     assert reply.json() == {"error": {"code": "csrf", "message": reply.json()["error"]["message"]}}
 
 
 def test_wrong_csrf_value_is_refused() -> None:
-    reply = _offline_client().post(
-        "/api/auth/login", json={"email": "a@b.c", "password": "x"}, headers={"X-Requested-With": "other"}
-    )
+    reply = _offline_client().post("/api/auth/logout", json={}, headers={"X-Requested-With": "other"})
     assert reply.status_code == 403
     assert reply.json()["error"]["code"] == "csrf"
 
@@ -256,7 +202,9 @@ def test_not_signed_in_is_401_with_the_error_shape() -> None:
 
 def test_validation_error_is_400_and_does_not_echo_the_input() -> None:
     reply = _offline_client().post(
-        "/api/auth/login", json={"email": "a@b.c", "password": "", "extra": "hunter2-secret"}, headers=CSRF
+        "/api/operator/login",
+        json={"email": "a@b.c", "password": "", "extra": "hunter2-secret"},
+        headers=CSRF,
     )
     assert reply.status_code == 400
     assert reply.json()["error"]["code"] == "bad_request"
@@ -409,13 +357,14 @@ def test_access_log_has_no_query_string(caplog: pytest.LogCaptureFixture) -> Non
 
 
 @pytest.mark.db
-def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
+def test_a_signed_in_person_gets_me(db: Database) -> None:
     api = Api(db)
     customer_id, _ = api.customer("Sharma Traders")
     user_id, email = api.add_user(customer_id, "reviewer")
     client = api.client()
+    api.mint_session(client, customer_id, user_id)
 
-    reply = client.post("/api/auth/login", json={"email": email.upper(), "password": PASSWORD}, headers=CSRF)
+    reply = client.get("/api/auth/me")
 
     assert reply.status_code == 200
     assert reply.json() == {
@@ -430,77 +379,19 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
             "email": email,
             "display_name": "Test reviewer",
             "role": "reviewer",
+            "auth_authority": "keycloak",
+            "auth_source": "keycloak",
             "must_change_password": False,
             "totp_enabled": False,
             "two_step_turned_off": False,
             "two_step_required": False,  # Changed on purpose (#481, 0068): an admin's only
             "can_delete_forever": False,
             "email_confirmed": True,  # Changed on purpose (#457): true while email is off, no banner
-            "google_link_required": False,  # Changed on purpose (#507): the limited session
-            "google_unchecked": False,  # Changed on purpose (#507 review): a link not checked yet
         },
         "customer": {"id": customer_id, "name": "Sharma Traders"},
         "session": {"scope": "app"},
-        "recent_connections": [],  # Changed on purpose (#457 phase 1): the "Google connected" banner
-        "providers": [],  # Changed on purpose (#457 review): the providers switched on, for the menus
-    }
-    cookie = reply.headers["set-cookie"]
-    assert cookie.startswith(f"{SESSION_COOKIE}=")
-    assert "HttpOnly" in cookie
-    assert "SameSite=lax" in cookie or "SameSite=Lax" in cookie
-    assert f"Max-Age={12 * 3600}" in cookie
-    assert "Secure" not in cookie
-    assert client.get("/api/auth/me").json() == reply.json()
-    assert api.audit_actions(customer_id) == ["auth.login"]
-
-
-@pytest.mark.db
-def test_cookie_is_secure_when_configured(db: Database) -> None:
-    api = Api(db, settings=make_settings(cookie_secure=True))
-    customer_id, _ = api.customer()
-    _, email = api.add_user(customer_id, "member")
-    reply = api.client().post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
-    assert "Secure" in reply.headers["set-cookie"]
-
-
-@pytest.mark.db
-def test_bad_credentials_look_the_same_for_every_reason(db: Database) -> None:
-    api = Api(db)
-    customer_id, _ = api.customer()
-    _, email = api.add_user(customer_id, "member")
-    disabled_id, disabled_email = api.add_user(customer_id, "member")
-    with db.customer(customer_id) as conn:
-        conn.execute(text("UPDATE users SET disabled = true WHERE id = :u"), {"u": disabled_id})
-    client = api.client()
-
-    replies = [
-        client.post("/api/auth/login", json={"email": email, "password": "wrong password!!"}, headers=CSRF),
-        client.post(
-            "/api/auth/login", json={"email": "nobody@example.test", "password": PASSWORD}, headers=CSRF
-        ),
-        client.post("/api/auth/login", json={"email": disabled_email, "password": PASSWORD}, headers=CSRF),
-    ]
-
-    assert {reply.status_code for reply in replies} == {401}
-    assert len({reply.text for reply in replies}) == 1
-    assert replies[0].json() == {"error": {"code": "bad_credentials", "message": BAD_CREDENTIALS}}
-    assert all("set-cookie" not in reply.headers for reply in replies)
-
-
-@pytest.mark.db
-def test_a_password_signs_in_only_its_own_user(db: Database) -> None:
-    """The helpers' users share one cached hash of PASSWORD, so here B has a different
-    password: a login must check the hash of the user it names, never another's."""
-    api = Api(db)
-    _, a_email = api.add_user(api.customer("Sharma Traders")[0], "member")
-    _, b_email = api.add_user(api.customer("Mehta Textiles")[0], "member", password=OTHER_PASSWORD)
-
-    def login(email: str, password: str) -> int:
-        body = {"email": email, "password": password}
-        return api.client().post("/api/auth/login", json=body, headers=CSRF).status_code
-
-    assert [login(a_email, OTHER_PASSWORD), login(b_email, PASSWORD)] == [401, 401]
-    assert [login(a_email, PASSWORD), login(b_email, OTHER_PASSWORD)] == [200, 200]
+        "keycloak_enabled": False,
+    }  # Changed on purpose (21 Nov 2026): no providers, no recent connections, no Google flags
 
 
 @pytest.mark.db
@@ -521,7 +412,7 @@ def test_the_session_probe_answers_200_signed_in_or_not(db: Database) -> None:
     api = Api(db)
     assert api.client().get("/api/auth/session").json() == {
         "signed_in": False,
-        "providers": [],
+        "keycloak_enabled": False,
     }  # no cookie at all
     signed = api.new_signed()
     reply = signed.client.get("/api/auth/session")
@@ -530,7 +421,7 @@ def test_the_session_probe_answers_200_signed_in_or_not(db: Database) -> None:
     with db.customer(signed.customer_id) as conn:
         conn.execute(text("UPDATE users SET disabled = true WHERE id = :u"), {"u": signed.user_id})
     reply = signed.client.get("/api/auth/session")
-    assert (reply.status_code, reply.json()) == (200, {"signed_in": False, "providers": []})
+    assert (reply.status_code, reply.json()) == (200, {"signed_in": False, "keycloak_enabled": False})
     assert signed.client.get("/api/auth/me").status_code == 401  # /auth/me is unchanged
 
 
@@ -595,24 +486,3 @@ def test_roles_and_the_admin_session_gate_the_routes(
     assert reply.status_code == status
     if code is not None:
         assert reply.json()["error"]["code"] == code
-
-
-@pytest.mark.db
-def test_login_writes_the_sign_in_time_and_resets_the_count(db: Database) -> None:
-    api = Api(db)
-    customer_id, _ = api.customer()
-    user_id, email = api.add_user(customer_id, "member")
-    client = api.client()
-    client.post("/api/auth/login", json={"email": email, "password": "not the password!!"}, headers=CSRF)
-    assert api.user_state(customer_id, user_id)["failed_logins"] == 1
-
-    assert (
-        client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF).status_code
-        == 200
-    )
-
-    assert api.user_state(customer_id, user_id)["failed_logins"] == 0
-    with db.customer(customer_id) as conn:
-        signed_in_at = conn.execute(text("SELECT last_login_at FROM users WHERE id = :u"), {"u": user_id})
-        assert signed_in_at.scalar_one() == api.clock()
-    assert api.audit_actions(customer_id) == ["auth.login_failed", "auth.login"]

@@ -310,6 +310,16 @@ PERSON_RULE_TABLES = {
 }  # fmt: skip
 # The second policy of the tables that belong to one user (0008, 0009): it must pass too.
 OWN_USER = "(user_id = (NULLIF(current_setting('kaagaz.user_id'::text, true), ''::text))::uuid)"
+# Changed on purpose (#738, 0103): Keycloak. The app role has no table-wide INSERT or UPDATE on users
+# (column grants that leave out auth_authority, so only the owner-rights functions change it) and
+# no direct right on the link, flow, logout-tombstone and replay tables; it may only read its own
+# session rows. (SELECT, INSERT, UPDATE, DELETE).
+KEYCLOAK_0103 = {
+    "users": (True, False, False, False),
+    "keycloak_identities": (False, False, False, False),
+    "keycloak_sessions": (True, False, False, False),
+    "keycloak_flows": (False, False, False, False),
+}
 RUN_OUTCOME = {
     "status", "error_code", "ocr_engine", "model_chat", "model_vision", "model_embed", "config",
     "pages_cells", "pages_text_layer", "pages_ocr", "pages_blank", "vision_crops", "model_calls",
@@ -368,6 +378,24 @@ OWNER_RIGHTS = {
     # status), and whether an e-mail is another user's (yes or no).
     "kaagaz_identity_lookup": (
         "TABLE(identity_id uuid, user_id uuid, customer_id uuid, status text)",
+        EMPTY_PATH,
+    ),
+    # Changed on purpose (#738, 0103): Keycloak sign-in. Each takes the user and customer from the
+    # transaction, never from an argument, except the lookup, flow and signed-logout entries, which
+    # run before any user is known and return ids only or one consumed flow.
+    "kaagaz_keycloak_lookup": ("TABLE(user_id uuid, customer_id uuid, session_version integer)", EMPTY_PATH),
+    "kaagaz_keycloak_subjects": ("TABLE(user_id uuid, issuer text, subject text)", EMPTY_PATH),  # 0105 (#737)
+    "kaagaz_keycloak_stage_link": ("uuid", EMPTY_PATH),
+    "kaagaz_keycloak_finalize_link": ("integer", EMPTY_PATH),
+    "kaagaz_keycloak_session_record": ("boolean", EMPTY_PATH),
+    "kaagaz_keycloak_session_revoke": ("boolean", EMPTY_PATH),
+    "kaagaz_keycloak_sessions_revoke_all": ("integer", EMPTY_PATH),
+    "kaagaz_keycloak_logout": ("integer", EMPTY_PATH),
+    "kaagaz_keycloak_flow_create": ("boolean", EMPTY_PATH),
+    "kaagaz_keycloak_flow_consume": (
+        "TABLE(nonce text, sealed_verifier text, purpose text, next_path text, customer_id uuid,"
+        " user_id uuid, session_version integer, local_session_id uuid, action text,"
+        " started_at timestamp with time zone)",
         EMPTY_PATH,
     ),
     "kaagaz_email_belongs_to_other": ("boolean", EMPTY_PATH),
@@ -578,6 +606,7 @@ OPERATOR_RIGHTS = {
             "kaagaz_op_change_admin",
             "kaagaz_op_schedule_delete",  # 0018
             "kaagaz_op_cancel_delete",
+            "kaagaz_op_move_everyone",  # 0105 (#737)
         ),
         ("record", EMPTY_PATH),
     ),
@@ -858,6 +887,10 @@ NO_CUSTOMER_ID = (
         "kaagaz_person_rule",
     }
     | {"whatsapp_unknown_numbers"}
+    # Changed on purpose (#738, 0103): the Keycloak logout tombstones and replay ids are keyed by
+    # the issuer and subject of a verified signed logout token, which names no customer; no role
+    # reads or writes them but kaagaz_keycloak_logout (owner rights).
+    | {"keycloak_session_revocations", "keycloak_logout_jtis"}
     | PLATFORM_DEFAULTS
     | OPERATOR_TABLES
 )
@@ -961,7 +994,15 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         # Changed on purpose (#484, 0071): and an organisation's folder upload limits.
         # Changed on purpose (#516, 0061d): and an organisation's storage limit.
         if table not in (
-            FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068 | FROM_0071 | FROM_0061D
+            FROM_0023
+            | FROM_0026
+            | FROM_0039
+            | FROM_0040
+            | FROM_0043
+            | FROM_0068
+            | FROM_0071
+            | FROM_0061D
+            | KEYCLOAK_0103  # Changed on purpose (#738, 0103): asserted exactly below
         ):
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
@@ -997,6 +1038,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0097  # Changed on purpose (#603, 0097)
         | FROM_0099  # Changed on purpose (#648, 0099)
         | FROM_0100  # Changed on purpose (#648, 0100)
+        | KEYCLOAK_0103  # Changed on purpose (#738, 0103)
     ).items():
         assert granted[table] == expected, table
 
@@ -1016,8 +1058,11 @@ def test_the_tables_of_one_user_also_have_the_restrictive_own_user_only_policy(d
             )
         }
     own = (
-        set(FROM_0008) | set(FROM_0009) | {"whatsapp_messages", "whatsapp_link_codes", "whatsapp_pickers"}
-    )  # #603
+        set(FROM_0008)
+        | set(FROM_0009)
+        | {"whatsapp_messages", "whatsapp_link_codes", "whatsapp_pickers"}  # #603
+        | {"keycloak_identities", "keycloak_sessions"}  # Changed on purpose (#738, 0104)
+    )
     restrictive = ("ALL", "RESTRICTIVE", ["public"], OWN_USER, OWN_USER)
     # Changed on purpose (#606, 0091): the per-person rule, for the API role only, on documents,
     # folders, trashed folders and the 27 content tables (test_isolation_person_rule checks them).

@@ -1,5 +1,4 @@
 import { AdminView } from "@/components/admin/AdminView";
-import { TwoStepPanel } from "./TwoStepPanel";
 
 export const metadata = { title: "Admin" };
 
@@ -13,7 +12,6 @@ export default async function AdminPage({
   const { tab, reauth } = await searchParams;
   return (
     <AdminView
-      twoStep={<TwoStepPanel />}
       tab={typeof tab === "string" ? tab : undefined}
       reauth={typeof reauth === "string" ? reauth : undefined}
     />

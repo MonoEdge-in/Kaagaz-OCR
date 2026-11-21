@@ -5,14 +5,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ICON_NAMES } from "@/components/ui/icons";
 import {
-  appGate,
   endedPath,
-  mustChangePassword,
   pageAfterSessionChange,
   sessionScope,
   signedOutMessage,
   signedOutPath,
   signInPath,
+  signOutDestination,
 } from "@/components/shell/gate";
 import { currentPageName, isCurrent, navLinks, reviewCountText, roleName } from "@/components/shell/nav";
 import { ShellMenu } from "@/components/shell/ShellMenu";
@@ -98,7 +97,6 @@ describe("the session gate", () => {
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
-    providers: [], // #457 review: the sign-in providers switched on
   });
 
   it("reads the scope", () => {
@@ -106,22 +104,10 @@ describe("the session gate", () => {
     expect(sessionScope(me({ scope: "app" }))).toBe("app");
   });
 
-  it("shows the set-new-password screen whenever the flag is set, in either scope", () => {
-    expect(appGate(me({ must_change_password: true, scope: "app" }))).toBe("set_password");
-    expect(appGate(me({ must_change_password: true, scope: "admin" }))).toBe("set_password");
-    expect(mustChangePassword(me({ must_change_password: true }))).toBe(true);
-  });
-
-  it("opens the app when no new password is needed", () => {
-    expect(appGate(me({ must_change_password: false, scope: "app" }))).toBe("app");
-    expect(appGate(me())).toBe("app");
-    expect(mustChangePassword(me())).toBe(false);
-  });
-
   it("is applied by the session provider, which can also reload who is signed in", () => {
     const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
-    expect(session).toContain("appGate(");
-    expect(session).toContain("<SetPasswordScreen");
+    expect(session).not.toContain("appGate(");  // 21 Nov 2026: no temporary-password or set-up gate any more
+    expect(session).not.toContain("SetPasswordScreen");
     expect(session).toMatch(/refresh\(\): void/);
   });
 });
@@ -162,6 +148,15 @@ describe("where to sign in", () => {
     expect(signedOutMessage({ ended: "yes", other: "1" })).toBeNull();
   });
 
+  // #737: signing out also ends company sign-in, so the page leaves for Keycloak's sign-out address.
+  it("leaves for Keycloak's sign-out address when the server gave one, else the sign-in page", () => {
+    const keycloak = "https://id.example.test/realms/k/protocol/openid-connect/logout?client_id=a";
+    expect(signOutDestination("/documents", keycloak)).toBe(keycloak);
+    expect(signOutDestination("/documents", null)).toBe("/login?signed_out=1");
+    expect(signOutDestination("/documents", "javascript:alert(1)")).toBe("/login?signed_out=1");
+    expect(signOutDestination("/documents", "not an address")).toBe("/login?signed_out=1");
+  });
+
   it("loads a fresh page when a session existed, and keeps a quick redirect on a first visit", () => {
     const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
     // Changed on purpose (#468 review, SEC1): the path only, never its query.
@@ -171,13 +166,10 @@ describe("where to sign in", () => {
     expect(session).toMatch(/if \(event\.persisted\) document\.documentElement\.style\.visibility = "hidden"/);
     // Admins sign out to the admin sign-in.
     // Changed on purpose (UI audit G6, 16 Oct 2026): the sign-outs moved to the account menu.
-    for (const file of [
-      ["components", "shell", "AccountMenu.tsx"],
-      ["components", "shell", "SetPasswordScreen.tsx"],
-    ]) {
+    for (const file of [["components", "shell", "AccountMenu.tsx"]]) {
       const text = readFileSync(join(__dirname, "..", ...file), "utf8");
       expect(text, file.join("/")).toContain("announceSession(null);");
-      expect(text, file.join("/")).toContain("leavePage(signedOutPath(pathname))");
+      expect(text, file.join("/")).toContain("leavePage(signOutDestination(pathname, keycloakUrl))");
     }
   });
 
@@ -193,7 +185,7 @@ describe("where to sign in", () => {
   // form does not move; the words come once the page runs, so screen readers
   // announce them.
   it("puts the sign-in note under the heading, in a box that is there from the start", () => {
-    for (const file of [["app", "login", "SignInForm.tsx"]]) {
+    for (const file of [["app", "login", "SignInPanel.tsx"]]) {
       const form = readFileSync(join(__dirname, "..", ...file), "utf8");
       const note = form.indexOf("<SignedOutNotice message={note} />");
       expect(note, file.join("/")).toBeGreaterThan(form.indexOf("</h1>"));
@@ -248,8 +240,8 @@ describe("one nav list for the sidebar and the drawer", () => {
   it("renders the one ShellMenu element in both the sidebar and the drawer", () => {
     expect(shell.match(/<ShellMenu\b/g)).toHaveLength(1);
     // Changed on purpose (#507 review): the sidebar shows it only outside the limited session.
-    expect(shell.match(/\{(chrome && )?menu\}/g)).toHaveLength(2);
-    expect(shell).toMatch(/className=\{styles\.sidebar\}[\s\S]*\{chrome && menu\}[\s\S]*<Drawer[\s\S]*\{menu\}/);
+    expect(shell.match(/\{menu\}/g)).toHaveLength(2);
+    expect(shell).toMatch(/className=\{styles\.sidebar\}[\s\S]*\{menu\}[\s\S]*<Drawer[\s\S]*\{menu\}/);
   });
 
   it("hard-codes no Review or Admin link in any shell component", () => {
@@ -277,7 +269,7 @@ describe("one nav list for the sidebar and the drawer", () => {
     expect(account).toMatch(/<ConfirmDialog[\s\S]*open=\{confirming\}[\s\S]*onConfirm=\{\(\) => void endSession\("everywhere"\)\}/);
     expect(account).toContain("logoutEverywhere()");
     expect(account).not.toContain("window.confirm");
-    expect(shell).toContain("<AccountMenu me={me} onChanged={refresh} />");
+    expect(shell).toContain("<AccountMenu me={me} />");
   });
 });
 
@@ -309,7 +301,7 @@ describe("the Review link", () => {
   it("asks the server only for a reviewer or an admin", () => {
     const shell = readFileSync(join(__dirname, "..", "components", "shell", "AppShell.tsx"), "utf8");
     // Changed on purpose (#507 review): never in the limited session, which the server refuses.
-    expect(shell).toContain("const reviewer = chrome && canReview(me.user.role);");
+    expect(shell).toContain("const reviewer = canReview(me.user.role);");
     expect(shell).toMatch(/if \(!reviewer\) return;\s*let cancelled = false;\s*listReview\(\{ limit: 1 \}\)/);
     expect(shell).toContain("const reviewCount = reviewer ? reviewCountText(reviewTotal) : null;");
     expect(menu("member", "23")).not.toContain("review");

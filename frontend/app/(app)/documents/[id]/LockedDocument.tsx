@@ -2,7 +2,7 @@
 
 // A locked file's screen (PRD 7 section 6, PR 13), in place of the document screen: its name, and
 // only its page pictures (LockedViewer.tsx) once this browser's 10-minute check is live, else the
-// password (or Google) prompt (LockedOpenPrompt.tsx). No Ask, download, clean copy, panels or
+// company sign-in prompt (LockedOpenPrompt.tsx). No Ask, download, clean copy, panels or
 // menu: an Admin has Unlock only. A locked file still being prepared, or one in Trash, says so.
 
 import Link from "next/link";
@@ -21,14 +21,12 @@ import styles from "./DocumentView.module.css";
 export function LockedDocument({
   detail,
   back,
-  openError,
   onChanged,
   headingRef,
   children,
 }: {
   detail: DocumentDetail;
   back: { href: string; name: string };
-  openError: string | null; // ?open_error= after the Google confirm
   onChanged(message: string): void; // unlocked: say it and load the document again
   headingRef?: Ref<HTMLHeadingElement>; // the screen's heading, focused after a lock or unlock
   children?: ReactNode; // the screen's toast
@@ -98,9 +96,7 @@ export function LockedDocument({
   } else {
     body = (
       <LockedOpenPrompt
-        via={state.via}
         next={`/documents/${detail.id}`}
-        openError={openError}
         onOpened={setState}
       />
     );

@@ -2,9 +2,10 @@
 
 // Admin, Settings, WhatsApp (#603, PRD 7 section 15): off by default. "Turn on WhatsApp…" opens the
 // one dialog (what people can do, Allow voice notes ticked, Allow saving files not, answers already
-// sent stay on the phone, and the tick "our data rules allow WhatsApp") and asks for the Admin's password; the server audits it and emails
+// sent stay on the phone, and the tick "our data rules allow WhatsApp") and needs a fresh company sign-in (403
+// keycloak_reauth_required starts it); the server audits it and emails
 // Management and the other Admins. Once on: the roles that may connect (Members and Reviewers by
-// default; Admins and Management are extra ticks, which ask for the password), voice notes and
+// default; Admins and Management are extra ticks, which need the same sign-in), voice notes and
 // uploads, saved by Save; Turn off
 // asks first (everyone is disconnected). While the super admin has it off, a line says so. Shown
 // only while the server has WhatsApp on (Me's ``whatsapp``); its own form, apart from Settings'.
@@ -15,16 +16,9 @@ import { ActionDialog } from "@/components/documents/ActionDialog";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { LoadFailed } from "@/components/operator/LoadFailed";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { PasswordField } from "@/components/ui/PasswordField";
 import { ApiError, adminWhatsApp, saveAdminWhatsApp } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
-import { useOptionalSession } from "@/lib/session";
-import {
-  beginKeycloakReauth,
-  isKeycloakManaged,
-  isKeycloakReauthRequired,
-  keycloakStartFailure,
-} from "@/lib/keycloak";
+import { beginKeycloakReauth, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import type { WhatsAppAdmin } from "@/lib/types";
 import {
   MANAGEMENT_HINT,
@@ -40,7 +34,6 @@ import {
   VOICE_LABEL,
   formChanged,
   formOf,
-  tickNeedsPassword,
   turnOnTitle,
   withRole,
 } from "./whatsappSettings";
@@ -51,9 +44,7 @@ function said(caught: unknown): string {
   return caught instanceof ApiError ? caught.message : errorWords(caught);
 }
 
-export function WhatsAppPanel({ organisation, reauth }: { organisation: string; reauth?: string }) {
-  const me = useOptionalSession()?.me ?? null;
-  const managed = isKeycloakManaged(me);
+export function WhatsAppPanel({ organisation }: { organisation: string }) {
   const [saved, setSaved] = useState<WhatsAppAdmin | null>(null);
   const [form, setForm] = useState<WhatsAppForm | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -62,7 +53,6 @@ export function WhatsAppPanel({ organisation, reauth }: { organisation: string; 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [password, setPassword] = useState(""); // ticking Admins or Management asks for it
 
   useEffect(() => {
     let live = true;
@@ -79,27 +69,18 @@ export function WhatsAppPanel({ organisation, reauth }: { organisation: string; 
     };
   }, [attempt]);
 
-  async function save(next: WhatsAppForm, password?: string, rulesConfirmed = false) {
+  async function save(next: WhatsAppForm, rulesConfirmed = false) {
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      if (managed && reauth !== "whatsapp") {
-        try {
-          await beginKeycloakReauth("whatsapp", `${window.location.pathname}${window.location.search}`);
-        } catch (startError) {
-          setError(keycloakStartFailure(startError));
-        }
-        return;
-      }
-      const reply = await saveAdminWhatsApp(next, password, rulesConfirmed);
+      const reply = await saveAdminWhatsApp(next, rulesConfirmed);
       setSaved(reply);
       setForm(formOf(reply));
-      setPassword("");
       setDialog(null);
       setNotice("Saved.");
     } catch (caught) {
-      if (managed && isKeycloakReauthRequired(caught)) {
+      if (isKeycloakReauthRequired(caught)) {
         try {
           await beginKeycloakReauth("whatsapp", `${window.location.pathname}${window.location.search}`);
           return;
@@ -146,8 +127,7 @@ export function WhatsAppPanel({ organisation, reauth }: { organisation: string; 
           onSubmit={(event) => {
             event.preventDefault();
             if (busy) return;
-            if (!managed && saved && tickNeedsPassword(saved, form) && password === "") setError("Enter your password.");
-            else void save(form, !managed && saved && tickNeedsPassword(saved, form) ? password : undefined);
+            void save(form);
           }}
         >
           <fieldset className={styles.settingsGroup}>
@@ -189,17 +169,6 @@ export function WhatsAppPanel({ organisation, reauth }: { organisation: string; 
             </label>
           </fieldset>
           <p className="hint">{SENT_STAYS}</p>
-          {!managed && tickNeedsPassword(saved, form) && (
-            <PasswordField
-              id="whatsapp-tick-password"
-              label="Your Kaagaz password, to let Admins or Management use WhatsApp"
-              value={password}
-              onChange={setPassword}
-              autoComplete="current-password"
-              required
-              error={null}
-            />
-          )}
           {error && !dialog && (
             <p className="error-text" role="alert">
               {error}
@@ -224,14 +193,13 @@ export function WhatsAppPanel({ organisation, reauth }: { organisation: string; 
         <TurnOn
           organisation={organisation}
           form={form}
-          managed={managed}
           busy={busy}
           error={error}
           onCancel={() => {
             setDialog(null);
             setError(null);
           }}
-          onTurnOn={(next, password) => void save(next, password, true)}
+          onTurnOn={(next) => void save(next, true)}
         />
       )}
       {form && (
@@ -251,11 +219,10 @@ export function WhatsAppPanel({ organisation, reauth }: { organisation: string; 
   );
 }
 
-/** The one dialog (PRD 7 section 15), with the Admin's password. */
+/** The one dialog (PRD 7 section 15). */
 function TurnOn({
   organisation,
   form,
-  managed,
   busy,
   error,
   onCancel,
@@ -263,25 +230,21 @@ function TurnOn({
 }: {
   organisation: string;
   form: WhatsAppForm;
-  managed: boolean;
   busy: boolean;
   error: string | null;
   onCancel(): void;
-  onTurnOn(next: WhatsAppForm, password?: string): void;
+  onTurnOn(next: WhatsAppForm): void;
 }) {
   const [voice, setVoice] = useState(true);
   const [uploads, setUploads] = useState(false);
   const [rules, setRules] = useState(false);
-  const [password, setPassword] = useState("");
-  const [missing, setMissing] = useState<{ rules: boolean; password: boolean }>({ rules: false, password: false });
+  const [missing, setMissing] = useState(false);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    setMissing({ rules: !rules, password: !managed && password === "" });
-    if (rules && (managed || password !== "")) {
-      onTurnOn({ ...form, enabled: true, voice, uploads }, managed ? undefined : password);
-    }
+    setMissing(!rules);
+    if (rules) onTurnOn({ ...form, enabled: true, voice, uploads });
   }
 
   return (
@@ -301,21 +264,10 @@ function TurnOn({
           <input type="checkbox" checked={rules} onChange={(event) => setRules(event.target.checked)} />
           {RULES_LABEL}
         </label>
-        {missing.rules && (
+        {missing && (
           <span className="error-text" role="alert">
             {RULES_MISSING}
           </span>
-        )}
-        {!managed && (
-          <PasswordField
-            id="whatsapp-admin-password"
-            label="Your Kaagaz password"
-            value={password}
-            onChange={setPassword}
-            autoComplete="current-password"
-            required
-            error={missing.password ? "Enter your password." : null}
-          />
         )}
         {error && (
           <p className="error-text" role="alert">

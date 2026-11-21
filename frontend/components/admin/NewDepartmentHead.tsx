@@ -1,12 +1,11 @@
 "use client";
 
 // "Who heads Finance?" (PRD 7 PR 11a, #604), right after a department is added: Choose a person
-// (then Make head), Me (the password step: it gives the admin themselves access), or Decide later.
+// (then Make head), Me (the company sign-in step: it gives the admin themselves access), or Decide later.
 // A Head may be anyone in the organisation (lead decision 13). Focus moves to its question when it
 // opens, so a keyboard or screen reader is taken there.
 
 import { useEffect, useId, useRef, useState } from "react";
-import { asksFirst } from "@/components/access/passwordStep";
 import { HEAD_STEP, accessErrorText, headExplained, headQuestion } from "@/components/access/words";
 import access from "@/components/access/Access.module.css";
 import { listPeople, putMembership } from "@/lib/api";
@@ -20,8 +19,8 @@ export function NewDepartmentHead({
 }: {
   department: { id: string; name: string };
   me: Person;
-  /** The panel's password step (usePasswordStep().run). */
-  run<T>(what: string, send: (password?: string) => Promise<T>, first: boolean): Promise<T | null>;
+  /** The panel's company sign-in step (useProofStep().run). */
+  run<T>(send: () => Promise<T>): Promise<T | null>;
   /** The head chosen, or null: Decide later. */
   onDone(head: Person | null): void;
 }) {
@@ -55,8 +54,7 @@ export function NewDepartmentHead({
     setBusy(true);
     setError(null);
     try {
-      const first = asksFirst({ myId: me.id, targetId: head.id, on: true });
-      const done = await run(department.name, (password) => putMembership(head.id, department.id, { head: true, password }), first);
+      const done = await run(() => putMembership(head.id, department.id, { head: true }));
       if (done !== null) onDone(head);
     } catch (caught) {
       setError(accessErrorText(caught));

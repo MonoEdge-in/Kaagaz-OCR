@@ -117,10 +117,10 @@ describe("drafts and who is signed in (lib/session.tsx, the sign-outs)", () => {
   });
 
   it("clears drafts on every sign-out", () => {
-    for (const file of ["components/shell/AccountMenu.tsx", "components/shell/SetPasswordScreen.tsx"]) {
+    for (const file of ["components/shell/AccountMenu.tsx"]) {
       const text = read(file);
       expect(text.indexOf("clearDrafts();"), file).toBeGreaterThan(0);
-      expect(text.indexOf("clearDrafts();"), file).toBeLessThan(text.indexOf("leavePage(signedOutPath(pathname))"));
+      expect(text.indexOf("clearDrafts();"), file).toBeLessThan(text.indexOf("leavePage(signOutDestination(pathname, keycloakUrl))"));
     }
   });
 });

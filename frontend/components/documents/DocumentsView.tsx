@@ -805,7 +805,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 current={current}
                 onChanged={afterFolderChange}
                 admin={me?.user.role === "admin"}
-                myId={me.user.id}
                 askNew={newFolderAsk}
                 suggestions={nameSuggestions}
                 onAudience={

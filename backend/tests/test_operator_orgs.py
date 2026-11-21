@@ -11,6 +11,8 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import Connection, Engine
 
+from kaagaz.api import keycloak_accounts as accounts
+from kaagaz.api import keycloak_admin as kc_admin
 from kaagaz.api import totp
 from kaagaz.api.auth import (
     OPERATOR_COOKIE,
@@ -22,11 +24,14 @@ from kaagaz.api.auth import (
     verify_password,
 )
 from kaagaz.api.names import ORG_NAME_PROBLEM
+from kaagaz.api.routers import operator_orgs as orgs_router
 from kaagaz.api.secret_box import SecretBox
+from kaagaz.db import keycloak as keycloak_sql
 from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import OperatorDatabase
+from kaagaz.db.keycloak import Person
 from kaagaz.db.operator_orgs import Outcome
 from tests.test_api_auth import _offline_client
 from tests.test_api_support import ANY_ID, CSRF, NOW, route_calls
@@ -61,12 +66,11 @@ ORG_ROUTES = {
     # Changed on purpose (0040): one organisation's sign-in idle timeout.
     ("GET", f"{ORGS}/{ANY_ID}/session-timeout"),
     ("PUT", f"{ORGS}/{ANY_ID}/session-timeout"),
-    # Changed on purpose (#481, 0068): whether its admins must have two-step sign-in.
-    ("GET", f"{ORGS}/{ANY_ID}/admin-two-step"),
-    ("PUT", f"{ORGS}/{ANY_ID}/admin-two-step"),
-    # Changed on purpose (#507, 0074): its Google sign-in.
-    ("GET", f"{ORGS}/{ANY_ID}/google-signin"),
-    ("PUT", f"{ORGS}/{ANY_ID}/google-signin"),
+    # Changed on purpose (#737): admin-two-step and google-signin are gone (Keycloak always asks for
+    # the code, Google is dropped); moving people to company sign-in is new.
+    ("GET", f"{ORGS}/{ANY_ID}/sign-in"),
+    ("POST", f"{ORGS}/{ANY_ID}/move-everyone"),
+    ("POST", f"{ORGS}/{ANY_ID}/people/{ANY_ID}/resend-setup"),
     ("GET", f"{ORGS}/{ANY_ID}/folder-upload-limits"),  # #484
     ("PUT", f"{ORGS}/{ANY_ID}/folder-upload-limits"),
     ("GET", f"{ORGS}/{ANY_ID}/storage-limit"),  # #516
@@ -129,12 +133,40 @@ class _Offline:
         monkeypatch.setattr(operators_sql, "begin_login", None)  # never the sign-in's count
         monkeypatch.setattr(orgs_sql, "begin_step_up", self._begin)
         monkeypatch.setattr(orgs_sql, "list_customers", lambda conn, oid: [ORG_ROW])
-        for name in ("create_customer", "set_customer_status", "step_up_failed", "set_org_autofile"):
+        for name in (
+            "create_customer",
+            "set_customer_status",
+            "step_up_failed",
+            "set_org_autofile",
+            "record_move_everyone",
+        ):
             monkeypatch.setattr(orgs_sql, name, self._recorder(name))
         # Changed on purpose (#457 review): a new organisation first frees a stale sign-up's
         # e-mail through the app's database (tests/test_api_email.py proves it).
         monkeypatch.setattr(app.state.kaagaz.db, "system", lambda: nullcontext(None))
         monkeypatch.setattr(users_sql, "release_stale_signup", lambda conn, email: False)
+        # #737: Keycloak is on, and every call to it (and the link in the database) is recorded in
+        # ``kc``. ``existing`` are emails Keycloak already has; ``email_fails`` breaks the setup email.
+        self.kc: list[tuple[str, tuple[Any, ...]]] = []
+        self.existing: set[str] = set()
+        self.email_fails = False
+        self.subjects = {UID: "kc-subject-1"}
+        self.people = [Person(UID, "asha@example.test", "Asha", False, True)]
+        db = app.state.kaagaz.db
+        monkeypatch.setattr(accounts, "enabled", lambda context: True)
+        monkeypatch.setattr(kc_admin, "find_user_by_email", self._find)
+        monkeypatch.setattr(kc_admin, "create_user", self._create)
+        monkeypatch.setattr(kc_admin, "send_setup_email", self._send)
+        self.unfinished = True
+        monkeypatch.setattr(kc_admin, "setup_unfinished", lambda settings, subject: self.unfinished)
+        for name in ("remove_otp", "set_enabled", "delete_user", "clear_lock"):
+            monkeypatch.setattr(kc_admin, name, self._kc_recorder(name))
+        monkeypatch.setattr(db, "customer", lambda customer_id: nullcontext(None))
+        monkeypatch.setattr(db, "user", lambda customer_id, user_id: nullcontext(None))
+        monkeypatch.setattr(keycloak_sql, "subjects", lambda conn, issuer: dict(self.subjects))
+        monkeypatch.setattr(keycloak_sql, "people", lambda conn, customer_id, issuer: self.people)
+        monkeypatch.setattr(keycloak_sql, "link_account", self._link)
+        monkeypatch.setattr(orgs_router, "_people", lambda context, customer_id: ("active", self.people))
         token = sign_operator(
             OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
             self.settings.session_secret,
@@ -151,6 +183,31 @@ class _Offline:
             return self.outcome
 
         return record
+
+    def _find(self, settings: Any, email: str) -> str | None:
+        return "someone-else" if email in self.existing else None
+
+    def _create(self, settings: Any, *, email: str, name: str) -> str:
+        self.kc.append(("create_user", (email, name)))
+        return f"kc-new-{len([1 for c, _ in self.kc if c == 'create_user'])}"
+
+    def _send(self, settings: Any, subject: str) -> None:
+        self.kc.append(("send_setup_email", (subject,)))
+        if self.email_fails:
+            raise kc_admin.KeycloakAdminError()
+
+    def _kc_recorder(self, name: str) -> Callable[..., None]:
+        def record(settings: Any, subject: str, *args: Any) -> None:
+            self.kc.append((name, (subject, *args)))
+
+        return record
+
+    def _link(self, conn: Any, issuer: str, subject: str, *, now: Any, as_user: str | None = None) -> int:
+        self.kc.append(("link", (subject,)))
+        return 2
+
+    def kc_names(self) -> list[str]:
+        return [name for name, _ in self.kc]
 
     def post(self, path: str, body: dict[str, Any] | None = None) -> Any:
         return self.client.post(f"{ORGS}{path}", json=body, headers=self.headers)
@@ -231,24 +288,203 @@ def test_each_outcome_gets_its_reply(offline: _Offline, code: str, status: int) 
     assert offline.names() == ["set_customer_status"] + ["step_up_failed"] * (code == "step_up")
 
 
-def test_the_first_admins_temporary_password_is_shown_once_and_only_its_hash_is_stored(
-    offline: _Offline, caplog: pytest.LogCaptureFixture
+def _first_admin_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(orgs_sql, "list_admins", lambda conn, oid, cid: [{"user_id": UID}])
+
+
+GO = {"code": totp.code_at(OWN, STEP)}  # a fresh code from the operator's own authenticator
+NEW_ORG = {"name": " Mehta ", "admin_email": "Boss@Mehta.Example", "admin_name": "Boss"}
+
+
+def test_creating_an_organisation_makes_the_admin_account_links_it_and_sends_the_setup_email(
+    offline: _Offline, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
-    path, body = "", {"name": " Mehta ", "admin_email": "Boss@Mehta.Example", "admin_name": "Boss"}
-    reply = offline.post(path, body)
+    _first_admin_row(monkeypatch)
+    reply = offline.post("", NEW_ORG)
     assert reply.status_code == 201, reply.text
-    temporary = reply.json()["temporary_password"]
-    assert len(temporary) == 16
+    body = reply.json()
+    assert "temporary_password" not in body and body["setup_email_sent"] is True
+    admin = {"email": "boss@mehta.example", "name": "Boss"}
+    assert body["organisation"] == {"id": CID, "name": "Mehta", "admin": admin}
+    assert body["message"] == (
+        "Created. We emailed boss@mehta.example a link to set their password and authenticator."
+        " It works for 12 hours."
+    )
     [(name, _, kwargs)] = offline.calls
     assert name == "create_customer" and kwargs["name"] == "Mehta"
-    assert verify_password(temporary, kwargs["password_hash"])
-    assert temporary not in str(kwargs) and temporary not in caplog.text
-    assert "boss@mehta.example" in reply.text and reply.headers["Cache-Control"] == "no-store"
+    assert verify_password("", kwargs["password_hash"]) is False  # a password nobody knows
+    assert offline.kc == [
+        ("create_user", ("boss@mehta.example", "Boss")),
+        ("link", ("kc-new-1",)),
+        ("send_setup_email", ("kc-new-1",)),
+    ]
+    assert "kc-new-1" not in caplog.text
     offline.outcome = Outcome("taken", None)  # audited in the function, no e-mail stored
-    taken = offline.post(path, body)
+    taken = offline.post("", NEW_ORG)
     assert (taken.status_code, taken.json()["error"]["message"]) == (409, "That e-mail is already in use.")
-    assert offline.post(path, {**body, "extra": "x"}).status_code == 400
+    assert offline.post("", {**NEW_ORG, "extra": "x"}).status_code == 400
+
+
+def test_an_email_keycloak_already_has_stops_a_new_organisation_before_anything_is_made(
+    offline: _Offline,
+) -> None:
+    offline.existing.add("boss@mehta.example")
+    reply = offline.post("", NEW_ORG)
+    assert reply.status_code == 409
+    assert reply.json()["error"]["message"] == (
+        "This email already has a company sign-in account. Use a different email."
+    )
+    assert offline.calls == [] and offline.kc == []  # not linked, not created, no organisation
+
+
+def test_an_organisation_whose_setup_email_failed_is_made_and_linked_and_says_to_resend(
+    offline: _Offline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _first_admin_row(monkeypatch)
+    offline.email_fails = True
+    reply = offline.post("", NEW_ORG)
+    assert reply.status_code == 201
+    assert reply.json()["setup_email_sent"] is False
+    assert (
+        reply.json()["message"] == "Created, but the setup email could not be sent. Use Resend setup email."
+    )
+    assert offline.kc_names() == ["create_user", "link", "send_setup_email"]  # linked: Resend finishes it
+
+
+def test_when_linking_fails_the_new_keycloak_account_is_removed_again(
+    offline: _Offline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _first_admin_row(monkeypatch)
+
+    def refuse(*args: Any, **kwargs: Any) -> int:
+        raise keycloak_sql.IdentityTaken
+
+    monkeypatch.setattr(keycloak_sql, "link_account", refuse)
+    reply = offline.post("", NEW_ORG)
+    assert reply.status_code == 201
+    assert reply.json()["message"] == (
+        "Created, but the sign-in account could not be made. Use Move everyone to try again."
+    )
+    assert offline.kc_names() == ["create_user", "delete_user"]  # no half-made account is left
+
+
+def test_the_summary_counts_active_people_on_company_sign_in(offline: _Offline) -> None:
+    offline.people = [
+        Person(UID, "a@x.test", "A", False, True),
+        Person(CID, "b@x.test", "B", False, False),
+        Person(ANY_ID, "c@x.test", "C", True, False),  # switched off: not counted
+    ]
+    reply = offline.client.get(f"{ORGS}/{CID}/sign-in", headers=offline.headers)
+    assert reply.json() == {"status": "active", "available": True, "connected": 1, "to_move": 1}
+
+
+def test_move_everyone_counts_moved_connected_and_those_needing_attention(offline: _Offline) -> None:
+    offline.people = [
+        Person(UID, "done@x.test", "Done", False, True),
+        Person("00000000-0000-4000-8000-000000000001", "new@x.test", "New One", False, False),
+        Person("00000000-0000-4000-8000-000000000002", "taken@x.test", "Taken", False, False),
+        Person("00000000-0000-4000-8000-000000000003", "off@x.test", "Off", True, False),
+    ]
+    offline.existing.add("taken@x.test")
+    reply = offline.post(f"/{CID}/move-everyone", GO)
+    assert reply.status_code == 200, reply.text
+    assert reply.json() == {
+        "moved": 1,
+        "connected": 1,
+        "attention": [
+            {
+                "email": "taken@x.test",
+                "reason": "This email already has a company sign-in account.",
+                "kind": "exists",
+            }
+        ],
+        "email_not_sent": [],
+        "still_to_move": 0,
+        "message": "1 moved, 1 already connected, 1 need attention.",
+    }
+    # the taken email was neither created nor linked; the switched-off person was left alone
+    assert offline.kc == [
+        ("create_user", ("new@x.test", "New One")),
+        ("link", ("kc-new-1",)),
+        ("send_setup_email", ("kc-new-1",)),
+    ]
+
+
+def test_move_everyone_reports_emails_not_sent_and_refuses_an_organisation_that_is_off(
+    offline: _Offline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offline.people = [Person(CID, "new@x.test", "New", False, False)]
+    offline.email_fails = True
+    reply = offline.post(f"/{CID}/move-everyone", GO).json()
+    assert (reply["moved"], reply["email_not_sent"]) == (1, [{"user_id": CID, "email": "new@x.test"}])
+    assert reply["message"].endswith("1 setup email(s) were not sent: use Resend setup email.")
+    monkeypatch.setattr(orgs_router, "_people", lambda context, customer_id: ("disabled", offline.people))
+    refused = offline.post(f"/{CID}/move-everyone", GO)
+    assert (refused.status_code, refused.json()["error"]["message"]) == (
+        409,
+        "Enable the organisation first.",
+    )
+
+
+def test_move_everyone_stops_when_keycloak_is_down(
+    offline: _Offline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offline.people = [Person(UID, "a@x.test", "A", False, False), Person(CID, "b@x.test", "B", False, False)]
+
+    def down(settings: Any, email: str) -> None:
+        offline.kc.append(("find", (email,)))
+        raise kc_admin.KeycloakAdminError()
+
+    monkeypatch.setattr(kc_admin, "find_user_by_email", down)
+    reply = offline.post(f"/{CID}/move-everyone", GO).json()
+    assert reply["moved"] == 0 and [a["email"] for a in reply["attention"]] == ["a@x.test", "b@x.test"]
+    assert offline.kc == [("find", ("a@x.test",))]  # the second person was not tried
+
+
+def test_resend_setup_email_goes_to_the_linked_account_only(offline: _Offline) -> None:
+    reply = offline.post(f"/{CID}/people/{UID}/resend-setup")
+    assert reply.status_code == 200
+    assert reply.json()["message"] == "Done. We emailed a new setup link. It works for 12 hours."
+    assert offline.kc == [("send_setup_email", ("kc-subject-1",))]
+    offline.subjects.clear()  # not linked
+    assert offline.post(f"/{CID}/people/{UID}/resend-setup").status_code == 409
+
+
+def test_disabling_and_enabling_an_organisation_follows_its_linked_people(offline: _Offline) -> None:
+    offline.people = [
+        Person(UID, "a@x.test", "A", False, True),
+        Person(CID, "off@x.test", "Off", True, True),  # switched off by an admin
+        Person(ANY_ID, "n@x.test", "N", False, False),  # not on company sign-in
+    ]
+    offline.subjects = {UID: "sub-a", CID: "sub-off"}
+    assert offline.post(f"/{CID}/enable").status_code == 200
+    assert offline.kc == [("set_enabled", ("sub-a", True))]  # the person an admin switched off stays off
+    offline.kc.clear()
+    assert offline.post(f"/{CID}/disable", {"code": totp.code_at(OWN, STEP)}).status_code == 200
+    assert offline.kc == [("set_enabled", ("sub-a", False)), ("set_enabled", ("sub-off", False))]
+
+
+def test_a_keycloak_failure_after_the_change_is_reported_not_hidden(
+    offline: _Offline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def down(settings: Any, subject: str, enabled: bool) -> None:
+        raise kc_admin.KeycloakAdminError()
+
+    monkeypatch.setattr(kc_admin, "set_enabled", down)
+    reply = offline.post(f"/{CID}/enable")
+    assert reply.status_code == 502
+    assert reply.json()["error"]["message"] == (
+        "Saved here, but 1 sign-in account(s) could not be updated. Try the same action again."
+    )
+
+
+def test_the_two_switches_that_keycloak_replaces_are_gone(offline: _Offline) -> None:
+    for name in ("admin-two-step", "google-signin"):
+        for method in ("get", "put"):
+            reply = getattr(offline.client, method)(f"{ORGS}/{CID}/{name}", headers=offline.headers)
+            assert reply.status_code in (404, 405), (name, method)
+    assert offline.calls == []
 
 
 def test_a_placeholder_organisation_name_is_refused_before_anything_is_made(offline: _Offline) -> None:
@@ -303,3 +539,67 @@ def test_the_two_step_grant_route_is_gone(offline: _Offline) -> None:
     reply = offline.client.put(f"{ORGS}/{CID}/two-step", json={"granted": True}, headers=offline.headers)
     assert reply.status_code in (404, 405)
     assert offline.calls == []
+
+
+def test_move_everyone_needs_a_fresh_code_and_records_one_audit_row_with_counts(offline: _Offline) -> None:
+    offline.people = [Person(UID, "new@x.test", "New", False, False)]
+    assert offline.post(f"/{CID}/move-everyone").status_code == 400  # no code at all
+    wrong = offline.post(f"/{CID}/move-everyone", {"code": totp.code_at(totp.new_secret(), STEP)})
+    assert (wrong.status_code, wrong.json()["error"]["code"]) == (403, "step_up_failed")
+    assert offline.kc == []  # nobody was moved
+    offline.calls.clear()
+    assert offline.post(f"/{CID}/move-everyone", GO).status_code == 200
+    [(name, args, kwargs)] = offline.calls
+    assert (name, args[1:], kwargs["moved"], kwargs["attention"], kwargs["step"]) == (
+        "record_move_everyone",
+        (CID,),
+        1,
+        0,
+        STEP,
+    )
+
+
+def test_move_everyone_moves_at_most_fifty_and_says_how_many_are_still_to_move(offline: _Offline) -> None:
+    offline.people = [
+        Person(f"00000000-0000-4000-8000-{n:012d}", f"p{n}@x.test", f"P {n}", False, False) for n in range(53)
+    ]
+    first = offline.post(f"/{CID}/move-everyone", GO).json()
+    assert (first["moved"], first["still_to_move"]) == (50, 3)
+    assert first["message"].endswith("3 still to move. Press Move again to continue.")
+    assert offline.kc_names().count("create_user") == 50
+
+
+def test_move_everyone_does_not_count_a_taken_email_against_the_fifty(offline: _Offline) -> None:
+    offline.people = [
+        Person(f"00000000-0000-4000-8000-{n:012d}", f"p{n}@x.test", f"P {n}", False, False) for n in range(52)
+    ]
+    offline.existing.update(f"p{n}@x.test" for n in range(2))  # the first two never move
+    reply = offline.post(f"/{CID}/move-everyone", GO).json()
+    assert (reply["moved"], len(reply["attention"]), reply["still_to_move"]) == (50, 2, 0)
+
+
+def test_resend_setup_is_refused_for_a_person_who_finished_setting_up(offline: _Offline) -> None:
+    offline.unfinished = False
+    reply = offline.post(f"/{CID}/people/{UID}/resend-setup")
+    assert reply.status_code == 409
+    assert reply.json()["error"]["message"] == accounts.ALREADY_SET_UP
+    assert offline.kc == []  # no email: a finished account is left alone
+
+
+def test_disabling_an_organisation_stops_at_the_first_unreachable_call(
+    offline: _Offline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offline.people = [
+        Person(f"00000000-0000-4000-8000-{n:012d}", f"p{n}@x.test", f"P{n}", False, True) for n in range(3)
+    ]
+    offline.subjects = {p.user_id: f"sub-{i}" for i, p in enumerate(offline.people)}
+    seen: list[str] = []
+
+    def down(settings: Any, subject: str, enabled: bool) -> None:
+        seen.append(subject)
+        raise kc_admin.KeycloakAdminError()
+
+    monkeypatch.setattr(kc_admin, "set_enabled", down)
+    reply = offline.post(f"/{CID}/enable")
+    assert reply.status_code == 502 and seen == ["sub-0"]  # the others were not tried
+    assert "3 sign-in account(s) could not be updated" in reply.json()["error"]["message"]

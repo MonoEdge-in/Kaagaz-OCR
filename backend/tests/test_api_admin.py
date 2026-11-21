@@ -4,22 +4,25 @@ checks that an app session is refused on every one of them)."""
 
 import json
 import re
+import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from sqlalchemy import RowMapping, text
 
-from kaagaz.api.auth import verify_password
+from kaagaz.api import keycloak_admin as kc_admin
 from kaagaz.api.routers.admin import month_window
 from kaagaz.api.routers.auth import ACCOUNT_MAX_FAILURES
 from kaagaz.api.views import audit_entry
+from kaagaz.db import keycloak as keycloak_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.runs import PgRuns
 from kaagaz.pipeline import FinishedRun
 from tests.settings_factory import make_settings
 from tests.test_api_model_choice import add_model, allow
-from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, TestClient, answer_json
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, MovingClock, Signed, answer_json
 from tests.test_api_usage import NOW, THIS_MONTH, add_spend, set_budget
 from tests.test_runs_db import totals
 
@@ -27,7 +30,6 @@ from tests.test_runs_db import totals
 MONEY = re.compile(r"usd|price|budget|cost|[$₹]", re.IGNORECASE)
 
 # How a person signs in and the Google tag (#457 phase 1, #507): only in replies that know them.
-GOOGLE_TAG = {"signs_in_with", "google_needed", "google_unchecked"}
 ADMIN_USER_FIELDS = {
     "id",
     "email",
@@ -40,91 +42,244 @@ ADMIN_USER_FIELDS = {
     "two_step_turned_off",
     "must_change_password",
     "can_delete_forever",
+    "company_sign_in",  # Changed on purpose (21 Nov 2026): connected, or waiting for setup
     "management",  # Changed on purpose (PRD 7, #601): Management on the person
 }
 WRONG = "wrong password!!"
 
 
+ISSUER = "https://id.example.test/realms/kaagaz-test"
+KEYCLOAK_ON = {
+    "keycloak_enabled": True,
+    "keycloak_issuer": ISSUER,
+    "keycloak_client_id": "kaagaz-web",
+    "keycloak_admin_client_id": "kaagaz-provisioner",
+    "keycloak_admin_client_secret": "a-test-provisioner-secret-of-32-chars00",
+}
+
+
+ADMIN_SESSION_REFUSED = {
+    "error": {
+        "code": "admin_session_required",
+        "message": "Only admins can use this. Ask your admin if you need it.",
+    }
+}
+
+
+class _Keycloak:
+    """Stands in for Keycloak's admin API (#737): records every call; no network."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.existing: set[str] = set()
+        self.email_fails = False
+        self.unfinished = True
+        monkeypatch.setattr(kc_admin, "setup_unfinished", lambda settings, subject: self.unfinished)
+        for name in ("find_user_by_email", "create_user", "send_setup_email"):
+            monkeypatch.setattr(kc_admin, name, getattr(self, f"_{name}"))
+        for name in ("remove_otp", "set_enabled", "delete_user", "clear_lock"):
+            monkeypatch.setattr(kc_admin, name, self._recorder(name))
+
+    def _find_user_by_email(self, settings: object, email: str) -> str | None:
+        return "someone-else" if email in self.existing else None
+
+    def _create_user(self, settings: object, *, email: str, name: str) -> str:
+        self.calls.append(("create_user", (email, name)))
+        return f"kc-{uuid.uuid4().hex}"
+
+    def _send_setup_email(self, settings: object, subject: str) -> None:
+        self.calls.append(("send_setup_email", (subject,)))
+        if self.email_fails:
+            raise kc_admin.KeycloakAdminError()
+
+    def _recorder(self, name: str) -> Callable[..., None]:
+        def record(settings: object, subject: str, *args: object) -> None:
+            self.calls.append((name, (subject, *args)))
+
+        return record
+
+    def names(self) -> list[str]:
+        return [name for name, _ in self.calls]
+
+    def subject(self) -> str:
+        return str(next(args[0] for name, args in self.calls if name == "send_setup_email"))
+
+
+def _keycloak_api(db: Database, monkeypatch: pytest.MonkeyPatch) -> tuple[Api, _Keycloak]:
+    return Api(db, settings=make_settings(**KEYCLOAK_ON)), _Keycloak(monkeypatch)
+
+
 @pytest.mark.db
-def test_admin_lists_and_creates_users_and_the_new_user_can_sign_in(db: Database) -> None:
-    api = Api(db)
+def test_admin_adds_a_person_who_is_linked_and_emailed_a_setup_link(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
     admin = api.new_admin()
     email = f"New.Person.{admin.user_id[:8]}@Example.test"
 
     created = admin.client.post(
         "/api/admin/users",
-        json={"email": email, "display_name": " New Person ", "role": "reviewer", "password": PASSWORD},
+        json={"email": email, "display_name": " New Person ", "role": "reviewer"},
         headers=CSRF,
     )
 
-    assert created.status_code == 201
+    assert created.status_code == 201, created.text
     user = created.json()
-    assert set(user) == ADMIN_USER_FIELDS
-    assert user["email"] == email.lower()
-    assert user["display_name"] == "New Person"
-    assert user["role"] == "reviewer"
-    assert user["disabled"] is False
-    assert user["locked_until"] is None
-    assert user["totp_enabled"] is False
-    assert user["must_change_password"] is True  # the admin chose it, so it is temporary
-    assert api.audit_actions(admin.customer_id)[-1] == "user.create"
+    assert set(user) == ADMIN_USER_FIELDS | {"setup_email_sent", "message"}
+    assert user["email"] == email.lower() and user["display_name"] == "New Person"
+    assert user["role"] == "reviewer" and user["disabled"] is False
+    assert user["setup_email_sent"] is True
+    assert user["message"] == (
+        f"Added. We emailed {email.lower()} a link to set their password and authenticator."
+        " It works for 12 hours."
+    )
+    assert keycloak.names() == ["create_user", "send_setup_email"]
+    assert keycloak.calls[0][1] == (email.lower(), "New Person")
+    assert api.audit_actions(admin.customer_id)[-2:] == ["user.create", "auth.setup_email_sent"]
     listed = admin.client.get("/api/admin/users").json()["items"]
     assert user["id"] in [item["id"] for item in listed]
-    login = api.client().post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
-    assert login.status_code == 200
-    assert login.json()["user"]["must_change_password"] is True
+    with db.system() as conn:  # linked to exactly the account that was made, and on Keycloak
+        found = keycloak_sql.lookup(conn, ISSUER, keycloak.subject())
+    assert found is not None and found.user_id == user["id"]
     with db.customer(admin.customer_id) as conn:
         details: dict[str, object] = conn.execute(
             text("SELECT details FROM audit_log WHERE action = 'user.create'")
         ).scalar_one()
-    assert PASSWORD not in json.dumps(details)
+    assert "password" not in json.dumps(details)
 
 
 @pytest.mark.db
-def test_two_users_made_with_the_same_password_get_different_salts(db: Database) -> None:
-    """The helpers reuse one cached hash of PASSWORD; the product never does. Two users
-    made on the admin screen with PASSWORD each get a new salt (not the helpers' one,
-    which the admin has), and each hash still verifies."""
-    api = Api(db)
+def test_an_email_keycloak_already_has_is_refused_and_no_person_is_made(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
     admin = api.new_admin()
-    made = []
-    for n in (1, 2):
-        body = {"email": f"same-{n}-{admin.user_id[:8]}@example.test", "display_name": f"Same {n}"}
-        reply = admin.client.post(
-            "/api/admin/users", json={**body, "role": "member", "password": PASSWORD}, headers=CSRF
-        )
-        assert reply.status_code == 201, reply.text
-        made.append(str(api.user_state(admin.customer_id, reply.json()["id"])["password_hash"]))
-    helpers = str(api.user_state(admin.customer_id, admin.user_id)["password_hash"])
-
-    assert len({stored.split("$")[4] for stored in [*made, helpers]}) == 3
-    assert all(verify_password(PASSWORD, stored) for stored in made)
+    email = f"taken-{admin.user_id[:8]}@example.test"
+    keycloak.existing.add(email)
+    reply = admin.client.post(
+        "/api/admin/users", json={"email": email, "display_name": "Copy", "role": "member"}, headers=CSRF
+    )
+    assert reply.status_code == 409
+    assert reply.json()["error"]["message"] == (
+        "This email already has a company sign-in account. Ask your super admin."
+    )
+    assert keycloak.calls == []  # not created, not linked
+    listed = admin.client.get("/api/admin/users").json()["items"]
+    assert email not in [item["email"] for item in listed]
 
 
 @pytest.mark.db
-def test_a_taken_email_is_409_even_in_another_customer(db: Database) -> None:
-    api = Api(db)
+def test_a_failed_setup_email_leaves_the_person_linked_and_says_to_resend(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    admin = api.new_admin()
+    keycloak.email_fails = True
+    email = f"mail-{admin.user_id[:8]}@example.test"
+    reply = admin.client.post(
+        "/api/admin/users", json={"email": email, "display_name": "Mail", "role": "member"}, headers=CSRF
+    )
+    assert reply.status_code == 201
+    assert reply.json()["setup_email_sent"] is False
+    assert reply.json()["message"] == "Added, but the setup email could not be sent. Use Resend setup email."
+    with db.system() as conn:
+        assert keycloak_sql.lookup(conn, ISSUER, keycloak.subject()) is not None  # linked
+    keycloak.email_fails = False
+    keycloak.calls.clear()
+    again = admin.client.post(f"/api/admin/users/{reply.json()['id']}/resend-setup", headers=CSRF)
+    assert again.status_code == 200, again.text
+    assert again.json()["message"] == "Done. We emailed a new setup link. It works for 12 hours."
+    assert keycloak.names() == ["send_setup_email"]
+
+
+@pytest.mark.db
+def test_a_taken_email_is_409_even_in_another_customer_and_the_new_keycloak_account_is_removed(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
     admin = api.new_admin()
     other_customer, _ = api.customer()
     _, taken = api.add_user(other_customer, "member")
     reply = admin.client.post(
-        "/api/admin/users",
-        json={"email": taken, "display_name": "Copy", "role": "member", "password": PASSWORD},
-        headers=CSRF,
+        "/api/admin/users", json={"email": taken, "display_name": "Copy", "role": "member"}, headers=CSRF
     )
     assert reply.status_code == 409
     assert reply.json()["error"]["code"] == "conflict"
     assert taken not in reply.text
+    assert keycloak.names() == ["create_user", "delete_user"]  # nothing half-made is left in Keycloak
+
+
+@pytest.mark.db
+def test_adding_a_person_needs_company_sign_in_to_be_set_up(db: Database) -> None:
+    admin = Api(db).new_admin()  # Keycloak is off on this server
+    reply = admin.client.post(
+        "/api/admin/users",
+        json={"email": "a@b.test", "display_name": "A", "role": "member"},
+        headers=CSRF,
+    )
+    assert reply.status_code == 409
+    assert (
+        reply.json()["error"]["message"]
+        == "Company sign-in is not set up on this server. Ask your super admin."
+    )
+
+
+@pytest.mark.db
+def test_an_admin_resets_a_members_authenticator_unlocks_and_disables_in_keycloak_too(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    admin = api.new_admin()
+    member = admin.client.post(
+        "/api/admin/users",
+        json={"email": f"m-{admin.user_id[:8]}@example.test", "display_name": "Mira Rao", "role": "member"},
+        headers=CSRF,
+    ).json()
+    subject = keycloak.subject()
+    keycloak.calls.clear()
+
+    reset = admin.client.post(f"/api/admin/users/{member['id']}/reset-2fa", headers=CSRF)
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["message"] == (
+        "Done. Mira Rao will set up their authenticator again at their next sign-in."
+    )
+    assert admin.client.post(f"/api/admin/users/{member['id']}/unlock", headers=CSRF).status_code == 200
+    for disabled in (True, False):
+        changed = admin.client.patch(
+            f"/api/admin/users/{member['id']}", json={"disabled": disabled}, headers=CSRF
+        )
+        assert changed.status_code == 200, changed.text
+    assert keycloak.calls == [
+        ("remove_otp", (subject,)),
+        ("clear_lock", (subject,)),
+        ("set_enabled", (subject, False)),
+        ("set_enabled", (subject, True)),
+    ]
+    other = api.new_admin()  # another organisation's admin cannot reach this person
+    assert other.client.post(f"/api/admin/users/{member['id']}/reset-2fa", headers=CSRF).status_code == 404
+    assert keycloak.calls[-1][0] == "set_enabled"
+
+
+@pytest.mark.db
+def test_an_admin_cannot_reset_another_admins_authenticator(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    admin = api.new_admin()
+    other_id, _ = api.add_user(admin.customer_id, "admin")
+    reply = admin.client.post(f"/api/admin/users/{other_id}/reset-2fa", headers=CSRF)
+    assert reply.status_code == 403
+    assert keycloak.calls == []
 
 
 @pytest.mark.db
 @pytest.mark.parametrize(
     "body",
     [
-        {"email": "no-at-sign", "display_name": "X", "role": "member", "password": PASSWORD},
-        {"email": "a@b.test", "display_name": "X", "role": "member", "password": "short"},
-        {"email": "a@b.test", "display_name": "X", "role": "owner", "password": PASSWORD},
-        {"email": "a@b.test", "display_name": "   ", "role": "member", "password": PASSWORD},
+        {"email": "no-at-sign", "display_name": "X", "role": "member"},
+        {"email": "a@b.test", "display_name": "X", "role": "owner"},
+        {"email": "a@b.test", "display_name": "   ", "role": "member"},
+        {"email": "a@b.test", "display_name": "X", "role": "member", "password": PASSWORD},
     ],
 )
 def test_bad_new_users_are_400(db: Database, body: dict[str, str]) -> None:
@@ -133,7 +288,7 @@ def test_bad_new_users_are_400(db: Database, body: dict[str, str]) -> None:
 
 
 @pytest.mark.db
-def test_update_role_disable_and_password(db: Database) -> None:
+def test_update_role_and_disable(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
     member = api.sign_in(admin.customer_id, "member")
@@ -145,25 +300,10 @@ def test_update_role_disable_and_password(db: Database) -> None:
     assert promoted.json()["role"] == "reviewer"
     assert member.client.get("/api/auth/me").status_code == 401  # the old session named the old role
 
-    new_password = "a brand new password"
-    changed = admin.client.patch(
-        f"/api/admin/users/{member.user_id}", json={"password": new_password}, headers=CSRF
-    )
-    assert changed.json()["role"] == "reviewer"  # untouched fields stay
-    assert changed.json()["must_change_password"] is True
-    login = api.client().post(
-        "/api/auth/login", json={"email": member.email, "password": new_password}, headers=CSRF
-    )
-    assert login.status_code == 200
-    assert login.json()["user"]["must_change_password"] is True
-
     disabled = admin.client.patch(f"/api/admin/users/{member.user_id}", json={"disabled": True}, headers=CSRF)
     assert disabled.json()["disabled"] is True
-    again = api.client().post(
-        "/api/auth/login", json={"email": member.email, "password": new_password}, headers=CSRF
-    )
-    assert again.status_code == 401
-    assert api.audit_actions(admin.customer_id).count("user.update") == 3
+    assert member.client.get("/api/auth/me").status_code == 401  # the old session ends with it
+    assert api.audit_actions(admin.customer_id).count("user.update") == 2
 
 
 @pytest.mark.db
@@ -182,36 +322,12 @@ def test_a_demoted_and_promoted_again_user_does_not_get_old_sessions_back(db: Da
 
 
 @pytest.mark.db
-def test_an_admin_cannot_reset_their_own_password(db: Database) -> None:
-    api = Api(db)
-    admin = api.new_admin()
-    before = api.user_state(admin.customer_id, admin.user_id)
-    reply = admin.client.post(f"/api/admin/users/{admin.user_id}/reset-password", headers=CSRF)
-    assert reply.status_code == 400
-    assert reply.json()["error"]["code"] == "bad_request"
-    assert api.user_state(admin.customer_id, admin.user_id) == before
-    assert "user.reset_password" not in api.audit_actions(admin.customer_id)
-    assert admin.client.get("/api/auth/me").status_code == 200  # the session did not end
-
-
-@pytest.mark.db
 @pytest.mark.parametrize("body", [{"disabled": True}, {"role": "member"}, {"role": "reviewer"}])
 def test_an_admin_cannot_lock_themselves_out(db: Database, body: dict[str, object]) -> None:
     admin = Api(db).new_admin()
     reply = admin.client.patch(f"/api/admin/users/{admin.user_id}", json=body, headers=CSRF)
     assert reply.status_code == 400
     assert admin.client.get("/api/auth/me").json()["user"]["role"] == "admin"
-
-
-@pytest.mark.db
-def test_an_admin_may_change_their_own_password(db: Database) -> None:
-    admin = Api(db).new_admin()
-    reply = admin.client.patch(
-        f"/api/admin/users/{admin.user_id}",
-        json={"password": "my new long password", "role": "admin"},
-        headers=CSRF,
-    )
-    assert reply.status_code == 200
 
 
 @pytest.mark.db
@@ -474,12 +590,13 @@ def test_a_run_at_00_30_ist_on_the_1st_counts_in_the_new_month(db: Database) -> 
 
 
 def _lock(api: Api, email: str) -> None:
-    """Changed on purpose (A2, 7 Nov 2026): one address locks only itself, so the account's own
-    lock takes ACCOUNT_MAX_FAILURES from several addresses."""
-    for n in range(ACCOUNT_MAX_FAILURES // api.settings.login_max_failures):
-        client = TestClient(api.app, client=(f"203.0.113.{n}", 50000))
-        for _ in range(api.settings.login_max_failures):
-            client.post("/api/auth/login", json={"email": email, "password": WRONG}, headers=CSRF)
+    """The account is locked for an hour, as the operator's sign-in lock leaves it (there is no
+    other sign-in with a lock any more)."""
+    with api.db.engine.begin() as conn:
+        conn.execute(
+            text("UPDATE users SET failed_logins = :n, locked_until = :until WHERE email = :e"),
+            {"n": ACCOUNT_MAX_FAILURES, "until": api.clock() + timedelta(minutes=60), "e": email.lower()},
+        )
 
 
 @pytest.mark.db
@@ -495,7 +612,7 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
     # Changed on purpose (#507): and whether their role needs a Google account connected, or
     # (#507 review) its domain checked.
     # Changed on purpose (PRD 7, #601): and the departments each is in.
-    assert all(set(item) == ADMIN_USER_FIELDS | GOOGLE_TAG | {"departments"} for item in items.values())
+    assert all(set(item) == ADMIN_USER_FIELDS | {"departments"} for item in items.values())
     # Changed on purpose (A2 review): the account's own lock lasts ACCOUNT_LOCK_MINUTES.
     assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=60)).isoformat()
     assert items[member_id]["totp_enabled"] is False
@@ -505,6 +622,32 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
     again = api.new_admin_of(admin.customer_id)  # an admin session lasts an hour too
     later = {item["id"]: item for item in again.client.get("/api/admin/users").json()["items"]}
     assert later[member_id]["locked_until"] is None  # a lock that has passed is not shown
+
+
+@pytest.mark.db
+def test_company_sign_in_is_not_moved_then_waiting_then_connected(db: Database) -> None:
+    """The People list's `company_sign_in`: not moved (not linked), waiting for setup (linked, no
+    sign-in since the link) and connected. A person moved with an OLD last_login_at (Move
+    everyone) is waiting, not connected: linking clears it."""
+    api = Api(db)
+    admin = api.new_admin()
+    member_id, _ = api.add_user(admin.customer_id, "member")  # made, never linked
+    with db.engine.begin() as conn:  # they signed in with the old password sign-in last week
+        conn.execute(
+            text("UPDATE users SET last_login_at = :t WHERE customer_id = :c AND id = :u"),
+            {"t": api.clock() - timedelta(days=7), "c": admin.customer_id, "u": member_id},
+        )
+
+    def state() -> str:
+        items = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
+        return str(items[member_id]["company_sign_in"])
+
+    assert state() == "not_moved"
+    with db.user(admin.customer_id, member_id) as conn:  # Move everyone links them
+        keycloak_sql.link_account(conn, ISSUER, f"subject-{uuid.uuid4().hex}", now=api.clock())
+    assert state() == "waiting"  # the old last_login_at does not count
+    api.mint_session(api.client(), admin.customer_id, member_id)  # their first sign-in since
+    assert state() == "connected"
 
 
 @pytest.mark.db
@@ -519,56 +662,7 @@ def test_unlock(db: Database) -> None:
     assert reply.status_code == 200, reply.text
     assert set(reply.json()) == ADMIN_USER_FIELDS
     assert reply.json()["locked_until"] is None
-    login = api.client().post(
-        "/api/auth/login", json={"email": member_email, "password": PASSWORD}, headers=CSRF
-    )
-    assert login.status_code == 200
-    assert api.audit_actions(admin.customer_id)[-2:] == ["user.unlock", "auth.login"]
-
-
-@pytest.mark.db
-def test_reset_password_gives_a_temporary_password_and_ends_sessions(db: Database) -> None:
-    api = Api(db)
-    admin = api.new_admin()
-    member = api.sign_in(admin.customer_id, "member")
-
-    reply = admin.client.post(f"/api/admin/users/{member.user_id}/reset-password", headers=CSRF)
-
-    assert reply.status_code == 200, reply.text
-    body = reply.json()
-    # Changed on purpose (#457 phase 1): a reset clears connected accounts, and says so; and
-    # (#507 review) the Google tag that may change with them.
-    assert set(body["user"]) == ADMIN_USER_FIELDS | GOOGLE_TAG
-    assert body["user"]["must_change_password"] is True
-    assert len(body["temporary_password"]) == 16
-    assert member.client.get("/api/auth/me").status_code == 401
-    assert api.audit_actions(admin.customer_id)[-1] == "user.reset_password"
-    with db.customer(admin.customer_id) as conn:
-        details: dict[str, object] = conn.execute(
-            text("SELECT details FROM audit_log WHERE action = 'user.reset_password'")
-        ).scalar_one()
-    assert body["temporary_password"] not in json.dumps(details)
-
-
-@pytest.mark.db
-def test_reset_2fa_clears_the_code_so_the_next_sign_in_sets_it_up_again(db: Database) -> None:
-    api = Api(db)
-    admin = api.new_admin()
-    colleague = api.enrol_admin(admin.customer_id)
-
-    reply = admin.client.post(f"/api/admin/users/{colleague.user_id}/reset-2fa", headers=CSRF)
-
-    assert reply.status_code == 200, reply.text
-    assert set(reply.json()) == ADMIN_USER_FIELDS
-    assert reply.json()["totp_enabled"] is False
-    state = api.user_state(admin.customer_id, colleague.user_id)
-    assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
-    assert (
-        api.audit_actions(admin.customer_id)[-1] == "auth.totp_reset"
-    )  # Changed on purpose (#457): the spec's
-    signed_in = api.admin_login(api.client(), colleague.email)  # MFA required (0035): no session yet
-    assert (signed_in.status_code, signed_in.json()["error"]["code"]) == (403, "mfa_enrol_required")
-    assert "set-cookie" not in signed_in.headers
+    assert api.audit_actions(admin.customer_id)[-1] == "user.unlock"
 
 
 @pytest.mark.db
@@ -586,7 +680,7 @@ def test_an_admin_cannot_reset_their_own_2fa(db: Database) -> None:
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("action", ["unlock", "reset-password", "reset-2fa"])
+@pytest.mark.parametrize("action", ["unlock", "reset-2fa"])
 def test_the_three_buttons_on_an_unknown_user_are_404(db: Database, action: str) -> None:
     admin = Api(db).new_admin()
     reply = admin.client.post(f"/api/admin/users/{ANY_ID}/{action}", headers=CSRF)
@@ -607,3 +701,100 @@ def test_disabling_a_user_ends_their_sessions(db: Database) -> None:
 
     assert api.user_state(admin.customer_id, member.user_id)["session_version"] > version
     assert member.client.get("/api/auth/me").status_code == 401
+
+
+def _member_in_keycloak(api: Api, keycloak: _Keycloak, admin: Signed, role: str = "member") -> dict[str, Any]:
+    person: dict[str, Any] = admin.client.post(
+        "/api/admin/users",
+        json={
+            "email": f"{role}-{uuid.uuid4().hex[:10]}@example.test",
+            "display_name": "Mira Rao",
+            "role": role,
+        },
+        headers=CSRF,
+    ).json()
+    keycloak.calls.clear()
+    return person
+
+
+@pytest.mark.db
+def test_resend_setup_is_refused_once_the_person_finished_setting_up_and_for_an_admin(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    admin = api.new_admin()
+    member = _member_in_keycloak(api, keycloak, admin)
+    keycloak.unfinished = False
+    refused = admin.client.post(f"/api/admin/users/{member['id']}/resend-setup", headers=CSRF)
+    assert refused.status_code == 409
+    assert refused.json()["error"]["message"] == (
+        "They have already set up their account. Ask them to use Forgot password,"
+        " or reset their authenticator."
+    )
+    assert keycloak.calls == []
+    other_admin_id, _ = api.add_user(admin.customer_id, "admin")
+    keycloak.unfinished = True
+    for path in ("resend-setup", "reset-2fa"):
+        reply = admin.client.post(f"/api/admin/users/{other_admin_id}/{path}", headers=CSRF)
+        assert reply.status_code == 403
+        assert reply.json()["error"]["message"] == (
+            "Only your super admin can reset another admin's authenticator."
+        )
+    assert keycloak.calls == []
+
+
+@pytest.mark.db
+def test_a_person_not_on_company_sign_in_gets_a_next_step(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    admin = api.new_admin()
+    legacy_id, _ = api.add_user(admin.customer_id, "member")  # never moved
+    for path in ("resend-setup", "reset-2fa"):
+        reply = admin.client.post(f"/api/admin/users/{legacy_id}/{path}", headers=CSRF)
+        assert reply.status_code == 409
+        assert reply.json()["error"]["message"].endswith(
+            "Ask your super admin to move your organisation to company sign-in."
+        )
+    assert keycloak.calls == []
+
+
+@pytest.mark.db
+def test_resetting_an_authenticator_signs_the_person_out_everywhere(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    admin = api.new_admin()
+    member = _member_in_keycloak(api, keycloak, admin)
+    before = int(api.user_state(admin.customer_id, member["id"])["session_version"])
+    reply = admin.client.post(f"/api/admin/users/{member['id']}/reset-2fa", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+    assert int(api.user_state(admin.customer_id, member["id"])["session_version"]) == before + 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("action", ["resend-setup", "reset-2fa", "unlock", "disable"])
+def test_an_admin_of_another_organisation_reaches_nobody_and_keycloak_is_never_called(
+    db: Database, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    api, keycloak = _keycloak_api(db, monkeypatch)
+    mine, theirs = api.new_admin(), api.new_admin()
+    person = _member_in_keycloak(api, keycloak, theirs)
+    if action == "disable":
+        reply = mine.client.patch(f"/api/admin/users/{person['id']}", json={"disabled": True}, headers=CSRF)
+    else:
+        reply = mine.client.post(f"/api/admin/users/{person['id']}/{action}", headers=CSRF)
+    assert reply.status_code in (404, 409), reply.text
+    assert keycloak.calls == []
+    assert api.user_state(theirs.customer_id, person["id"])["disabled"] is False
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("role", ["member", "reviewer"])
+@pytest.mark.parametrize("action", ["resend-setup", "reset-2fa"])
+def test_a_member_or_reviewer_cannot_use_the_new_admin_routes(db: Database, role: str, action: str) -> None:
+    api = Api(db)
+    signed = api.new_signed(role)
+    reply = signed.client.post(f"/api/admin/users/{ANY_ID}/{action}", headers=CSRF)
+    assert reply.status_code == 403
+    assert reply.json() == ADMIN_SESSION_REFUSED

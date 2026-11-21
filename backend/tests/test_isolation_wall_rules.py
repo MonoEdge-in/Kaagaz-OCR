@@ -32,7 +32,7 @@ from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import DocumentRecord
 from tests.db_support import insert_folder, name_session, rule_on_everywhere, wait_until_blocked
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
-from tests.test_api_support import CSRF, PASSWORD, Api, Signed
+from tests.test_api_support import CSRF, Api, Signed
 from tests.test_isolation_access_api import _audit, _call, _code, _email_api, _in_thread, _refused, _version
 from tests.test_isolation_access_views import _SUGGEST, Org, _app, _expected, _seen, _walled
 from tests.test_isolation_logins import WORKER
@@ -862,10 +862,10 @@ def test_an_admin_opening_a_folder_to_themselves_by_a_move_types_their_password(
     bills = _sub(db, org, "bills", org.folders["finance"])
     api.add_document(org.c, name="bill.pdf", folder_id=bills, uploaded_by=org.people["member"].user_id)
     body: dict[str, Any] = {"parent_id": org.folders["loose"]}
-    assert _code(_call(admin, "PATCH", f"/api/folders/{bills}", body)) == (403, "password_required")
+    assert _code(_call(admin, "PATCH", f"/api/folders/{bills}", body)) == (403, "keycloak_reauth_required")
     assert _moves(db, org, "folder.move") == []
     assert _code(_call(admin, "PATCH", f"/api/folders/{bills}", {**body, "password": "wrong"}))[0] == 400
-    assert _call(admin, "PATCH", f"/api/folders/{bills}", {**body, "password": PASSWORD})[0] == 200
+    assert _call(admin, "PATCH", f"/api/folders/{bills}", {**body, "proved": True})[0] == 200
     [details] = _moves(db, org, "folder.move")
     assert details["self"] is True and details["gaining"] >= 1
     assert any(sent.to == org.people["management"].email for sent in mailer.sent)
@@ -890,8 +890,8 @@ def test_a_confirmed_keep_delete_counts_who_loses_and_gains_and_an_admin_gaining
     api.add_document(org.c, name="bill.pdf", folder_id=bills, uploaded_by=org.people["member"].user_id)
     url = f"/api/folders/{bills}?contents=keep&confirm=true"  # to the top level: the Admin gains it
     # Changed on purpose (PR 9b, #606): a Finance file the Admin can't see moves, with the rule on.
-    assert _code(_call(admin, "DELETE", url)) == (403, "password_required")
-    assert _call(admin, "DELETE", url, {"password": PASSWORD})[0] == 200
+    assert _code(_call(admin, "DELETE", url)) == (403, "keycloak_reauth_required")
+    assert _call(admin, "DELETE", url, {"proved": True})[0] == 200
     assert _moves(db, org, "folder.delete")[-1]["self"] is True
 
 
@@ -918,7 +918,7 @@ def test_a_private_folder_never_goes_into_another_with_its_words(db: Database) -
     assert moved[0] == 409 and moved[1]["error"] == words
     url = f"/api/folders/{box}?contents=keep&to={org.folders['salaries']}"
     for sent in (url, url + "&confirm=true"):  # refused before the warning, and confirmed
-        kept = _call(admin, "DELETE", sent, {"password": PASSWORD})
+        kept = _call(admin, "DELETE", sent, {"proved": True})
         assert kept[0] == 409 and kept[1]["error"] == words, sent
     assert _owner(db, "SELECT parent_id::text FROM folders WHERE id = :f", {"f": secret})[0][0] == box
 

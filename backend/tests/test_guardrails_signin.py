@@ -1,15 +1,11 @@
 """#520 guard rails, sign-in: attacks the sign-in tests did not make yet.
 
-11. The lockout can't be dodged by the e-mail's letter case or spaces, holds exactly
-    LOGIN_LOCK_MINUTES, and is per account.
 12. The operator's step-up code is single use across different changes (and against the
     sign-in's own code) and is refused once its 30-second window is over. Two-step sign-in
     itself: test_api_two_step, test_api_admin_sign_in, test_isolation_admin_two_step_required.
 13. Every cookie the API sets is HttpOnly, SameSite and, with COOKIE_SECURE, Secure, and only
     kaagaz/api/auth.py sets one. Logout ends this browser's session on the server (0076, #502):
     a copied cookie at once, other devices kept, the rows swept, one query; the operator's too.
-14. A Google-only account's right password never opens a session, whatever the e-mail's case
-    or spaces, and no reply sets a session cookie.
 15. The signed-out rate bucket per visitor: test_api_auth (ported from production, 6fa3a7df).
 """
 
@@ -29,66 +25,21 @@ from kaagaz.api.auth import (
     OPERATOR_COOKIE,
     SESSION_COOKIE,
     CurrentUser,
-    FlowClaims,
     OperatorClaims,
-    PendingClaims,
     SessionClaims,
 )
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.sqlstate import sqlstate
 from kaagaz.jobs.purge import sweep_ended_sessions
-from tests import test_api_google_rules as google_rules
-from tests.oidc_fake import FakeGoogle
 from tests.settings_factory import make_settings
-from tests.test_api_google_rules import DOMAIN, _api, _link, _rules
-from tests.test_api_support import CSRF, PASSWORD, Api, TestClient
+from tests.test_api_support import CSRF, Api, TestClient
 from tests.test_operator_auth_db import _Operator
 from tests.test_operator_orgs_db import _platform
 
 pytestmark = pytest.mark.db
 
-WRONG = "not the password!!"
 ORGS = "/api/operator/orgs"
-google = google_rules.google  # the fixture, by its name
-
-
-def _login(client: TestClient, email: str, password: str = PASSWORD) -> httpx.Response:
-    return client.post("/api/auth/login", json={"email": email, "password": password}, headers=CSRF)
-
-
-def _variants(email: str) -> list[str]:
-    return [email.upper(), f"  {email}  ", f"\t{email.title()}\n", email.swapcase(), email]
-
-
-# --- 11. the lockout ----------------------------------------------------------------------------
-
-
-def test_the_lockout_counts_every_spelling_of_the_email_and_lasts_exactly_15_minutes(db: Database) -> None:
-    api = Api(db, settings=make_settings(login_max_failures=5, login_lock_minutes=15))
-    customer_id, _ = api.customer()
-    user_id, email = api.add_user(customer_id, "member")
-    other_id, other_email = api.add_user(customer_id, "member")
-    client = api.client()
-
-    for spelled in _variants(email):  # five wrong passwords, each spelled differently
-        assert _login(client, spelled, WRONG).status_code == 401
-    state = api.user_state(customer_id, user_id)
-    # Changed on purpose (A2, 7 Nov 2026): the lock is this address's, held in memory.
-    assert (state["failed_logins"], state["locked_until"]) == (5, None)
-
-    for spelled in _variants(email):  # the right password, any spelling: still locked
-        reply = _login(client, spelled)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (401, "bad_credentials"), spelled
-        assert SESSION_COOKIE not in reply.headers.get("set-cookie", "")
-    assert _login(api.client(), other_email).status_code == 200  # per account: another is open
-    assert api.user_state(customer_id, other_id)["failed_logins"] == 0
-
-    api.clock.advance(15 * 60 - 1)
-    assert _login(api.client(), email).status_code == 401  # a second before the end
-    api.clock.advance(1)
-    assert _login(api.client(), email.upper()).status_code == 200  # 15 minutes on the dot
-    assert api.user_state(customer_id, user_id)["failed_logins"] == 0
 
 
 # --- 12. the operator's step-up code -------------------------------------------------------------
@@ -161,18 +112,6 @@ def test_every_cookie_the_api_sets_or_clears_is_httponly_samesite_and_secure_whe
         totp_enabled=False,
         delete_forever_allowed=False,
     )
-    flow = FlowClaims(
-        provider="google",
-        mode="signin",
-        state="s",
-        nonce="n",
-        verifier="v",
-        next_path="/",
-        user_id=None,
-        customer_id=None,
-        session_version=None,
-        expires_at=later,
-    )
     session = SessionClaims(
         user_id="u", customer_id="c", role="member", scope="app", session_version=1, expires_at=later
     )
@@ -184,26 +123,13 @@ def test_every_cookie_the_api_sets_or_clears_is_httponly_samesite_and_secure_whe
         auth.set_operator_cookie(
             response, OperatorClaims(operator_id="o", session_version=1, expires_at=later), settings, now=now
         )
-        auth.set_flow_cookie(response, flow, settings, now=now)
-        auth.set_pending_cookie(
-            response,
-            PendingClaims(
-                provider="google", user_id="u", customer_id="c", session_version=1, expires_at=later
-            ),
-            settings,
-            now=now,
-        )
-        auth.set_notice_cookie(response, "e@example.test", settings, now=now)
         for clear in (
             auth.clear_session_cookie,
             auth.clear_operator_cookie,
-            auth.clear_flow_cookie,
-            auth.clear_pending_cookie,
-            auth.clear_notice_cookie,
         ):
             clear(response, settings)
         cookies = _set_cookies(response)
-        assert len(cookies) == 11
+        assert len(cookies) == 5
         for cookie in cookies:
             flags = {part.strip().split("=")[0].lower(): part for part in cookie.split(";")[1:]}
             assert "httponly" in flags, cookie
@@ -219,7 +145,8 @@ def test_only_the_auth_module_sets_a_cookie() -> None:
         for path in package.rglob("*.py")
         if re.search(r"\.(set_cookie|delete_cookie)\(", path.read_text(encoding="utf-8"))
     }
-    assert setters == {"api/auth.py"}
+    # api/routers/keycloak.py: #671 sets and clears the sign-in flow cookie; it is an auth module.
+    assert setters == {"api/auth.py", "api/routers/keycloak.py"}
 
 
 def _cookie(client: TestClient) -> str:
@@ -250,7 +177,7 @@ def test_logout_ends_this_browsers_session_at_once_and_only_it(db: Database) -> 
     api = Api(db)
     laptop = api.new_signed()
     phone = api.client()
-    assert _login(phone, laptop.email).status_code == 200
+    assert api.admin_login(phone, laptop.email).status_code == 200
     copied = _cookie(laptop.client)
     claims = auth.read_session(copied, api.settings.session_secret, int(api.clock().timestamp()))
     assert claims is not None
@@ -265,7 +192,7 @@ def test_logout_ends_this_browsers_session_at_once_and_only_it(db: Database) -> 
         (claims.session_id, laptop.user_id, datetime.fromtimestamp(claims.expires_at, UTC))
     ]
     again = api.client()
-    assert _login(again, laptop.email).status_code == 200  # a new sign-in is a new session
+    assert api.admin_login(again, laptop.email).status_code == 200  # a new sign-in is a new session
     assert _cookie(again) != copied
     assert again.get("/api/auth/me").status_code == 200
 
@@ -325,7 +252,7 @@ def test_one_customer_never_sees_or_ends_another_customers_session(db: Database)
     api = Api(db)
     a, b = api.new_signed(), api.new_signed()
     b_laptop = api.client()
-    assert _login(b_laptop, b.email).status_code == 200
+    assert api.admin_login(b_laptop, b.email).status_code == 200
     assert b.client.post("/api/auth/logout", headers=CSRF).status_code == 204
     now = int(api.clock().timestamp())
     b_live = auth.read_session(_cookie(b_laptop), api.settings.session_secret, now)
@@ -366,24 +293,3 @@ def test_the_ended_check_costs_no_query_of_its_own(db: Database) -> None:
 
 
 # --- 14. Google only --------------------------------------------------------------------------
-
-
-def test_a_google_only_accounts_right_password_never_opens_a_session(
-    db: Database, google: FakeGoogle
-) -> None:
-    api = _api(db)
-    customer_id, _ = api.customer()
-    member_id, email = api.add_user(customer_id, "member")
-    _rules(api, customer_id, only=["member"], domains=[DOMAIN])
-    _link(api, customer_id, member_id)
-    client = api.client()
-    for spelled in _variants(email):
-        reply = _login(client, spelled)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (403, "password_refused"), spelled
-        assert "set-cookie" not in reply.headers, spelled
-    gone: Any = client.post(
-        "/api/auth/admin/login", json={"email": email, "password": PASSWORD}, headers=CSRF
-    )
-    assert gone.status_code in (404, 410)
-    assert "set-cookie" not in gone.headers
-    assert client.get("/api/auth/me").status_code == 401

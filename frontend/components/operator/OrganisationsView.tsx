@@ -6,10 +6,9 @@
 // (AdminsDialog); AI settings opens its scanning and answering settings, Ensemble and
 // budget (OrgAiSettings, features 25-27); Feature switches its own switches (0039,
 // OrgFeatureSwitchesDialog); Session timeout its own sign-in idle timeout (0040,
-// OrgSessionTimeoutDialog); Two-step for admins whether its admins must use two-step sign-in
-// (#481, 0068, OrgAdminTwoStepDialog); Folder upload limits its own folder upload limits (#484,
-// OrgFolderUploadLimitsDialog); Google sign-in whether its people may sign in with Google (#507,
-// OrgGoogleSignInDialog); Storage limit how much it may store in all (#516,
+// OrgSessionTimeoutDialog); Company sign-in moves its people to company sign-in (#737,
+// MoveEveryoneDialog); Folder upload limits its own folder upload limits (#484,
+// OrgFolderUploadLimitsDialog); Storage limit how much it may store in all (#516,
 // OrgStorageLimitDialog). They sit in one Manage menu per row (ManageMenu,
 // 16 Oct 2026). Each change opens a dialog (ConfirmDialog): disable, enable,
 // delete (only a disabled organisation) and cancel the deletion; a row being
@@ -31,7 +30,6 @@ import { listOrgs } from "@/lib/api";
 import { formatBytes, formatNumber } from "@/lib/format";
 import type { Organisation } from "@/lib/types";
 import { AdminsDialog } from "./AdminsDialog";
-import { OrgAdminTwoStepDialog } from "./AdminTwoStep";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
 import { autofileConfirm, orgConfirm, orgFocusId } from "./confirms";
@@ -44,7 +42,7 @@ import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { OrgModelRates } from "./OrgModelRates";
 import { OrgSessionTimeoutDialog } from "./SessionTimeout";
 import { OrgFolderUploadLimitsDialog } from "./FolderUploadLimits";
-import { GOOGLE_SIGNIN_LINE, OrgGoogleSignInDialog } from "./GoogleSignIn";
+import { MoveEveryoneDialog } from "./MoveEveryone";
 import { OrgStorageLimitDialog } from "./StorageLimit";
 import { afterDone, countText, deleteCountdown, filterOrgs, GRACE_DAYS, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts, waitingOnly } from "./logic";
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
@@ -80,8 +78,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [ratesOf, setRatesOf] = useState<Organisation | null>(null);
   const [switchesOf, setSwitchesOf] = useState<Organisation | null>(null);
   const [timeoutOf, setTimeoutOf] = useState<Organisation | null>(null);
-  const [twoStepOf, setTwoStepOf] = useState<Organisation | null>(null);
-  const [googleOf, setGoogleOf] = useState<Organisation | null>(null);
+  const [signInOf, setSignInOf] = useState<Organisation | null>(null);
   const [folderLimitsOf, setFolderLimitsOf] = useState<Organisation | null>(null);
   const [storageOf, setStorageOf] = useState<Organisation | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -214,8 +211,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       onModelRates={() => setRatesOf(org)}
                       onSwitches={() => setSwitchesOf(org)}
                       onTimeout={() => setTimeoutOf(org)}
-                      onTwoStep={() => setTwoStepOf(org)}
-                      onGoogle={() => setGoogleOf(org)}
+                      onSignIn={() => setSignInOf(org)}
                       onFolderLimits={() => setFolderLimitsOf(org)}
                       onStorage={() => setStorageOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
@@ -244,8 +240,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
       {ratesOf && <OrgModelRates org={ratesOf} onClose={() => setRatesOf(null)} onSaved={setDone} />}
       {switchesOf && <OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} onDone={setDone} />}
       {timeoutOf && <OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} onDone={setDone} />}
-      {twoStepOf && <OrgAdminTwoStepDialog org={twoStepOf} onClose={() => setTwoStepOf(null)} onDone={setDone} />}
-      {googleOf && <OrgGoogleSignInDialog org={googleOf} onClose={() => setGoogleOf(null)} onDone={setDone} />}
+      {signInOf && <MoveEveryoneDialog org={signInOf} onClose={() => setSignInOf(null)} onDone={setDone} />}
       {folderLimitsOf && (
         <OrgFolderUploadLimitsDialog org={folderLimitsOf} onClose={() => setFolderLimitsOf(null)} onDone={setDone} />
       )}
@@ -267,12 +262,11 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
 
 /** What each Manage item does, in one plain line under it (plain words, 25 Oct 2026). */
 export const MENU_HELP = {
-  admins: "See this organisation's admins. Add one, or disable, unlock or reset one's two-step sign-in.",
+  admins: "See this organisation's admins. Add one, or disable, unlock, resend a setup email or reset an authenticator.",
   ai: "Choose who reads its pages, which AI answers, Ensemble, its daily page limit and its monthly budget.",
   switches: "Turn features on or off for this organisation only.",
   timeout: "Choose how long its people can be idle before they are signed out.",
-  twoStep: "Require every admin here to sign in with a code from their phone.",
-  google: GOOGLE_SIGNIN_LINE,
+  signIn: "See who is on company sign-in, and move the rest. Each person is emailed a setup link.",
   folderLimits: "Set the most files, size and folders one folder upload may have.",
   storage: "Set how much this organisation may store in all, in GB.",
   limits: "Cap how many AI requests a minute it and each of its people may send.",
@@ -305,14 +299,13 @@ function OrgRow(props: {
   onModelRates(): void;
   onSwitches(): void;
   onTimeout(): void;
-  onTwoStep(): void;
-  onGoogle(): void;
+  onSignIn(): void;
   onFolderLimits(): void;
   onStorage(): void;
   onChange(change: OrgChange): void;
   onAutofile(): void;
 }) {
-  const { org, now, onAdmins, onModels, onModelRates, onSwitches, onTimeout, onTwoStep, onGoogle, onFolderLimits, onStorage, onChange, onAutofile } =
+  const { org, now, onAdmins, onModels, onModelRates, onSwitches, onTimeout, onSignIn, onFolderLimits, onStorage, onChange, onAutofile } =
     props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
@@ -379,8 +372,7 @@ function OrgRow(props: {
                     { label: "AI settings", description: MENU_HELP.ai, onSelect: onModels },
                     { label: "Feature switches", description: MENU_HELP.switches, onSelect: onSwitches },
                     { label: "Session timeout", description: MENU_HELP.timeout, onSelect: onTimeout },
-                    { label: "Two-step for admins", description: MENU_HELP.twoStep, onSelect: onTwoStep },
-                    { label: "Google sign-in", description: MENU_HELP.google, onSelect: onGoogle },
+                    { label: "Company sign-in", description: MENU_HELP.signIn, onSelect: onSignIn },
                     { label: "Folder upload limits", description: MENU_HELP.folderLimits, onSelect: onFolderLimits },
                     { label: "Storage limit", description: MENU_HELP.storage, onSelect: onStorage },
                     { label: "Request limits", description: MENU_HELP.limits, onSelect: onModelRates },

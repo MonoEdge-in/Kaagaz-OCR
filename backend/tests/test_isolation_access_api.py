@@ -16,11 +16,8 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.pool import QueuePool
 
 from kaagaz.adapters.email import MemoryMailer
-from kaagaz.api.routers import access as access_router
-from kaagaz.api.routers.auth import prove_password
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import trash
 from kaagaz.db.documents import add_version
@@ -28,7 +25,7 @@ from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import DocumentRecord
 from tests.db_support import insert_folder
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, PASSWORD, Api, Signed
+from tests.test_api_support import CSRF, Api, Signed, after_proof
 from tests.test_isolation_access_views import Org, _app, _expected, _seen, _walled
 from tests.test_operator_auth_db import _owner
 from tests.test_operator_orgs_db import ORGS, _signed_in
@@ -76,7 +73,7 @@ def _refused(db: Database, c: str, u: str, statement: str, **params: Any) -> str
 
 
 def _call(signed: Signed, method: str, url: str, body: Any = None) -> tuple[int, Any]:
-    reply = signed.client.request(method, url, json=body, headers=CSRF)
+    reply = signed.client.request(method, url, json=after_proof(signed, url, body), headers=CSRF)
     try:
         return reply.status_code, reply.json()
     except ValueError:
@@ -279,7 +276,7 @@ def _email_api(db: Database) -> tuple[Api, MemoryMailer]:
     return Api(db, settings=settings, mailer=mailer), mailer
 
 
-def test_an_admin_giving_themselves_management_types_the_password_and_the_others_are_told(
+def test_an_admin_giving_themselves_management_needs_the_company_sign_in_and_the_others_are_told(
     db: Database,
 ) -> None:
     api, mailer = _email_api(db)
@@ -287,17 +284,11 @@ def test_an_admin_giving_themselves_management_types_the_password_and_the_others
     admin, other_admin = org.people["admin"], api.admin_sign_in(org.c)
     url = f"/api/admin/users/{admin.user_id}/management"
     before = _version(db, org.c)
-    assert _code(_call(admin, "PUT", url, {"on": True})) == (403, "password_required")
-    failed = api.user_state(org.c, admin.user_id)["failed_logins"]
-    assert _code(_call(admin, "PUT", url, {"on": True, "password": "not it at all"})) == (
-        400,
-        "wrong_password",
-    )
-    assert api.user_state(org.c, admin.user_id)["failed_logins"] == failed + 1  # on the sign-in lock
+    assert _code(_call(admin, "PUT", url, {"on": True})) == (403, "keycloak_reauth_required")
+    assert _call(admin, "PUT", url, {"on": True, "password": "not a way in"})[0] == 400  # none is taken
     assert _version(db, org.c) == before and _audit(db, org.c, "access.management_on") == []
-    status, body = _call(admin, "PUT", url, {"on": True, "password": PASSWORD})
+    status, body = _call(admin, "PUT", url, {"on": True, "proved": True})
     assert status == 200 and body["management"] is True
-    assert api.user_state(org.c, admin.user_id)["failed_logins"] == 0
     assert _version(db, org.c) == before + 1
     [(actor, _, target, subject, details)] = _audit(db, org.c, "access.management_on")
     assert (actor, target, subject, details) == (admin.user_id, admin.user_id, admin.user_id, {"self": True})
@@ -312,17 +303,6 @@ def test_an_admin_giving_themselves_management_types_the_password_and_the_others
     assert {org.people["management"].email, other_admin.email} <= told
     text_sent = next(sent.text for sent in mailer.sent if sent.to == other_admin.email)
     assert "gave themselves Management" in text_sent and "Finance" not in text_sent
-
-
-def test_a_locked_account_is_told_so(db: Database) -> None:
-    api = Api(db)
-    org = _walled(api)
-    admin = org.people["admin"]
-    _owner(
-        db, "UPDATE users SET locked_until = now() + interval '1 hour' WHERE id = :u", {"u": admin.user_id}
-    )
-    url = f"/api/admin/users/{admin.user_id}/management"
-    assert _code(_call(admin, "PUT", url, {"on": True, "password": PASSWORD})) == (400, "password_locked")
 
 
 def test_every_management_grant_is_emailed_and_a_no_op_changes_nothing(db: Database) -> None:
@@ -396,10 +376,10 @@ def test_an_admin_adding_themselves_or_ticking_head_types_the_password(db: Datab
     org = _walled(Api(db))
     admin = org.people["admin"]
     url = f"/api/admin/users/{admin.user_id}/departments/{org.folders['finance']}"
-    assert _code(_call(admin, "PUT", url, {})) == (403, "password_required")
-    assert _call(admin, "PUT", url, {"password": PASSWORD})[0] == 200
-    assert _code(_call(admin, "PUT", url, {"head": True})) == (403, "password_required")
-    assert _call(admin, "PUT", url, {"head": True, "password": PASSWORD})[0] == 200
+    assert _code(_call(admin, "PUT", url, {})) == (403, "keycloak_reauth_required")
+    assert _call(admin, "PUT", url, {"proved": True})[0] == 200
+    assert _code(_call(admin, "PUT", url, {"head": True})) == (403, "keycloak_reauth_required")
+    assert _call(admin, "PUT", url, {"head": True, "proved": True})[0] == 200
     assert [
         row[4]["self"] for row in _audit(db, org.c, "access.member_add") + _audit(db, org.c, "access.head_on")
     ] == [True, True]
@@ -427,8 +407,11 @@ def test_department_only_on_and_off(db: Database) -> None:
     [(losing,)] = _owner(db, active, {"c": org.c})
     assert _audit(db, org.c, "access.department_only_on")[-1][4] == {"members": 0, "losing": losing}
     url = f"/api/admin/departments/{org.folders['finance']}/department-only"
-    assert _code(_call(admin, "PUT", url, {"on": False})) == (403, "password_required")  # the Admin gains it
-    assert _call(admin, "PUT", url, {"on": False, "password": PASSWORD})[0] == 200
+    assert _code(_call(admin, "PUT", url, {"on": False})) == (
+        403,
+        "keycloak_reauth_required",
+    )  # the Admin gains it
+    assert _call(admin, "PUT", url, {"on": False, "proved": True})[0] == 200
     assert _audit(db, org.c, "access.department_only_off")[-1][4]["self"] is True
     assert any("by opening them to more people" in sent.text for sent in mailer.sent)
     salaries = org.folders["salaries"]
@@ -464,8 +447,11 @@ def test_private_on_and_off_and_what_it_refuses(db: Database) -> None:
     ):
         assert _code(_call(admin, "PUT", f"/api/folders/{folder}/private", {"on": True})) == (409, code), code
     off = {"on": False}  # the Admin, not named, gains it: the self-grant step (lead decision Q2)
-    assert _code(_call(admin, "PUT", f"/api/folders/{bills}/private", off)) == (403, "password_required")
-    status, body = _call(admin, "PUT", f"/api/folders/{bills}/private", {**off, "password": PASSWORD})
+    assert _code(_call(admin, "PUT", f"/api/folders/{bills}/private", off)) == (
+        403,
+        "keycloak_reauth_required",
+    )
+    status, body = _call(admin, "PUT", f"/api/folders/{bills}/private", {**off, "proved": True})
     assert (status, body["private"], body["named"]) == (200, False, [])
     assert _audit(db, org.c, "access.private_off")[-1][4] == {"named": 0, "losing": 0, "self": True}
     assert _owner(db, "SELECT count(*) FROM private_folder_members WHERE folder_id = :f", {"f": bills}) == [
@@ -478,7 +464,7 @@ def test_private_on_and_off_and_what_it_refuses(db: Database) -> None:
     status, body = _call(
         admin, "PUT", f"/api/folders/{bills}/private", {"on": True, "named": [admin.user_id]}
     )
-    assert _code((status, body)) == (403, "password_required")
+    assert _code((status, body)) == (403, "keycloak_reauth_required")
 
 
 def _named_url(org: Org, who: str | None = None) -> str:
@@ -534,8 +520,8 @@ def test_a_head_names_and_unnames_people(db: Database) -> None:
     for who in (org.people["off"].user_id, str(uuid.uuid4()), _walled(Api(db)).people["plain"].user_id):
         assert _code(_call(head, "PUT", _named_url(org, who), {})) == (404, "not_found")
     admin = org.people["admin"]
-    assert _code(_call(admin, "PUT", _named_url(org, admin.user_id), {})) == (403, "password_required")
-    assert _call(admin, "PUT", _named_url(org, admin.user_id), {"password": PASSWORD}) == (
+    assert _code(_call(admin, "PUT", _named_url(org, admin.user_id), {})) == (403, "keycloak_reauth_required")
+    assert _call(admin, "PUT", _named_url(org, admin.user_id), {"proved": True}) == (
         200,
         {"changed": True},
     )
@@ -631,7 +617,7 @@ def test_giving_a_file_answers_a_hidden_one_as_one_that_never_was(db: Database) 
     assert _code(_call(admin, "PUT", f"/api/documents/{visible}/shares/{off}", {})) == (409, "disabled")
     assert _code(_call(admin, "PUT", f"/api/documents/{visible}/shares/{admin.user_id}", {})) == (
         403,
-        "password_required",
+        "keycloak_reauth_required",
     )
 
 
@@ -812,40 +798,6 @@ def test_two_operator_switches_in_one_organisation_queue_on_the_tree_lock(db: Da
 # --- review fixes (#601) ------------------------------------------------------------------------
 
 
-def test_the_password_is_proved_with_no_connection_held(
-    db: Database, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The password check opens its own short transactions: a request holding a pooled connection
-    meanwhile would starve the pool for every organisation under parallel self-grants."""
-    api = Api(db)
-    org = _walled(api)
-    admin, me = org.people["admin"], org.people["admin"].user_id
-    held: list[int] = []
-    proved = prove_password  # the one access.py calls, imported from auth.py
-
-    def watched(context: Any, user: Any, password: str, *, action: str) -> None:
-        pool = db.engine.pool
-        assert isinstance(pool, QueuePool)
-        held.append(pool.checkedout())
-        proved(context, user, password, action=action)
-
-    monkeypatch.setattr(access_router, "prove_password", watched)
-    with db.customer(org.c) as conn:
-        bills = insert_folder(conn, org.c, me, "Bills", org.folders["loose"])
-    for method, url, body in (
-        ("PUT", f"/api/admin/users/{me}/management", {"on": True}),
-        ("PUT", f"/api/admin/users/{me}/departments/{org.folders['sales']}", {}),
-        ("PUT", f"/api/admin/departments/{org.folders['finance']}/department-only", {"on": False}),
-        ("PUT", f"/api/folders/{bills}/private", {"on": True, "named": [me]}),
-        ("PUT", f"/api/folders/{org.folders['salaries']}/named/{me}", {}),
-        ("PUT", f"/api/documents/{org.files['top']}/shares/{me}", {}),
-        ("POST", "/api/documents/shares", {"document_ids": [org.files["loose"]], "user_ids": [me]}),
-    ):
-        status, reply = _call(admin, method, url, {**body, "password": PASSWORD})
-        assert status == 200, (url, reply)
-    assert held == [0] * 7
-
-
 def test_a_head_whose_tick_goes_while_their_naming_waits_is_refused(db: Database) -> None:
     org = _walled(Api(db))
     head, plain = org.people["head"], org.people["plain"].user_id
@@ -928,9 +880,9 @@ def test_bulk_giving_to_the_admin_themselves_takes_the_password(db: Database) ->
     files = [org.files["top"], org.files["loose"]]
     body = {"document_ids": files, "user_ids": [admin.user_id]}
     before = _version(db, org.c)
-    assert _code(_call(admin, "POST", "/api/documents/shares", body)) == (403, "password_required")
+    assert _code(_call(admin, "POST", "/api/documents/shares", body)) == (403, "keycloak_reauth_required")
     assert (_given(db, admin.user_id, files), _version(db, org.c)) == (0, before)
-    assert _call(admin, "POST", "/api/documents/shares", {**body, "password": PASSWORD}) == (
+    assert _call(admin, "POST", "/api/documents/shares", {**body, "proved": True}) == (
         200,
         {"given": 2},
     )
@@ -971,7 +923,7 @@ def test_every_kind_of_access_an_admin_gets_is_told_to_management_and_the_other_
     )
     for words, url, body in steps:
         sent = len(mailer.sent)
-        assert _call(admin, "PUT", url, {**body, "password": PASSWORD})[0] == 200, url
+        assert _call(admin, "PUT", url, {**body, "proved": True})[0] == 200, url
         new = [m for m in mailer.sent[sent:] if m.subject == "Access was given in Kaagaz"]
         assert {m.to for m in new} == watchers, words
         assert all(words in m.text for m in new), words

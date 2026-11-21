@@ -28,6 +28,11 @@ PRIVATE_QUERY = [
     "state",
     "hub.verify_token",
     "hub.challenge",
+    "key",  # Changed on purpose (#735): Keycloak's emailed action links
+    "session_code",  # Changed on purpose (#735): Keycloak's login steps
+    "id_token_hint",  # Changed on purpose (#735): a Keycloak sign-out's ID token
+    "login_hint",  # Changed on purpose (#735): a sign-in's email
+    "client_data",  # Changed on purpose (#735): Keycloak's encoded return address
 ]
 
 PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>"
@@ -279,6 +284,21 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "}",
         "}",
         "}",
+        # Changed on purpose (#735): Keycloak at /kc/ when it runs; its admin console never.
+        "handle /kc/realms/master* {",
+        "respond 404",
+        "}",
+        "@keycloak_account path /kc/realms/*/account /kc/realms/*/account/*",
+        "handle @keycloak_account {",
+        "respond 404",
+        "}",
+        "@keycloak_pages path /kc/realms/* /kc/resources/*",
+        "handle @keycloak_pages {",
+        "reverse_proxy keycloak:8080",
+        "}",
+        "handle /kc/* {",
+        "respond 404",
+        "}",
         "handle {",
         "reverse_proxy frontend:3000 {",
         "lb_try_duration 30s",
@@ -431,3 +451,57 @@ def test_the_laptop_keys_file_scopes_the_app_key_to_its_bucket() -> None:
         "kaagaz-local": ["Read:kaagaz-local", "Write:kaagaz-local", "List:kaagaz-local"],
         "kaagaz-local-admin": ["Admin"],
     }
+
+
+KC_SERVER = "docker-compose.keycloak-server.yml"
+
+
+def test_keycloak_runs_on_the_test_server_in_production_mode_behind_caddy() -> None:
+    """#735: the server overlay is one opt-in service, nothing published, its own database."""
+    assert services(KC_SERVER) == ["keycloak"]  # api, worker and whatsapp are not touched
+    block = service("keycloak", KC_SERVER)
+    assert "    ports:" not in block
+    assert '    command: ["start", "--import-realm"]\n' in block
+    assert "start-dev" not in block
+    for line in [
+        "KC_HTTP_RELATIVE_PATH: /kc",
+        "KC_PROXY_HEADERS: xforwarded",
+        'KC_HTTP_ENABLED: "true"',
+        'KC_DB_POOL_MAX_SIZE: "10"',
+        "KC_DB: postgres",
+        "KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak",
+    ]:
+        assert f"      {line}\n" in block
+    assert re.search(r"^      KC_HOSTNAME: https://\$\{KAAGAZ_DOMAIN[^}]*\}/kc$", block, re.MULTILINE)
+    assert "KC_HOSTNAME_STRICT" not in block  # ignored once KC_HOSTNAME is set (Keycloak 26)
+    relative_path = re.search(r"^      KC_HTTP_RELATIVE_PATH: (\S+)$", block, re.MULTILINE)
+    assert relative_path
+    path = relative_path.group(1)
+    assert re.search(rf"^      KC_HOSTNAME: .*{re.escape(path)}$", block, re.MULTILINE)
+    assert re.search(r"- path: \.env\.keycloak-admin\n\s+required: true\n", block)
+    assert "      - ./keycloak/themes/kaagaz:/opt/keycloak/themes/kaagaz:ro\n" in block  # #737 theme
+    assert has(block, "mem_limit: 1g")
+    assert has(block, 'profiles: ["keycloak"]')
+    assert has(block, "networks: [edge, data]")
+    # postgres is profile-gated in the prod compose file, so a depends_on makes the project invalid.
+    assert "depends_on" not in block
+
+
+def test_caddy_serves_only_keycloak_sign_in_pages_never_master_or_admin() -> None:
+    """#735: an allow-list. The master realm and everything else under /kc/ is a 404."""
+    text = (ROOT / "infra" / "caddy" / "Caddyfile").read_text(encoding="utf-8")
+    master = text.index("\thandle /kc/realms/master* {\n\t\trespond 404\n\t}\n")
+    account = text.index(  # #737: a realm's account console is never served
+        "\t@keycloak_account path /kc/realms/*/account /kc/realms/*/account/*\n"
+        "\thandle @keycloak_account {\n\t\trespond 404\n\t}\n"
+    )
+    allowed = text.index(
+        "\t@keycloak_pages path /kc/realms/* /kc/resources/*\n"
+        "\thandle @keycloak_pages {\n\t\treverse_proxy keycloak:8080\n\t}\n"
+    )
+    rest = text.index("\thandle /kc/* {\n\t\trespond 404\n\t}\n")
+    assert master < account < allowed < rest < text.index("\thandle {\n")
+    assert text.count("keycloak:8080") == 1  # no other handle can reach Keycloak
+    query = text[text.index("request>uri query {") : text.index("}", text.index("request>uri query {"))]
+    for name in ["key", "session_code", "id_token_hint", "login_hint", "client_data"]:
+        assert f"delete {name}\n" in query

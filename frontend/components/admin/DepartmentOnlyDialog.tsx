@@ -3,11 +3,10 @@
 // Department only, on or off (PRD 7 PR 11a, #604). It reads who would lose (and gain) the
 // department's files first (GET .../department-only/preview), and its button waits for the names.
 // On: who loses access, "Show all" for every name, and Add people to Finance. Off: how many files
-// everyone will see. The change itself, and the password step when the admin gains the files, are
+// everyone will see. The change itself, and the company sign-in when the admin gains the files, are
 // the panel's (onConfirm), once this dialog has closed.
 
 import { useEffect, useState } from "react";
-import { asksFirst } from "@/components/access/passwordStep";
 import {
   ADD_PEOPLE,
   KEEP_TO_PEOPLE,
@@ -28,11 +27,9 @@ import type { AdminDepartment, PlacePreview } from "@/lib/types";
 
 interface Props {
   department: AdminDepartment;
-  myId: string;
   onClose(): void;
   onAddPeople(): void;
-  /** Switch it; `passwordFirst`: the admin is among those who gain the files. */
-  onConfirm(passwordFirst: boolean): void;
+  onConfirm(): void;
 }
 
 export function DepartmentOnlyDialog(props: Props) {
@@ -73,7 +70,6 @@ export function DepartmentOnlyDialog(props: Props) {
 /** The dialog, for the render tests: `preview` null while it loads. */
 export function DepartmentOnlyView({
   department,
-  myId,
   preview,
   failed,
   onRetry,
@@ -126,7 +122,7 @@ export function DepartmentOnlyView({
           type="button"
           className={`btn ${on ? "btn-danger" : "btn-primary"}`}
           disabled={preview === null}
-          onClick={() => preview && onConfirm(asksFirst({ myId, gaining: preview.gaining }))}
+          onClick={() => preview && onConfirm()}
         >
           {on ? KEEP_TO_PEOPLE : OPEN_TO_EVERYONE}
         </button>

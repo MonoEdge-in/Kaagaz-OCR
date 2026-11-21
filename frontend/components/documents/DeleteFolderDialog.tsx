@@ -7,12 +7,12 @@
 // its focus trap, Esc and Cancel first; the server's refusal (an upload still running) shows in it.
 // PRD 7 PR 11b (#604, PR 10c): a move of what is inside that changes who can see it is a warning
 // first (409 access_would_change, in the server's words): its button becomes "Move anyway and
-// delete", which sends it again confirmed; one that opens it to the admin asks their password
-// (403 password_required). Choosing another place, or Trash, takes the warning back.
+// delete", which sends it again confirmed; one that opens it to the admin needs a fresh company sign-in
+// (403 keycloak_reauth_required). Choosing another place, or Trash, takes the warning back.
 
 import { useId, useState } from "react";
-import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
-import { MOVE_ANYWAY, quoted } from "@/components/access/words";
+import { useProofStep } from "@/components/access/proofStep";
+import { MOVE_ANYWAY } from "@/components/access/words";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ApiError, deleteFolderWithContents } from "@/lib/api";
 import type { FolderSummary } from "@/lib/types";
@@ -42,7 +42,7 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warned, setWarned] = useState(false); // 409 access_would_change came: the next press confirms
-  const passwordStep = usePasswordStep();
+  const proofStep = useProofStep();
   // Another place, or Trash, takes the warning (and what it said) back.
   const choose = (next: "keep" | "trash") => {
     setChoice(next);
@@ -66,11 +66,10 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
     let message: string;
     try {
       if (choice === "keep") {
-        const keep = (password?: string) =>
-          deleteFolderWithContents(node.folder.id, { contents: "keep", to: to || null, confirm: warned, password });
-        const moved = warned ? await passwordStep.run(quoted(name), keep, false) : await keep();
+        const keep = () => deleteFolderWithContents(node.folder.id, { contents: "keep", to: to || null, confirm: warned });
+        const moved = warned ? await proofStep.run(keep) : await keep();
         if (moved === null) {
-          setBusy(false); // the password step was cancelled: nothing more is sent, nothing deleted
+          setBusy(false); // the company sign-in was started: nothing more is sent, nothing deleted
           return;
         }
         message = keptMessage(noun, to ? pathLabel(tree, to) : null, moved.files);
@@ -159,7 +158,6 @@ export function DeleteFolderDialog({ tree, node, summary, onDeleted, onCancel }:
       </fieldset>
     </ConfirmDialog>
     {/* Beside the dialog, not in it: Esc in "Confirm it's you" closes only the step. */}
-    {passwordStep.dialog}
     </>
   );
 }

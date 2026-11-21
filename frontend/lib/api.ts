@@ -71,7 +71,6 @@ import type {
   FolderSummary,
   TrashedFolder,
   TrashedFolderContents,
-  GoogleRulesChange,
   FolderUploadItem,
   FolderUploadPlan,
   FolderUploadPlanBody,
@@ -93,7 +92,9 @@ import type {
   OrgAdmin,
   OrgAiReply,
   OrgFeatureSwitch,
-  OrgGoogleSignIn,
+  MoveResult,
+  ResultLine,
+  SignInSummary,
   OrgFolderLimits,
   Organisation,
   OrgModelRates,
@@ -103,8 +104,6 @@ import type {
   PageTurnSaved,
   PageSummary,
   DocumentWords,
-  PasswordReset,
-  PendingConnection,
   PlatformEvent,
   PlatformFolderLimits,
   PlatformHealth,
@@ -126,7 +125,6 @@ import type {
   ScopeBody,
   SessionTimeout,
   SheetCells,
-  SignUpConfirming,
   SourcePin,
   Speed,
   SpeedName,
@@ -135,8 +133,6 @@ import type {
   Tag,
   TaskLevel,
   TestModel,
-  TwoStepSetup,
-  WaysToSignIn,
   WhatsAppAdmin,
   WhatsAppCode,
   WhatsAppMe,
@@ -173,18 +169,9 @@ export function onSessionEnded(listener: (() => void) | null): void {
   sessionEnded = listener;
 }
 
-let googleLinkRequired: (() => void) | null = null;
-
-/** Who to tell when a reply says this session may only connect Google first (#507: 403
- * google_link_required); null stops telling. */
-export function onGoogleLinkRequired(listener: (() => void) | null): void {
-  googleLinkRequired = listener;
-}
-
 function noticeSessionEnd(error: ApiError): ApiError {
   const ended = error.status === 401 && error.code === "not_signed_in";
   if (ended || (error.status === 403 && error.code === "mfa_enrol_required")) sessionEnded?.();
-  if (error.status === 403 && error.code === "google_link_required") googleLinkRequired?.();
   return error;
 }
 
@@ -317,23 +304,14 @@ export const pageImageUrl = (documentId: string, pageNo: number) =>
 
 // --- auth ----------------------------------------------------------------------
 
-/** The one sign-in (16 Oct 2026). An admin also sends the code once the server asks
- * for it (401 code_required), or sets two-step up first (403 mfa_enrol_required). */
-export const login = (email: string, password: string, code?: string) =>
-  request<Me>("POST", "/auth/login", { email, password, ...(code === undefined ? {} : { code }) });
 export const logout = () => request<void>("POST", "/auth/logout");
-/** Whether anyone may create an organisation at /signup (SELF_SIGNUP_ENABLED). */
-export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/signup");
-/** A new organisation and its first admin. The reply is the two-step set-up (admins must
- * have it); the first code (adminEnrol) signs in as that admin. With email on (#457), the
- * email is confirmed first and the organisation waits for approval: SignUpConfirming. */
-export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
-  request<TwoStepSetup | SignUpConfirming>("POST", "/auth/signup", body);
+/** Keycloak's end-session address, to leave for after the sign-out so its session ends too (#737). */
+export const keycloakLogoutUrl = () => request<{ url: string }>("GET", "/auth/keycloak/logout-url");
 /** Who is signed in, 200 either way (issue 378): a signed-out visit logs no expected 401. */
 export const currentSession = () =>
   request<
     | { signed_in: true; me: Me }
-    | { signed_in: false; providers?: string[]; keycloak_enabled?: boolean }
+    | { signed_in: false; keycloak_enabled?: boolean }
   >("GET", "/auth/session");
 
 /** Start action-bound Keycloak verification. The backend owns the provider URL and callback. */
@@ -341,42 +319,9 @@ export const startKeycloakReauth = (
   action: "locked_open" | "delete_forever" | "whatsapp" | "access" | "locks",
   next: string,
 ) => request<{ url: string }>("POST", `/auth/keycloak/reauth/${action}/start`, { next });
-/** Prove the local password and MFA before linking this legacy account to Keycloak. */
-export const startKeycloakLink = (password: string, code: string, next: string) =>
-  request<{ url: string }>("POST", "/auth/keycloak/link/start", { password, code, next });
-
-// Ways to sign in (#457 phase 1): every route is 404 while no provider is switched on.
-/** After a provider for anyone with two-step sign-in on: the code (the second-step cookie). */
-export const oidcCode = (code: string) => request<Me>("POST", "/auth/oidc/code", { code });
-/** "isn't connected": the provider's email, kept out of the address, read once. */
-export const oidcNotice = () => request<{ email: string | null }>("GET", "/auth/oidc/notice");
-export const identities = () => request<WaysToSignIn>("GET", "/auth/identities");
-/** The password (and the code with two-step sign-in on), then the provider's address to open. */
-export const connectProvider = (provider: string, password: string, code?: string) =>
-  request<{ url: string }>("POST", `/auth/oidc/${encodeURIComponent(provider)}/connect`, {
-    password,
-    ...(code === undefined ? {} : { code }),
-  });
-/** Disconnect with the password, or cancel a waiting one with none (#457 review). The reply is
- * the new list. */
-export const removeIdentity = (id: string, password?: string) =>
-  request<WaysToSignIn>(
-    "POST",
-    `/auth/identities/${encodeURIComponent(id)}/remove`,
-    password === undefined ? {} : { password },
-  );
-
-// Kaagaz on WhatsApp (#603): Account, WhatsApp. The proof (password and code, or Google) is kept
-// 10 minutes in a cookie only /api/whatsapp reads.
+// Kaagaz on WhatsApp (#603): Account, WhatsApp. The proof (a fresh company sign-in for "whatsapp")
+// is kept 10 minutes in a cookie only /api/whatsapp reads.
 export const whatsappMe = () => request<WhatsAppMe>("GET", "/whatsapp/me");
-export const proveForWhatsApp = (password?: string, code?: string) =>
-  request<{ proved: true }>("POST", "/whatsapp/prove", {
-    ...(password === undefined ? {} : { password }),
-    ...(code === undefined ? {} : { code }),
-  });
-/** For one who signs in with Google only: the code first (two-step on), then Google's address to open. */
-export const proveWithGoogle = (code?: string) =>
-  request<{ url: string }>("POST", "/whatsapp/prove/google", code === undefined ? {} : { code });
 export const askWhatsAppCode = (number: string, way: "sent" | "phone") =>
   request<WhatsAppCode>("POST", "/whatsapp/codes", { number, agreed: true, way });
 export const verifyWhatsAppCode = (code: string) => request<WhatsAppMe>("POST", "/whatsapp/codes/verify", { code });
@@ -385,26 +330,8 @@ export const phoneCodeState = () =>
 export const confirmPhoneCode = () => request<WhatsAppMe>("POST", "/whatsapp/codes/phone/confirm");
 export const disconnectWhatsApp = () => request<WhatsAppMe>("POST", "/whatsapp/disconnect");
 
-/** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
-export const adminEnrol = (enrolToken: string, code: string) =>
-  request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
-/** Account, Two-step sign-in, Turn on (#457, any role): the password, then the set-up key; the
- * first code (adminEnrol) turns it on. */
-export const startTwoStep = (password: string) => request<TwoStepSetup>("POST", "/auth/2fa/start", { password });
-/** Turn off, for anyone: the password and a current code. An admin's stays off until they turn
- * it on again (Tushar, 30 Oct 2026). */
-export const turnOffTwoStep = (password: string, code: string) =>
-  request<Me>("POST", "/auth/2fa/off", { password, code });
-/** With two-step sign-in on, the code too (#457). */
-export const changePassword = (current: string, next: string, code?: string) =>
-  request<Me>("POST", "/auth/password", {
-    current_password: current,
-    new_password: next,
-    ...(code === undefined ? {} : { code }),
-  });
-
 // Email (#457 phase 0): every route is 404 while the server's email is off.
-/** Resolves while email is on (the sign-in page's "Forgot password?"); rejects with 404 when off. */
+/** Resolves while email is on; rejects with 404 when off. */
 export const emailOpen = () => request<{ enabled: boolean }>("GET", "/auth/email");
 /** ``pending``: the confirmed person's organisation is a sign-up waiting for approval. */
 export const confirmEmail = (token: string) =>
@@ -414,16 +341,7 @@ export const sendConfirmEmail = () => request<{ ok: true; sent: boolean }>("POST
 /** "Send the link again" with no session (a waiting sign-up's admin): always the same reply. */
 export const resendConfirmEmail = (email: string) =>
   request<{ message: string }>("POST", "/auth/email/resend-confirm", { email });
-/** Always the same reply, whoever the email belongs to. */
-export const forgotPassword = (email: string) => request<{ message: string }>("POST", "/auth/forgot", { email });
-export const resetPassword = (token: string, newPassword: string) =>
-  request<{ ok: boolean }>("POST", "/auth/reset", { token, new_password: newPassword });
-export const acceptInvite = (token: string, newPassword: string) =>
-  request<{ ok: boolean }>("POST", "/auth/invite/accept", { token, new_password: newPassword });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
-/** A granted member or reviewer types their password before Delete forever (a 5-minute cookie). */
-export const confirmPassword = (password?: string) =>
-  request<void>("POST", "/auth/confirm-password", password === undefined ? {} : { password });
 
 // --- documents -----------------------------------------------------------------
 
@@ -458,8 +376,7 @@ export const reprocessDocument = (id: string, reading?: UploadReading) =>
  * not_stoppable, in_trash or locked otherwise). The reply: failed with ``stopped``; Read again starts it again. */
 export const stopDocument = (id: string) => request<DocumentSummary>("POST", `/documents/${id}/stop`);
 /**
- * An admin session with two-step sign-in, or a granted user who just confirmed
- * their password (403 otherwise), and only from Trash (409 not_in_trash
+ * Delete forever: needs a company sign-in proven just now (403 keycloak_reauth_required), and only from Trash (409 not_in_trash
  * otherwise). Every version goes.
  */
 export const deleteDocumentForever = (id: string) =>
@@ -534,16 +451,12 @@ export const decideVersionGroup = (id: string, decision: GroupDecision, document
 /** The confirm step: which file Ask will answer from, where they'll be kept, who loses access. */
 export const previewLinkVersions = (body: LinkVersionsBody) =>
   request<LinkPreview>("POST", "/documents/link-versions/preview", body);
-/** 403 password_required when the link opens a file to the Admin linking it: send it again with it. */
-export const linkVersions = (body: LinkVersionsBody, password?: string) =>
-  request<{ link_id: string; document: DocumentSummary }>("POST", "/documents/link-versions", {
-    ...body,
-    ...(password === undefined ? {} : { password }),
-  });
+/** 403 keycloak_reauth_required when the link opens a file to the Admin linking it: the company sign-in first. */
+export const linkVersions = (body: LinkVersionsBody) =>
+  request<{ link_id: string; document: DocumentSummary }>("POST", "/documents/link-versions", body);
 /** V16: every version back as it was, while nothing newer joined. The reply is not read: V-A
  * answers the file's summary, or {id, undone: true} after its review fixes. */
-export const undoLinkVersions = (id: string, password?: string) =>
-  request<unknown>("POST", `${doc(id)}/link-versions/undo`, password === undefined ? undefined : { password });
+export const undoLinkVersions = (id: string) => request<unknown>("POST", `${doc(id)}/link-versions/undo`);
 export const listKeptApart = () => request<KeptApart>("GET", "/version-kept-apart");
 /** A5: every version of the family, newest first. */
 export const documentActivity = (id: string, cursor?: string) =>
@@ -1027,20 +940,20 @@ export const createFolder = (
     ...(department ? { kind: "department", sort_order: department.sort_order } : {}),
   });
 /** Rename, move or order. An explicit parent_id: null moves the folder to the top level. PRD 7
- * (#601): a move that opens what it holds to the admin making it takes their `password` (403
- * password_required without it). */
+ * (#601): a move that opens what it holds to the admin making it needs the company sign-in (403
+ * keycloak_reauth_required without it). */
 export const updateFolder = (
   id: string,
-  changes: { name?: string; parent_id?: string | null; sort_order?: number | null; password?: string },
+  changes: { name?: string; parent_id?: string | null; sort_order?: number | null },
 ) => request<Folder>("PATCH", `/folders/${id}`, changes);
 export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
 /** #537, an admin's: move what is inside to `to` (null: the top level) or send it all to Trash,
  * then delete the folder. The reply: what moved, or the files that went to Trash. PRD 7 (#601): a
  * keep that changes who can see it is 409 access_would_change until it is sent with `confirm`;
- * a confirmed one that opens it to the admin takes their `password` (403 password_required). */
+ * a confirmed one that opens it to the admin needs the company sign-in (403 keycloak_reauth_required). */
 export const deleteFolderWithContents = (
   id: string,
-  what: { contents: "keep"; to: string | null; confirm?: boolean; password?: string } | { contents: "trash" },
+  what: { contents: "keep"; to: string | null; confirm?: boolean } | { contents: "trash" },
 ) =>
   request<{ files: number; folders: number }>(
     "DELETE",
@@ -1049,12 +962,11 @@ export const deleteFolderWithContents = (
       to: what.contents === "keep" ? (what.to ?? undefined) : undefined,
       confirm: what.contents === "keep" && what.confirm ? true : undefined,
     })}`,
-    what.contents === "keep" && what.password !== undefined ? { password: what.password } : undefined,
   );
 export const folderSummary = (id: string) => request<FolderSummary>("GET", `/folders/${id}/summary`);
 /** #542: Trash's folders; one opened (its files: listDocuments with trashed_folder_id); Restore puts
- * one back where it was; delete forever has a document's rule (an admin with two-step, or a typed
- * password). Under /documents/trash, where the typed password's cookie is sent. */
+ * one back where it was; delete forever has a document's rule (a fresh company sign-in first).
+ * Under /documents/trash, where the proof's cookie is sent. */
 export const listTrashedFolders = () => request<{ items: TrashedFolder[] }>("GET", "/documents/trash/folders");
 export const getTrashedFolder = (id: string) =>
   request<TrashedFolderContents>("GET", `/documents/trash/folders/${id}`);
@@ -1435,71 +1347,49 @@ export async function verifyAllReview(filters: { document_id?: string; reason?: 
 // --- admin ---------------------------------------------------------------------
 
 export const listUsers = () => request<{ items: AdminUser[] }>("GET", "/admin/users");
-export const createUser = (user: {
-  email: string;
-  display_name: string;
-  role: Role;
-  password: string;
-}) => request<AddedUser>("POST", "/admin/users", user);
+export const createUser = (user: { email: string; display_name: string; role: Role }) =>
+  request<AddedUser>("POST", "/admin/users", user);
 export const updateUser = (
   id: string,
-  changes: { role?: Role; disabled?: boolean; password?: string },
+  changes: { role?: Role; disabled?: boolean },
 ) => request<AdminUser>("PATCH", `/admin/users/${id}`, changes);
 export const unlockUser = (id: string) => request<AdminUser>("POST", `/admin/users/${id}/unlock`);
-export const resetUserPassword = (id: string) =>
-  request<PasswordReset>("POST", `/admin/users/${id}/reset-password`);
 export const resetUser2fa = (id: string) =>
-  request<AdminUser>("POST", `/admin/users/${id}/reset-2fa`);
-/** Allow or stop a member's or reviewer's Delete forever; allowing needs your two-step sign-in. */
+  request<AdminUser & ResultLine>("POST", `/admin/users/${id}/reset-2fa`);
+/** Email the person a new link to set their password and authenticator (#737). */
+export const resendSetup = (id: string) => request<ResultLine>("POST", `/admin/users/${id}/resend-setup`);
+/** Allow or stop a member's or reviewer's Delete forever. */
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
 /** What this organisation has stored, Trash included, and its storage limit (#516). */
 export const getAdminStorage = () => request<AdminStorage>("GET", "/admin/storage");
-/** "Approve new sign-in connections automatically" (#457 phase 1); nothing else changes. */
-export const setAutoApprove = (on: boolean) =>
-  request<CustomerSettings>("PATCH", "/admin/settings", { auto_approve_connections: on });
-/** Connections to approve (#457 phase 1); each reply is the list left. */
-export const pendingConnections = () =>
-  request<{ items: PendingConnection[] }>("GET", "/admin/identities?status=pending");
-export const approveConnection = (id: string) =>
-  request<{ items: PendingConnection[] }>("POST", `/admin/identities/${encodeURIComponent(id)}/approve`);
-export const declineConnection = (id: string) =>
-  request<{ items: PendingConnection[] }>("POST", `/admin/identities/${encodeURIComponent(id)}/decline`);
-/** Every connected account of this person goes, and they are signed out; the password stays. */
-export const removeConnections = (id: string) =>
-  request<AdminUser>("POST", `/admin/users/${encodeURIComponent(id)}/remove-connections`);
-// Kaagaz on WhatsApp (#603): the Admin's switches and who is connected. Turning it on needs the password.
+// Kaagaz on WhatsApp (#603): the Admin's switches and who is connected. Turning it on needs the company sign-in.
 export const adminWhatsApp = () => request<WhatsAppAdmin>("GET", "/admin/whatsapp");
 export const saveAdminWhatsApp = (
   settings: Pick<WhatsAppAdmin, "enabled" | "roles" | "management" | "voice" | "uploads">,
-  password?: string, // with the data rules tick: turning it on
-  rulesConfirmed = false,
+  rulesConfirmed = false, // the data rules tick: turning it on
 ) =>
   request<WhatsAppAdmin>("PUT", "/admin/whatsapp", {
     ...settings,
-    ...(password === undefined ? {} : { password }),
-    ...(rulesConfirmed || password !== undefined ? { rules_confirmed: true } : {}),
+    ...(rulesConfirmed ? { rules_confirmed: true } : {}),
   });
 export const adminDisconnectWhatsApp = (userId: string) =>
   request<WhatsAppAdmin>("POST", `/admin/whatsapp/${encodeURIComponent(userId)}/disconnect`);
 
 // --- access (PRD 7, #601) --------------------------------------------------------------------
-// Every write that can give the admin themselves access takes their `password` (403
-// password_required without it; components/access/passwordStep.ts).
+// Every write that can give the admin themselves access needs a fresh company sign-in (403
+// keycloak_reauth_required without it; components/access/proofStep.ts).
 
 /** A path part: an id typed into the address bar may hold "/" or "?". */
 const segment = (part: string) => encodeURIComponent(part);
 /** #707: My access, the signed-in person's own. */
 export const getMyAccess = () => request<MyAccess>("GET", "/me/access");
 export const getPersonAccess = (userId: string) => request<PersonAccess>("GET", `/admin/users/${segment(userId)}/access`);
-export const setManagement = (userId: string, on: boolean, password?: string) =>
-  request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, {
-    on,
-    ...(password === undefined ? {} : { password }),
-  });
+export const setManagement = (userId: string, on: boolean) =>
+  request<AdminUser>("PUT", `/admin/users/${segment(userId)}/management`, { on });
 /** Adds the person to the department, or sets their Head tick; `head` left out keeps the tick. */
-export const putMembership = (userId: string, departmentId: string, change: { head?: boolean; password?: string } = {}) =>
+export const putMembership = (userId: string, departmentId: string, change: { head?: boolean } = {}) =>
   request<{ head: boolean; changed: boolean }>("PUT", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`, change);
 export const removeMembership = (userId: string, departmentId: string) =>
   request<void>("DELETE", `/admin/users/${segment(userId)}/departments/${segment(departmentId)}`);
@@ -1509,37 +1399,29 @@ export const listDepartmentMembers = (departmentId: string) =>
   request<{ items: DepartmentMember[] }>("GET", `/admin/departments/${segment(departmentId)}/members`);
 export const departmentOnlyPreview = (departmentId: string, on: boolean) =>
   request<PlacePreview>("GET", `/admin/departments/${segment(departmentId)}/department-only/preview${query({ on })}`);
-export const setDepartmentOnly = (departmentId: string, on: boolean, password?: string) =>
+export const setDepartmentOnly = (departmentId: string, on: boolean) =>
   request<{ department_only: boolean; members: number; warnings: string[] }>(
     "PUT",
     `/admin/departments/${segment(departmentId)}/department-only`,
-    { on, ...(password === undefined ? {} : { password }) },
+    { on },
   );
-export const addNamed = (folderId: string, userId: string, password?: string) =>
-  request<{ changed: boolean }>(
-    "PUT",
-    `/folders/${segment(folderId)}/named/${segment(userId)}`,
-    password === undefined ? {} : { password },
-  );
+export const addNamed = (folderId: string, userId: string) =>
+  request<{ changed: boolean }>("PUT", `/folders/${segment(folderId)}/named/${segment(userId)}`, {});
 export const removeNamed = (folderId: string, userId: string) =>
   request<void>("DELETE", `/folders/${segment(folderId)}/named/${segment(userId)}`);
-export const giveFile = (documentId: string, userId: string, password?: string) =>
+export const giveFile = (documentId: string, userId: string) =>
   request<{ versions: number; changed: boolean }>(
     "PUT",
     `/documents/${segment(documentId)}/shares/${segment(userId)}`,
-    password === undefined ? {} : { password },
+    {},
   );
 export const takeFile = (documentId: string, userId: string) =>
   request<void>("DELETE", `/documents/${segment(documentId)}/shares/${segment(userId)}`);
 
 // PR 11b: the library's access.
 /** Give files to people at once (at most 100 files and 20 people): how many pairs were new. */
-export const giveFiles = (documentIds: readonly string[], userIds: readonly string[], password?: string) =>
-  request<{ given: number }>("POST", "/documents/shares", {
-    document_ids: documentIds,
-    user_ids: userIds,
-    ...(password === undefined ? {} : { password }),
-  });
+export const giveFiles = (documentIds: readonly string[], userIds: readonly string[]) =>
+  request<{ given: number }>("POST", "/documents/shares", { document_ids: documentIds, user_ids: userIds });
 export type AudienceKind = "documents" | "folders";
 export const getAudience = (kind: AudienceKind, id: string) => request<Audience>("GET", `/${kind}/${segment(id)}/audience`);
 export const checkAudience = (kind: AudienceKind, id: string, userId: string) =>
@@ -1552,12 +1434,11 @@ export const privatePreview = (folderId: string, on: boolean, named: readonly st
   request<PlacePreview>("GET", `/folders/${segment(folderId)}/private/preview${query({ on, named })}`);
 /** Make it private, naming people on it (and, PR 10c, `dropNamed`: people named before taken off in
  * the same transaction; sent only when there are some), or open again (`named` only with `on`). */
-export const setPrivate = (folderId: string, on: boolean, named: readonly string[], password?: string, dropNamed: readonly string[] = []) =>
+export const setPrivate = (folderId: string, on: boolean, named: readonly string[], dropNamed: readonly string[] = []) =>
   request<{ private: boolean; named: Person[]; you_lose_access: boolean }>("PUT", `/folders/${segment(folderId)}/private`, {
     on,
     named,
     ...(dropNamed.length ? { drop_named: dropNamed } : {}),
-    ...(password === undefined ? {} : { password }),
   });
 /** PRD 7 PR 10c (#601): who would lose and gain a file, or what a folder holds, were it moved into
  * `into` (null: the top level). The person a file is held for gets counts only (`losing_count`,
@@ -1566,13 +1447,11 @@ export const documentMovePreview = (documentId: string, into: string | null) =>
   request<MovePreview>("GET", `/documents/${segment(documentId)}/move-preview${query({ folder_id: into ?? undefined })}`);
 export const folderMovePreview = (folderId: string, into: string | null) =>
   request<MovePreview>("GET", `/folders/${segment(folderId)}/move-preview${query({ parent_id: into ?? undefined })}`);
-/** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when
- * given, replaces the three Google sign-in rules; left out, they stay. */
-export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean, google?: GoogleRulesChange) =>
+/** ``autofileOn`` left out: the switch is left as it is (feature 28). */
+export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean) =>
   request<CustomerSettings>("PATCH", "/admin/settings", {
     max_upload_mb: maxUploadMb,
     ...(autofileOn === undefined ? {} : { autofile_on: autofileOn }),
-    ...(google === undefined ? {} : { google }),
   });
 /** A5: the admin log, filtered (stage 3); `cursor` is the reply's `next`. The older reply pages by offset. */
 export type AuditParams = {
@@ -1785,21 +1664,13 @@ export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GE
 export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
   request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
 
-/** Operator: whether one organisation's admins must have two-step sign-in (#481, 0068); off by default. */
-const adminTwoStepPath = (orgId: string) => `/operator/orgs/${encodeURIComponent(orgId)}/admin-two-step`;
-export const getAdminTwoStep = (orgId: string) => request<{ required: boolean }>("GET", adminTwoStepPath(orgId));
-/** Require it or stop requiring it, with a fresh code (step-up). */
-export const setAdminTwoStep = (orgId: string, required: boolean, code: string) =>
-  request<{ required: boolean }>("PUT", adminTwoStepPath(orgId), { required, code });
-/** Operator: Google sign-in (#507), one organisation's (null: follow the platform) and the
- * platform's default; each change needs a fresh code (step-up). */
-const orgGooglePath = (orgId: string) => `/operator/orgs/${encodeURIComponent(orgId)}/google-signin`;
-export const getOrgGoogleSignIn = (orgId: string) => request<OrgGoogleSignIn>("GET", orgGooglePath(orgId));
-export const setOrgGoogleSignIn = (orgId: string, on: boolean | null, code: string) =>
-  request<OrgGoogleSignIn>("PUT", orgGooglePath(orgId), { on, code });
-export const getGoogleSignIn = () => request<{ on: boolean }>("GET", "/operator/google-signin");
-export const setGoogleSignIn = (on: boolean, code: string) =>
-  request<{ on: boolean }>("PUT", "/operator/google-signin", { on, code });
+/** Operator (#737): how many people are on company sign-in, moving the rest, and one person's setup email. */
+export const getSignInSummary = (orgId: string) =>
+  request<SignInSummary>("GET", `/operator/orgs/${encodeURIComponent(orgId)}/sign-in`);
+export const moveEveryone = (orgId: string, code: string) =>
+  request<MoveResult>("POST", `/operator/orgs/${encodeURIComponent(orgId)}/move-everyone`, { code });
+export const resendOrgSetup = (orgId: string, userId: string) =>
+  request<ResultLine>("POST", `/operator/orgs/${encodeURIComponent(orgId)}/people/${encodeURIComponent(userId)}/resend-setup`);
 /** Operator: the folder upload limits (#484), the platform's or one organisation's; saving needs a fresh code. */
 const folderLimitsPath = (orgId?: string) =>
   orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/folder-upload-limits` : "/operator/folder-upload-limits";
@@ -1839,36 +1710,22 @@ export const lockedPageUrl = (documentId: string, pageNo: number) =>
   `/api/documents/${encodeURIComponent(documentId)}/locked-pages/${pageNo}`;
 /** Whether this browser's 10-minute check is live, and how this person confirms. */
 export const getLockedOpen = () => request<LockedOpen>("GET", "/documents/locked-open");
-/** The person's own Kaagaz password, never a two-step code (decision 5): opens every locked file
- * they may open for 10 minutes in this browser. */
-export const openLocked = (password?: string) =>
-  request<LockedOpen>("POST", "/documents/locked-open", password === undefined ? {} : { password });
-/** A person who signs in with Google only confirms with a fresh Google sign-in; Google comes back
- * to `next`. */
-export const confirmWithGoogle = (next: string) =>
-  request<{ url: string }>("POST", "/auth/oidc/google/confirm", { next });
+/** After a fresh company sign-in for locked_open (else 403 keycloak_reauth_required): opens every
+ * locked file they may open for 10 minutes in this browser. */
+export const openLocked = () => request<LockedOpen>("POST", "/documents/locked-open");
 /** The lock dialog's people: everyone who can see the file today, and the Admin (you). */
 export const lockPreview = (id: string) =>
   request<{ people: LockPerson[] }>("GET", `/documents/${encodeURIComponent(id)}/lock-preview`);
 /** The bulk bar's: everyone who can see any of the files. */
 export const lockPreviewMany = (ids: readonly string[]) =>
   request<{ people: LockPerson[] }>("POST", "/documents/lock-preview", { document_ids: ids });
-export const lockDocument = (id: string, openTo: readonly string[], password?: string) =>
+export const lockDocument = (id: string, openTo: readonly string[]) =>
   request<{ locked: true; versions: number; open_to: number }>("POST", `/documents/${encodeURIComponent(id)}/lock`, {
     open_to: openTo,
-    ...(password === undefined ? {} : { password }),
   });
 /** All or nothing: a 409 carries `refused: [{id, reason}]` in its details. */
-export const lockDocuments = (ids: readonly string[], openTo: readonly string[], password?: string) =>
-  request<{ locked: number }>("POST", "/documents/lock", {
-    document_ids: ids,
-    open_to: openTo,
-    ...(password === undefined ? {} : { password }),
-  });
+export const lockDocuments = (ids: readonly string[], openTo: readonly string[]) =>
+  request<{ locked: number }>("POST", "/documents/lock", { document_ids: ids, open_to: openTo });
 /** `reading`: its current version is read again (PR 12's unlock_file). */
-export const unlockDocument = (id: string, password?: string) =>
-  request<{ unlocked: true; reading: boolean }>(
-    "POST",
-    `/documents/${encodeURIComponent(id)}/unlock`,
-    password === undefined ? {} : { password },
-  );
+export const unlockDocument = (id: string) =>
+  request<{ unlocked: true; reading: boolean }>("POST", `/documents/${encodeURIComponent(id)}/unlock`, {});

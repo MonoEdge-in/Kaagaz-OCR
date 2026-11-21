@@ -207,13 +207,9 @@ def test_tags_need_a_session_and_writes_need_the_csrf_header(db: Database) -> No
     assert reply.json()["error"]["code"] == "csrf"
 
 
-def test_deleting_a_tag_needs_an_admin_with_two_step_sign_in_on(db: Database) -> None:
+def test_an_admin_session_deletes_a_tag(db: Database) -> None:
     api = Api(db)
     customer_id, _ = api.customer()
-    _, email = api.add_user(customer_id, "admin")
-    # 2FA off: no session at all since 0035, so nothing to delete with.
-    refused = api.admin_login(api.client(), email)
-    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "mfa_enrol_required")
     admin = api.admin_sign_in(customer_id)
     made = admin.client.post("/api/tags", json={"name": "GST"}, headers=CSRF)
     assert made.status_code == 201

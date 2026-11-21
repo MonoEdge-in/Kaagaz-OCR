@@ -17,8 +17,6 @@ export const BANNER_TEXT =
 // added later gets its line here, unless it holds a token, a password or a code.
 export const PAGE_TITLES: Readonly<Record<string, string>> = {
   "/login": "Sign in",
-  "/signup": "Sign up",
-  "/forgot-password": "Forgot password",
 };
 
 // NEXT_PUBLIC_GA_ID, when it is a GA4 measurement id ("G-" then letters and digits).
@@ -28,7 +26,7 @@ export function gaId(raw: string | undefined): string | null {
   return /^G-[A-Za-z0-9]+$/.test(id) ? id : null;
 }
 
-// The path alone: "/reset-password#t=..." is "/reset-password".
+// The path alone: "/email/confirm#t=..." is "/email/confirm".
 export function pagePath(path: string): string {
   return path.split(/[?#]/, 1)[0] || "/";
 }

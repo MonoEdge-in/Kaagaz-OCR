@@ -32,7 +32,6 @@ const person = (role: Me["user"]["role"], scope: "app" | "admin", management = f
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
     access: { management },
-    providers: [],
   }) as unknown as Me;
 
 let doc: FakeDocument;

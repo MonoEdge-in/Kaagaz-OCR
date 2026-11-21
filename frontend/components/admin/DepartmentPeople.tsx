@@ -2,14 +2,13 @@
 
 // A department's people (PRD 7 PR 11a, #604), opened from its row on the Departments tab: each with
 // the Head tick (taking it away asks first) and Remove (asked first), and Add people (the picker,
-// then one add per person: me first, so my password is asked before anyone is added; a person who
+// then one add per person: me first, so a company sign-in check comes before anyone is added; a person who
 // can't be added is said, stays ticked, and the others are still added). Ticking yourself Head
-// asks for your password. Read each time it opens (GET /admin/departments/{id}/members), never kept.
+// needs a fresh company sign-in. Read each time it opens (GET /admin/departments/{id}/members), never kept.
 
 import { useEffect, useState } from "react";
 import { addPeople } from "@/components/access/addPeople";
 import { PeoplePicker } from "@/components/access/PeoplePicker";
-import { asksFirst } from "@/components/access/passwordStep";
 import {
   ACCESS_REMOVED,
   ADD_PEOPLE,
@@ -49,7 +48,7 @@ export function DepartmentPeople({
   me: Person;
   adding: boolean; // the picker is open (also from the dialog's and the warning's Add people)
   onAdding(adding: boolean): void;
-  run<T>(what: string, send: (password?: string) => Promise<T>, first: boolean): Promise<T | null>;
+  run<T>(send: () => Promise<T>): Promise<T | null>;
   onChanged(): void; // the department's counts changed
   onNotice(notice: Notice): void;
 }) {
@@ -91,8 +90,7 @@ export function DepartmentPeople({
 
   const head = (member: DepartmentMember, on: boolean) =>
     change(async () => {
-      const first = asksFirst({ myId: me.id, targetId: member.id, on });
-      const reply = await run(department.name, (password) => putMembership(member.id, department.id, { head: on, password }), first);
+      const reply = await run(() => putMembership(member.id, department.id, { head: on }));
       return reply?.changed ? { text: headToast(member.name, department.name, on) } : null;
     });
 
@@ -102,7 +100,7 @@ export function DepartmentPeople({
       const result = await addPeople(
         people,
         me.id,
-        (person, first) => run(department.name, (password) => putMembership(person.id, department.id, { password }), first),
+        (person) => run(() => putMembership(person.id, department.id)),
         accessErrorText,
       );
       if (result.cancelled) return null; // nobody was added; the picker stays as it was

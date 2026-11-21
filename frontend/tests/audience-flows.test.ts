@@ -1,6 +1,7 @@
 // PRD 7 PR 11b (#604, review): the Audience panel pressed, in the small fake DOM (tests/fake-dom.ts)
 // against a fake fetch. A Head naming themselves sends no password and is never asked for one (the
-// server asks it of an Admin only); an Admin naming themselves is asked first. Make open again
+// server asks it of an Admin only); an Admin naming themselves meets the server's 403
+// keycloak_reauth_required and the company sign-in starts (#737). Make open again
 // takes the server's reply as the folder's state at once, and says what changed inside the dialog.
 
 import { act, createElement } from "react";
@@ -26,7 +27,10 @@ function serve(routes: Record<string, unknown>) {
     calls.push({ url, method, body: init.body ? JSON.parse(String(init.body)) : undefined });
     const reply = routes[`${method} ${url}`];
     if (reply === undefined) throw new Error(`no route for ${method} ${url}`);
-    return new Response(JSON.stringify(reply), { status: 200, headers: { "Content-Type": "application/json" } });
+    const { status, body } = (reply as { status?: number; body?: unknown }).status
+      ? (reply as { status: number; body: unknown })
+      : { status: 200, body: reply };
+    return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
   });
 }
 
@@ -90,13 +94,23 @@ describe("naming yourself on a private folder", () => {
     expect(screen.textContent).toContain("Asha can now see Salaries.");
   });
 
-  it("as an Admin: asked for the password first, nothing sent yet", async () => {
-    const { screen } = await open(ADMIN, {});
+  it("as an Admin: the server asks for a fresh sign-in, the company sign-in starts, and nothing is added", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("window", { ...window, location: { pathname: "/documents", origin: "https://kaagaz.example", assign } });
+    const { screen, onChanged } = await open(ADMIN, {
+      "PUT /api/folders/sal/named/me": {
+        status: 403,
+        body: { error: { code: "keycloak_reauth_required", message: "Sign in again to go on." } },
+      },
+      "POST /api/auth/keycloak/reauth/access/start": { url: "https://idp.example/authorize" },
+    });
     await press(button(screen, "Add people"));
     await tick(screen, "Asha");
     await press(button(screen, "Add people to “Salaries”"));
-    expect(calls.filter((call) => call.method === "PUT")).toEqual([]);
-    expect(screen.textContent).toContain("Confirm it's you");
+    expect(calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+    expect(assign).toHaveBeenCalledWith("https://idp.example/authorize");
+    expect(screen.textContent).not.toContain("Confirm it's you");
+    expect(onChanged).not.toHaveBeenCalled();
   });
 });
 

@@ -20,6 +20,7 @@ from typing import Any
 
 import psycopg
 from sqlalchemy import Connection, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from kaagaz.db.engine import Database, make_engine
@@ -353,3 +354,40 @@ def wait_until_blocked(db: Database, *, application_name: str, timeout: float = 
                 return
         time.sleep(0.02)
     raise AssertionError(f"{application_name} never waited on a lock")
+
+
+def _write_as_owner(db: Database, statement: str, params: dict[str, Any] | None = None) -> None:
+    """One write as the owner: on ``db`` itself when that is the owner's login, else on the owner's own
+    engine for the step (a test may build the app on a limited login)."""
+    if db.engine.url.username == make_url(database_url()).username:
+        with db.engine.begin() as conn:
+            conn.execute(text(statement), params or {})
+        return
+    owner_url = make_url(database_url())  # the owner's login, on db's own database
+    url = db.engine.url.set(username=owner_url.username, password=owner_url.password)
+    owner = make_database(url.render_as_string(hide_password=False))
+    try:
+        with owner.engine.begin() as conn:
+            conn.execute(text(statement), params or {})
+    finally:
+        owner.engine.dispose()
+
+
+def mark_keycloak(db: Database, customer_id: str, user_id: str) -> None:
+    """Make this person a company sign-in (Keycloak) user. The API may not write ``auth_authority`` (0103)."""
+    _write_as_owner(
+        db,
+        "UPDATE users SET auth_authority = 'keycloak' WHERE customer_id = :c AND id = :u",
+        {"c": customer_id, "u": user_id},
+    )
+
+
+def clear_keycloak_state(db: Database, customer_id: str) -> None:
+    """Put this organisation's people back on the pre-0103 authority. For a test of another migration's
+    downgrade that signs people in first (sign-in marks them Keycloak, which 0103's downgrade refuses)
+    and must refuse for its own reason. Sign-in writes no identity, session or flow rows."""
+    _write_as_owner(
+        db,
+        "UPDATE users SET auth_authority = 'legacy' WHERE customer_id = :c AND auth_authority = 'keycloak'",
+        {"c": customer_id},
+    )

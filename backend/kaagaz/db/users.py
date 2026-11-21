@@ -27,7 +27,7 @@ condition, and PostgreSQL re-checks that condition after waiting for a row
 lock. Times always come in as ``now`` from the injected clock, never SQL
 ``now()``, so tests move the clock instead of sleeping.
 
-Every admin-facing statement (list, create, update, set_password, unlock,
+Every admin-facing statement (list, create, update, unlock,
 reset_totp, set_delete_forever) returns the same columns: the ``AdminUser``
 columns plus ``locked_until``, ``totp_enabled_at``, ``totp_off_at``, ``must_change_password``,
 ``session_version``, ``delete_forever_allowed_at`` and ``two_step_required`` (0068). None
@@ -44,7 +44,6 @@ from datetime import datetime, timedelta
 from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db.google_rules import passing_link, unchecked
 from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
 
 
@@ -85,13 +84,6 @@ class AttemptRow:
     customer_active: bool
     # A sign-up waiting for an operator's approval (0061): refused with its own 403.
     customer_pending: bool = False
-    # Google sign-in (#507, ``_GOOGLE_COLUMNS``): the organisation's switch, else the platform's;
-    # the role may use Google; the role uses Google only; a passing link; the domains.
-    google_on: bool = True
-    google_allowed: bool = True
-    google_only: bool = False
-    google_linked: bool = False
-    google_domains: tuple[str, ...] = ()
 
 
 def login_lookup(conn: Connection, email: str) -> LoginRow | None:
@@ -219,36 +211,17 @@ def peek_attempt(conn: Connection, customer_id: str, user_id: str, *, now: datet
     return None if row is None else _attempt(row)
 
 
-# Google sign-in for the user ``u`` (#507). ``google_on``: the organisation's own switch, else the
-# platform's (the GOOGLE_SIGNIN_ENABLED master switch is the caller's). ``google_link``: the
-# user's one Google connection (status, hosted_domain, email_at_link; NULL: none), which
-# ``google_linked`` judges with ``google_rules.passing_link``, the rule every path uses. Read by
-# the sign-ins (``_ATTEMPT_COLUMNS``) and every request (``session_user``).
-_GOOGLE_COLUMNS = (
-    " COALESCE((SELECT gc.google_signin FROM customers gc WHERE gc.id = u.customer_id),"
-    " (SELECT gp.google_signin FROM platform_ai_settings gp LIMIT 1), true) AS google_on,"
-    " EXISTS (SELECT 1 FROM customers gc WHERE gc.id = u.customer_id"
-    " AND u.role = ANY (gc.google_roles)) AS google_allowed,"
-    " EXISTS (SELECT 1 FROM customers gc WHERE gc.id = u.customer_id"
-    " AND u.role = ANY (gc.google_only_roles)) AS google_only,"
-    " (SELECT ARRAY[gi.status, gi.hosted_domain, gi.email_at_link] FROM user_identities gi"
-    " WHERE gi.customer_id = u.customer_id AND gi.user_id = u.id AND gi.provider = 'google')"
-    " AS google_link,"
-    " COALESCE((SELECT gc.google_domains FROM customers gc WHERE gc.id = u.customer_id),"
-    " '{}') AS google_domains"
-)
-
 # What a sign-in needs, with whether the customer is active or a pending sign-up (0014, 0061).
 # "Turned off" counts only while the organisation does not require two-step for admins (0068).
 _ATTEMPT_COLUMNS = (
-    " u.id, u.customer_id, u.password_hash, u.role, u.auth_authority, u.disabled, u.session_version,"  # noqa: S608 - fixed fragments
+    " u.id, u.customer_id, u.password_hash, u.role, u.auth_authority, u.disabled, u.session_version,"
     " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
     " CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.id = u.customer_id"
     " AND c.admin_two_step_required) THEN NULL ELSE u.totp_off_at END AS totp_off_at,"
     " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
     " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active,"
     " EXISTS (SELECT 1 FROM customers c"
-    " WHERE c.id = u.customer_id AND c.status = 'pending') AS customer_pending," + _GOOGLE_COLUMNS
+    " WHERE c.id = u.customer_id AND c.status = 'pending') AS customer_pending"
 )
 
 
@@ -257,7 +230,10 @@ _ATTEMPT_COLUMNS = (
 _ADMIN_COLUMNS = (
     " u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
     " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
-    " u.session_version, u.delete_forever_allowed_at, EXISTS (SELECT 1 FROM customers c"
+    " u.session_version, u.delete_forever_allowed_at,"
+    " CASE WHEN u.auth_authority <> 'keycloak' THEN 'not_moved'"
+    " WHEN u.last_login_at IS NULL THEN 'waiting' ELSE 'connected' END AS company_state,"
+    " EXISTS (SELECT 1 FROM customers c"
     " WHERE c.id = u.customer_id AND c.admin_two_step_required) AS two_step_required, u.management"
 )
 
@@ -280,42 +256,6 @@ def _attempt(row: RowMapping) -> AttemptRow:
         failed_logins=int(row["failed_logins"]),
         customer_active=bool(row["customer_active"]),
         customer_pending=bool(row["customer_pending"]),
-        google_on=bool(row["google_on"]),
-        google_allowed=bool(row["google_allowed"]),
-        google_only=bool(row["google_only"]),
-        google_linked=google_linked(row),
-        google_domains=tuple(row["google_domains"]),
-    )
-
-
-def google_linked(row: RowMapping) -> bool:
-    """A passing Google link (#507), from ``_GOOGLE_COLUMNS``' ``google_link`` and
-    ``google_domains`` (one per user: 0062's unique (customer, user, provider))."""
-    link = row["google_link"]
-    return link is not None and passing_link(link[0], row["google_domains"], link[1], link[2])
-
-
-def google_unchecked(row: RowMapping) -> bool:
-    """An approved Google link whose domain is not checked yet (#507 review,
-    ``google_rules.unchecked``): Google's next sign-in checks it."""
-    link = row["google_link"]
-    return link is not None and link[0] == "approved" and unchecked(row["google_domains"], link[1], link[2])
-
-
-def enrol_still_open(conn: Connection, customer_id: str, user_id: str, session_version: int) -> bool:
-    """Can an enrol token for this user and session version still be used? Only
-    for an enabled user (any role since #457) with no two-step code yet, no temporary
-    password, and the same session version as when the token was made. Read only: nothing
-    is counted. O(log n)."""
-    return bool(
-        conn.execute(
-            text(
-                "SELECT EXISTS (SELECT 1 FROM users WHERE customer_id = :c AND id = :u"
-                " AND NOT disabled AND NOT must_change_password"
-                " AND totp_enabled_at IS NULL AND session_version = :v)"
-            ),
-            {"c": customer_id, "u": user_id, "v": session_version},
-        ).scalar()
     )
 
 
@@ -392,60 +332,7 @@ def sweep_ended_sessions(conn: Connection, before: datetime) -> int:
     return swept
 
 
-def set_password(
-    conn: Connection, customer_id: str, user_id: str, *, password_hash: str, must_change: bool
-) -> RowMapping | None:
-    """A new password: the user's own (``must_change=False``) or a temporary one
-    from an admin (``must_change=True``). Raises ``session_version``, so every
-    other session ends. O(log n)."""
-    return (
-        conn.execute(
-            text(
-                "UPDATE users AS u SET password_hash = :hash, must_change_password = :must_change,"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
-                " session_version = u.session_version + 1"
-                " WHERE u.customer_id = :c AND u.id = :u"
-                " AND u.auth_authority = 'legacy'"
-                " RETURNING" + _ADMIN_COLUMNS
-            ),
-            {"c": customer_id, "u": user_id, "hash": password_hash, "must_change": must_change},
-        )
-        .mappings()
-        .first()
-    )
-
-
 # --- two-step codes ---------------------------------------------------------------------
-
-
-def enrol_totp(
-    conn: Connection,
-    customer_id: str,
-    user_id: str,
-    *,
-    secret_enc: str,
-    step: int,
-    now: datetime,
-    ver: int,
-) -> bool:
-    """Turn on two-step sign-in with a sealed secret whose first code (``step``) was
-    just checked. False unless the user is enabled and unlocked (any role since #457), with no
-    pending password change, not yet enrolled, and still on session version
-    ``ver`` (the enrol token's), so an enrol token works once and only while
-    nothing has changed. Clears "turned off" (``totp_off_at``, 0061b). O(log n)."""
-    row = conn.execute(
-        text(
-            "UPDATE users AS u SET totp_secret_enc = :enc, totp_enabled_at = :now, totp_last_step = :step,"
-            " totp_off_at = NULL"
-            " WHERE u.customer_id = :c AND u.id = :u"
-            " AND u.auth_authority = 'legacy'"
-            " AND u.totp_enabled_at IS NULL AND u.session_version = :ver"
-            " AND NOT u.disabled AND NOT u.must_change_password"
-            " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
-            " RETURNING u.id"
-        ),
-        {"c": customer_id, "u": user_id, "enc": secret_enc, "step": step, "now": now, "ver": ver},
-    ).first()
-    return row is not None
 
 
 def accept_totp_step(conn: Connection, customer_id: str, user_id: str, step: int) -> bool:
@@ -482,29 +369,6 @@ def reset_totp(conn: Connection, customer_id: str, user_id: str) -> RowMapping |
     )
 
 
-def turn_off_totp(conn: Connection, customer_id: str, user_id: str, *, now: datetime) -> int | None:
-    """The user turns their own two-step sign-in off, after the password and a right code
-    (``accept_totp_step``, so a code is never accepted twice): the code is cleared and
-    ``session_version`` raised, so every other session ends. An admin's ``totp_off_at`` is
-    set (0061b: they sign in with the password alone until they turn it on again); anyone
-    else's is cleared. The new version, or None if it is not on (another request turned it
-    off a moment ago). O(log n)."""
-    version: object = conn.execute(
-        text(
-            "UPDATE users AS u SET totp_secret_enc = NULL, totp_enabled_at = NULL, totp_last_step = NULL,"
-            " totp_off_at = CASE WHEN u.role = 'admin' THEN CAST(:now AS timestamptz) ELSE NULL END,"
-            " session_version = u.session_version + 1"
-            " WHERE u.customer_id = :c AND u.id = :u AND u.auth_authority = 'legacy'"
-            " AND u.totp_enabled_at IS NOT NULL"
-            " RETURNING u.session_version"
-        ),
-        {"c": customer_id, "u": user_id, "now": now},
-    ).scalar()
-    if version is not None and not isinstance(version, int):
-        raise TypeError("session_version is not an integer")
-    return version
-
-
 # --- who is signed in, and the admin's user list ---------------------------------------------
 
 
@@ -520,8 +384,7 @@ def session_user(
     With the idle timeout (0040) in the same query: ``idle_hours``, the organisation's else
     the platform's (None: no idle limit), and ``seen_at``, the later of ``last_seen_at`` and
     ``last_login_at``. ``two_step_required``: the organisation requires two-step sign-in for its
-    admins (0068, #481); while it does, an admin's "turned off" does not count. The Google
-    columns (#507, ``_GOOGLE_COLUMNS``): the limited session and Ways to sign in read them.
+    admins (0068, #481); while it does, an admin's "turned off" does not count.
 
     With ``session_id`` (a request's, 0076): None too once logout ended that session, by one
     probe of ``ended_sessions``' primary key in the same statement."""
@@ -534,7 +397,7 @@ def session_user(
     return (
         conn.execute(
             text(
-                "SELECT u.id, u.email, u.display_name, u.role, u.auth_authority, u.disabled,"  # noqa: S608 - fixed fragments, _GOOGLE_COLUMNS
+                "SELECT u.id, u.email, u.display_name, u.role, u.auth_authority, u.disabled,"  # noqa: S608 - fixed fragments
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
                 " u.totp_off_at IS NOT NULL AND NOT c.admin_two_step_required AS two_step_turned_off,"
                 " c.admin_two_step_required AS two_step_required,"
@@ -542,9 +405,8 @@ def session_user(
                 " u.email_verified_at IS NOT NULL AS email_confirmed,"
                 " c.id AS customer_id, c.name AS customer_name,"
                 " GREATEST(u.last_seen_at, u.last_login_at) AS seen_at,"
-                " COALESCE(s.idle_hours, p.session_idle_hours) AS idle_hours,"
-                + _GOOGLE_COLUMNS
-                + " FROM users u JOIN customers c ON c.id = u.customer_id"
+                " COALESCE(s.idle_hours, p.session_idle_hours) AS idle_hours"
+                " FROM users u JOIN customers c ON c.id = u.customer_id"
                 " LEFT JOIN org_session_settings s ON s.customer_id = c.id"
                 " LEFT JOIN platform_ai_settings p ON true"
                 " WHERE u.customer_id = :c AND u.id = :u AND c.status = 'active'" + ended
@@ -690,15 +552,13 @@ def update_user(
     *,
     role: str | None,
     disabled: bool | None,
-    password_hash: str | None,
 ) -> RowMapping | None:
     """Change only the fields given (None keeps the stored value). None if no such user.
 
-    Disabling a user, setting a password or changing the role raises
+    Disabling a user or changing the role raises
     ``session_version`` (every session ends). The role counts even though every
     request re-checks it: an admin demoted and later made admin again must not
-    get their old cookies back. A password set here is an admin's, so it is
-    temporary and ``must_change_password`` is set. A role change also clears the
+    get their old cookies back. A role change also clears the
     Delete forever grant (``set_delete_forever``), so it never survives a promotion."""
     return (
         conn.execute(
@@ -706,17 +566,14 @@ def update_user(
                 "UPDATE users AS u SET"
                 " role = COALESCE(CAST(:role AS text), u.role),"
                 " disabled = COALESCE(CAST(:disabled AS boolean), u.disabled),"
-                " password_hash = COALESCE(CAST(:hash AS text), u.password_hash),"
-                " must_change_password = (CAST(:hash AS text) IS NOT NULL) OR u.must_change_password,"
                 " session_version = u.session_version + CASE"
-                "   WHEN CAST(:hash AS text) IS NOT NULL OR CAST(:disabled AS boolean) IS TRUE"
+                "   WHEN CAST(:disabled AS boolean) IS TRUE"
                 "   OR (CAST(:role AS text) IS NOT NULL AND CAST(:role AS text) <> u.role) THEN 1"
                 "   ELSE 0 END,"
                 " delete_forever_allowed_at = CASE"
                 "   WHEN CAST(:role AS text) IS NOT NULL AND CAST(:role AS text) <> u.role THEN NULL"
                 "   ELSE u.delete_forever_allowed_at END"
                 " WHERE u.customer_id = :c AND u.id = :u"
-                " AND (CAST(:hash AS text) IS NULL OR u.auth_authority = 'legacy')"
                 " RETURNING" + _ADMIN_COLUMNS
             ),
             {
@@ -724,7 +581,6 @@ def update_user(
                 "u": user_id,
                 "role": role,
                 "disabled": disabled,
-                "hash": password_hash,
             },
         )
         .mappings()

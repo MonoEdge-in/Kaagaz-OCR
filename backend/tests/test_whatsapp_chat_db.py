@@ -714,12 +714,12 @@ def test_a_model_not_allowed_is_said_so(world: _World, monkeypatch: pytest.Monke
     assert world.say(person, "What is the total?") == say("model_not_allowed", "en")
 
 
-def test_a_person_who_must_set_a_new_password_gets_only_that(world: _World) -> None:
+def test_the_old_must_change_password_flag_no_longer_stops_chat(world: _World) -> None:
+    """#737: company sign-in has no password step, so the flag (still in the column) waits on nothing."""
     person = world.person()
     _owner(world.db, "UPDATE users SET must_change_password = true WHERE id = :u", {"u": person.u})
-    assert world.say(person, "What is the total?") == say("change_password", "en")
-    assert world.tap(person, "get.en") == say("change_password", "en")
-    assert world.api.answers.asked == []
+    world.say(person, "What is the total?")
+    assert world.api.answers.asked != []
 
 
 def test_a_sticker_after_which_file_is_answered_in_its_language(world: _World) -> None:

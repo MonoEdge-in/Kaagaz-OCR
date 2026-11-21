@@ -31,7 +31,7 @@ from kaagaz.db import locks as locks_sql
 from kaagaz.db import version_links as links_sql
 from kaagaz.db.engine import Database
 from tests.db_support import name_session, violation, wait_until_blocked
-from tests.test_api_support import CSRF, PASSWORD, Api, Signed
+from tests.test_api_support import CSRF, Api, Signed, after_proof
 from tests.test_isolation_access_views import _SUGGEST, Org, _app, _walled
 from tests.test_operator_auth_db import _owner
 
@@ -101,7 +101,7 @@ def _org(api: Api) -> Org:
 
 
 def _post(signed: Signed, path: str, body: dict[str, Any] | None = None) -> tuple[int, Any]:
-    reply = signed.client.post(f"/api{path}", json=body or {}, headers=CSRF)
+    reply = signed.client.post(f"/api{path}", json=after_proof(signed, path, body or {}), headers=CSRF)
     return reply.status_code, reply.json()
 
 
@@ -332,9 +332,9 @@ def test_an_admin_who_would_open_a_wall_to_themselves_types_their_password(
     monkeypatch.setattr(links_route, "_audience", lambda conn, user, moves: (set(), {user.user_id}))
     before = _everything(db, org)
     status, reply = _link(admin, org, ["x", "z"], "z")
-    assert (status, reply["error"]["code"]) == (403, "password_required")
+    assert (status, reply["error"]["code"]) == (403, "keycloak_reauth_required")
     assert _everything(db, org) == before
-    assert _link(admin, org, ["x", "z"], "z", password=PASSWORD)[0] == 200
+    assert _link(admin, org, ["x", "z"], "z", proved=True)[0] == 200
 
 
 # --- what follows a link, and Undo ---------------------------------------------------------------
@@ -849,9 +849,9 @@ def test_an_undo_that_opens_a_file_to_the_admin_asks_their_password(
     monkeypatch.setattr(links_route, "_audience", lambda conn, user, moves: (set(), {user.user_id}))
     before = _everything(db, org)
     status, reply = _undo(admin, org, "x")
-    assert (status, reply["error"]["code"]) == (403, "password_required")
+    assert (status, reply["error"]["code"]) == (403, "keycloak_reauth_required")
     assert _everything(db, org) == before
-    assert _undo(admin, org, "x", password=PASSWORD)[0] == 200
+    assert _undo(admin, org, "x", proved=True)[0] == 200
 
 
 # --- the per-person rule (PRD 7 PR 9, #606) ------------------------------------------------------

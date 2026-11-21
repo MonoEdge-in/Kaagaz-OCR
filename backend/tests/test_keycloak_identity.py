@@ -16,9 +16,8 @@ from sqlalchemy import Connection
 
 from kaagaz.api import keycloak_oidc
 from kaagaz.api.auth import CurrentUser
-from kaagaz.api.context import AppContext
 from kaagaz.api.errors import ApiError
-from kaagaz.api.routers.auth import prove_password
+from kaagaz.api.routers.auth import require_proof
 from kaagaz.db import keycloak, whatsapp
 from kaagaz.db.whatsapp import Linked
 from kaagaz.settings import Settings, SettingsError, _https_url
@@ -59,7 +58,7 @@ def test_lookup_calls_only_the_exact_issuer_subject_function() -> None:
     assert parameters == {"issuer": "https://id.example.test/realm", "subject": "opaque-subject"}
 
 
-def test_whatsapp_channel_check_passes_coexistence_mfa_guard_to_sql() -> None:
+def test_whatsapp_channel_check_refuses_anyone_not_on_keycloak_in_sql() -> None:
     connection = cast(Connection, Mock(spec=Connection))
     execute = cast(Mock, connection.execute)
     execute.return_value.first.return_value = ("sealed-number", "not_allowed")
@@ -71,13 +70,12 @@ def test_whatsapp_channel_check_passes_coexistence_mfa_guard_to_sql() -> None:
             user_id="11111111-1111-4111-8111-111111111111",
             link_id="33333333-3333-4333-8333-333333333333",
         ),
-        keycloak_enabled=True,
     )
 
     assert result.refused == "not_allowed"
     statement, parameters = execute.call_args.args
-    assert ":keycloak_enabled" in str(statement)
-    assert parameters["keycloak_enabled"] is True
+    assert "u.auth_authority <> 'keycloak'" in str(statement)
+    assert set(parameters) == {"c", "l"}  # no policy switch: the company sign-in is the only one
 
 
 def test_finalize_call_has_no_caller_selected_user_or_customer() -> None:
@@ -109,7 +107,7 @@ def test_finalize_call_has_no_caller_selected_user_or_customer() -> None:
 ISSUER = "https://id.example.test/realms/kaagaz"
 CLIENT_ID = "kaagaz-api"
 ACR = "1"
-PROVIDER_CLAIM = "auth_provider"
+PROVIDER_CLAIM = "authentication_provider"
 OIDC_NOW = 1_800_000_000
 
 
@@ -121,7 +119,6 @@ def _settings(**overrides: object) -> Settings:
         "keycloak_client_secret": "server-side-confidential-secret",
         "keycloak_redirect_uri": "https://app.example.test/api/auth/keycloak/callback",
         "keycloak_required_acr": ACR,
-        "keycloak_provider_claim": "auth_provider",
         "keycloak_flow_encryption_key": "a-distinct-keycloak-flow-encryption-secret-value",
     }
     values.update(overrides)
@@ -202,7 +199,6 @@ def _identity_claims(**overrides: object) -> dict[str, object]:
         "sid": "opaque-keycloak-session",
         "acr": ACR,
         "amr": ["pwd", "otp"],
-        PROVIDER_CLAIM: "local",
     }
     claims.update(overrides)
     return claims
@@ -319,13 +315,7 @@ def test_rs256_identity_accepts_rotated_key_and_uses_amr_despite_a_stale_broker_
     token = _token(
         private,
         _identity_claims(
-            **{
-                PROVIDER_CLAIM: "google-broker",
-                "amr": ["pwd", "otp"],
-                "email": "  Person@Example.Test ",
-                "email_verified": True,
-                "hd": "Example.Test",
-            }
+            amr=["pwd", "otp"], email="  Person@Example.Test ", email_verified=True, hd="Example.Test"
         ),
         kid="rotated-key",
     )
@@ -338,11 +328,37 @@ def test_rs256_identity_accepts_rotated_key_and_uses_amr_despite_a_stale_broker_
     assert refreshes == [False, True]
 
 
+@pytest.mark.parametrize("value", ["google", "company-password", "local", ["google"], 1, False])
+def test_a_configured_provider_claim_with_any_value_is_refused(
+    monkeypatch: pytest.MonkeyPatch, value: object
+) -> None:
+    private = _key()
+    _install_fake_provider(monkeypatch, private)
+    token = _token(private, _identity_claims(**{PROVIDER_CLAIM: value}))
+    with pytest.raises(keycloak_oidc.OidcError, match="organization_provider_policy_unconfigured"):
+        keycloak_oidc.verified_identity(
+            _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW
+        )
+
+
+@pytest.mark.parametrize("claims", [{}, {PROVIDER_CLAIM: ""}, {PROVIDER_CLAIM: None}])
+def test_an_absent_or_empty_provider_claim_is_the_local_password_sign_in(
+    monkeypatch: pytest.MonkeyPatch, claims: dict[str, object]
+) -> None:
+    private = _key()
+    _install_fake_provider(monkeypatch, private)
+    token = _token(private, _identity_claims(**claims))
+    identity = keycloak_oidc.verified_identity(
+        _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW
+    )
+    assert identity.authentication_provider == "local"
+
+
 @pytest.mark.parametrize("amr", [["pwd"], ["otp"], [], None, "pwd otp"])
 def test_identity_requires_executed_password_and_otp(monkeypatch: pytest.MonkeyPatch, amr: object) -> None:
     private = _key()
     _install_fake_provider(monkeypatch, private)
-    token = _token(private, _identity_claims(amr=amr, **{PROVIDER_CLAIM: "company-password"}))
+    token = _token(private, _identity_claims(amr=amr))
     with pytest.raises(keycloak_oidc.OidcError, match="mfa_verify_again"):
         keycloak_oidc.verified_identity(
             _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW
@@ -419,14 +435,15 @@ def test_signed_logout_rejects_nonce_and_accepts_valid_event(monkeypatch: pytest
     )
 
 
-def test_mapped_password_proof_requires_the_exact_action_cookie() -> None:
-    context = cast(AppContext, object())
+def test_a_risky_action_needs_the_exact_action_proof_and_no_password_counts() -> None:
     matching = cast(CurrentUser, SimpleNamespace(auth_authority="keycloak", reauth_action="locks"))
     stale_action = cast(CurrentUser, SimpleNamespace(auth_authority="keycloak", reauth_action="access"))
-    prove_password(context, matching, None, action="locks")
-    with pytest.raises(ApiError) as error:
-        prove_password(context, stale_action, None, action="locks")
-    assert error.value.code == "keycloak_reauth_required"
+    legacy = cast(CurrentUser, SimpleNamespace(auth_authority="legacy", reauth_action="locks"))
+    require_proof(matching, "locks")
+    for refused in (stale_action, legacy):
+        with pytest.raises(ApiError) as error:
+            require_proof(refused, "locks")
+        assert error.value.code == "keycloak_reauth_required"
 
 
 def test_settings_repr_does_not_include_confidential_keycloak_material() -> None:
@@ -435,3 +452,26 @@ def test_settings_repr_does_not_include_confidential_keycloak_material() -> None
     assert "server-side-confidential-secret" not in rendered
     assert settings.keycloak_flow_encryption_key is not None
     assert settings.keycloak_flow_encryption_key not in rendered
+
+
+def test_logout_url_is_the_end_session_endpoint_with_only_the_login_page_of_the_app_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#737: RP-initiated logout. The client id and where to land, nothing else: no token is
+    kept server-side to hint with, and the landing page is the callback's origin plus /login."""
+    _install_fake_provider(monkeypatch, _key())
+    url = keycloak_oidc.logout_url(_settings())
+    parts = urlsplit(url)
+    assert f"{parts.scheme}://{parts.netloc}{parts.path}" == f"{ISSUER}/protocol/openid-connect/logout"
+    assert parse_qs(parts.query) == {
+        "client_id": [CLIENT_ID],
+        "post_logout_redirect_uri": ["https://app.example.test/login"],
+    }
+    assert "post_logout_redirect_uri=https%3A%2F%2Fapp.example.test%2Flogin" in parts.query  # encoded
+    other = _settings(keycloak_redirect_uri="https://app.example.test:8443/api/auth/keycloak/callback")
+    assert "https%3A%2F%2Fapp.example.test%3A8443%2Flogin" in keycloak_oidc.logout_url(other)
+
+
+def test_logout_url_refuses_untrusted_settings_before_discovery() -> None:
+    with pytest.raises(keycloak_oidc.OidcError, match="not_configured"):
+        keycloak_oidc.logout_url(_settings(keycloak_issuer="http://id.example.test/realms/kaagaz"))

@@ -20,7 +20,6 @@ import {
   lockExplainText,
   lockTitle,
   lockedMessage,
-  openErrorText,
   openFailure,
   openForText,
   refusalsOf,
@@ -57,29 +56,16 @@ const person = (role: Me["user"]["role"], scope: SessionScope): Me => ({
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope },
-  providers: [],
 });
 
 // --- the words and rules ---
 
 describe("the locked files' words", () => {
-  it("says why Google did not confirm, by its code", () => {
-    expect(openErrorText(null)).toBeNull();
-    expect(openErrorText("not_fresh")).toBe("Sign in with Google again to open locked files.");
-    expect(openErrorText("not_yours")).toBe("That Google account isn't the one connected to you.");
-    expect(openErrorText("expired")).toBe("Google couldn't confirm it was you. Try again.");
-  });
-
-  it("says why the password did not open them, and a block's wait once, in the server's words", () => {
-    expect(openFailure(new ApiError(400, "wrong_password", "Your password is not right."))).toEqual({
-      message: "Your password is not right.",
-      google: false,
+  it("says why locked files did not open, in the server's own words", () => {
+    expect(openFailure(new ApiError(429, "rate_limited", "Too many tries to open locked files. Try again in an hour."))).toEqual({
+      message: "Too many tries to open locked files. Try again in an hour.",
     });
-    expect(openFailure(new ApiError(409, "google_confirm_required", "Use Google."))).toEqual({ message: "", google: true });
-    const one = new ApiError(429, "open_blocked", "Too many wrong passwords. Try again in 1 minute.", undefined, 60);
-    expect(openFailure(one).message).toBe("Too many wrong passwords. Try again in 1 minute."); // one wait, no second
-    expect(openFailure(new ApiError(429, "rate_limited", "Slow down.", undefined, 30)).message).toBe("Slow down.");
-    expect(openFailure(new TypeError("offline")).message).toBe("Check your internet connection, then try again.");
+    expect(openFailure(new TypeError("Failed to fetch")).message).toBe("Check your internet connection, then try again.");
   });
 
   it("counts down from the server's seconds by performance.now(), never below none", () => {
@@ -209,13 +195,10 @@ async function unmount() {
   await act(async () => root?.unmount());
   root = null;
 }
-async function type(box: FakeElement | null, words: string) {
-  box!.value = words;
-  await act(async () => void fire(box!, "input"));
-}
-/** Submit the form holding the field `id` (the password box). */
-async function submit(id: string) {
-  await act(async () => void fire(byId(id)!.closest("form")!, "submit"));
+/** Submit the open dialog's form (there is no password box: #737). */
+async function submit() {
+  const dialog = all().find((each) => each.tagName === "DIALOG")!;
+  await act(async () => void fire(dialog.all().find((each) => each.tagName === "FORM")!, "submit"));
 }
 async function tick(box: FakeElement | undefined) {
   box!.checked = !box!.checked;
@@ -252,20 +235,19 @@ const lockedFile = (changes: Partial<DocumentDetail> = {}) =>
   }) as unknown as DocumentDetail;
 
 let changed: string[] = [];
-const screen = (detail: DocumentDetail = lockedFile(), openError: string | null = null) => {
+const screen = (detail: DocumentDetail = lockedFile()) => {
   changed = [];
   return mount(
     createElement(LockedDocument, {
       detail,
       back: { href: "/documents", name: "documents" },
-      openError,
       onChanged: (message: string) => changed.push(message),
     }),
   );
 };
-const closed = { open: false, until: null, seconds: null, via: "password" };
+const closed = { open: false, until: null, seconds: null, via: "keycloak" };
 const OPEN_UNTIL = "2026-11-15T10:10:00Z";
-const open = (seconds = 600) => ({ open: true, until: OPEN_UNTIL, seconds, via: "password" });
+const open = (seconds = 600) => ({ open: true, until: OPEN_UNTIL, seconds, via: "keycloak" });
 
 describe("a locked file's screen", () => {
   it("says a file still being prepared, or in Trash, and asks for nothing", async () => {
@@ -278,29 +260,18 @@ describe("a locked file's screen", () => {
     expect(asked()).toEqual([]);
   });
 
-  it("asks for the password, says a wrong one, then shows the pages as pictures only", async () => {
+  it("asks for the company sign-in, then shows the pages as pictures only", async () => {
     vi.useFakeTimers({ now: Date.parse("2026-11-15T10:00:00Z"), toFake: ["Date", "performance", "setInterval", "clearInterval"] });
     serve({
       "GET /api/documents/locked-open": [[200, closed]],
-      "POST /api/documents/locked-open": [
-        error(400, "wrong_password", "Your password is not right."),
-        [200, open()],
-      ],
+      "POST /api/documents/locked-open": [[200, open()]],
     });
     await screen();
-    expect(text()).toContain(
-      "Enter your password to open locked files. This keeps locked files safe on shared computers. They stay open for 10 minutes.",
-    );
-    expect(button("Open")?.hasAttribute("disabled")).toBe(true); // nothing typed yet
+    expect(text()).toContain("Verify with company sign-in to open locked files.");
+    expect(byId("locked-open-password")).toBeNull(); // no password to type
 
-    await type(byId("locked-open-password"), "wrong");
-    await submit("locked-open-password");
-    expect(calls[1]).toEqual({ call: "POST /api/documents/locked-open", body: { password: "wrong" } });
-    expect(all().find((each) => each.getAttribute("role") === "alert")?.textContent).toBe("Your password is not right.");
-    expect(byId("locked-open-password")?.value).toBe(""); // typed again
-
-    await type(byId("locked-open-password"), "right");
-    await submit("locked-open-password");
+    await act(async () => void fire(all().find((each) => each.tagName === "FORM")!, "submit"));
+    expect(calls[1]).toEqual({ call: "POST /api/documents/locked-open", body: undefined });
     const [picture] = images();
     expect(picture?.getAttribute("src")).toBe("/api/documents/d1/locked-pages/1");
     expect(picture?.getAttribute("draggable")).toBe("false");
@@ -327,7 +298,7 @@ describe("a locked file's screen", () => {
     expect(text()).toContain("Open for 0:02");
     await act(async () => void vi.advanceTimersByTime(3000));
     expect(images()).toEqual([]);
-    expect(byId("locked-open-password")).not.toBeNull();
+    expect(button("Open")).not.toBeNull();
   });
 
   it("counts down by the server's seconds whatever this PC's clock says", async () => {
@@ -342,7 +313,7 @@ describe("a locked file's screen", () => {
     expect(images()).toHaveLength(1);
     await act(async () => void vi.advanceTimersByTime(61_000));
     expect(images()).toEqual([]); // ended by its own 90 seconds, not by the PC's clock
-    expect(byId("locked-open-password")).not.toBeNull();
+    expect(button("Open")).not.toBeNull();
   });
 
   it("offers no context menu on the pictures (Save image as)", async () => {
@@ -365,7 +336,7 @@ describe("a locked file's screen", () => {
     await act(async () => void fire(images()[0]!, "error"));
     await settle();
     expect(images()).toEqual([]);
-    expect(byId("locked-open-password")).not.toBeNull();
+    expect(button("Open")).not.toBeNull();
   });
 
   it("says a page failed when the check is still live, tries it again, and forgets it on another page", async () => {
@@ -384,62 +355,19 @@ describe("a locked file's screen", () => {
     expect(images()[0]?.getAttribute("src")).toBe("/api/documents/d1/locked-pages/2");
   });
 
-  it("says when five wrong tries blocked opening, and when to try again, once", async () => {
-    serve({
-      "GET /api/documents/locked-open": [[200, closed]],
-      "POST /api/documents/locked-open": [
-        [429, { error: { code: "open_blocked", message: "Too many wrong passwords. Try again in 1 minute." } }, { "Retry-After": "60" }],
-      ],
-    });
-    await screen();
-    await type(byId("locked-open-password"), "guess");
-    await submit("locked-open-password");
-    const alert = all().find((each) => each.getAttribute("role") === "alert");
-    expect(alert?.textContent).toBe("Too many wrong passwords. Try again in 1 minute.");
-  });
 
-  it("sends a person who signs in with Google only to Google, and back to this file", async () => {
-    serve({
-      "GET /api/documents/locked-open": [[200, { ...closed, via: "google" }]],
-      "POST /api/auth/oidc/google/confirm": [[200, { url: "https://accounts.google.com/o/oauth2/auth?x=1" }]],
-    });
-    await screen();
-    expect(text()).toContain("Confirm with Google to open locked files.");
-    expect(byId("locked-open-password")).toBeNull();
-    await press(button("Continue with Google"));
-    expect(calls[1]).toEqual({ call: "POST /api/auth/oidc/google/confirm", body: { next: "/documents/d1" } });
-    expect((window as unknown as { location: { href: string } }).location.href).toBe(
-      "https://accounts.google.com/o/oauth2/auth?x=1",
-    );
-  });
 
-  it("turns to Google when the password is refused as google_confirm_required", async () => {
-    serve({
-      "GET /api/documents/locked-open": [[200, closed]],
-      "POST /api/documents/locked-open": [error(409, "google_confirm_required", "Confirm with Google.")],
-    });
-    await screen();
-    await type(byId("locked-open-password"), "anything");
-    await submit("locked-open-password");
-    expect(button("Continue with Google")).not.toBeNull();
-    expect(all().some((each) => each.getAttribute("role") === "alert")).toBe(false);
-  });
 
-  it("says why Google came back without opening them", async () => {
-    serve({ "GET /api/documents/locked-open": [[200, { ...closed, via: "google" }]] });
-    await screen(lockedFile(), "not_fresh");
-    expect(text()).toContain("Sign in with Google again to open locked files.");
-  });
 
   it("asks again when the check could not be read", async () => {
     serve({ "GET /api/documents/locked-open": [error(500, "error", "Oops."), [200, closed]] });
     await screen();
     expect(text()).toContain("Kaagaz couldn't check whether locked files are open. Try again.");
     await press(button("Try again"));
-    expect(byId("locked-open-password")).not.toBeNull();
+    expect(button("Open")).not.toBeNull();
   });
 
-  it("gives an Admin's session Unlock, with the warning and the password; nobody else", async () => {
+  it("gives an Admin's session Unlock, with the warning and no password; nobody else", async () => {
     serve({ "GET /api/documents/locked-open": [[200, closed]] });
     await screen();
     expect(button("Unlock")).toBeNull();
@@ -448,19 +376,18 @@ describe("a locked file's screen", () => {
     session.me = person("admin", "admin");
     serve({
       "GET /api/documents/locked-open": [[200, closed]],
-      "POST /api/documents/d1/unlock": [error(400, "wrong_password", "Your password is not right."), [200, { unlocked: true, reading: true }]],
+      "POST /api/documents/d1/unlock": [error(409, "not_locked", "This file isn't locked."), [200, { unlocked: true, reading: true }]],
     });
     await screen();
     await press(button("Unlock"));
     const dialog = all().find((each) => each.tagName === "DIALOG")!;
     expect(dialog.textContent).toContain('Unlock "Sale deed.pdf"?');
     expect(dialog.textContent).toContain("Everyone who can see its folder can open it, and Ask can use it again.");
-    await type(byId("unlock-password"), "nope");
-    await submit("unlock-password");
-    expect(dialog.textContent).toContain("Your password is not right.");
-    await type(byId("unlock-password"), "secret");
-    await submit("unlock-password");
-    expect(calls.at(-1)).toEqual({ call: "POST /api/documents/d1/unlock", body: { password: "secret" } });
+    expect(byId("unlock-password")).toBeNull(); // no password to type
+    await submit();
+    expect(dialog.textContent).toContain("This file isn't locked.");
+    await submit();
+    expect(calls.at(-1)).toEqual({ call: "POST /api/documents/d1/unlock", body: {} });
     expect(changed).toEqual(["File unlocked."]);
   });
 });
@@ -474,7 +401,7 @@ const people = [
 ];
 
 describe("the lock dialog", () => {
-  it("lists who can see it, ticks the Admin, and locks with the password", async () => {
+  it("lists who can see it, ticks the Admin, and locks with no password", async () => {
     serve({
       "GET /api/documents/d1/lock-preview": [[200, { people }]],
       "POST /api/documents/d1/lock": [
@@ -496,16 +423,16 @@ describe("the lock dialog", () => {
     expect(text()).toContain("Asha (you)");
     expect(boxes().map((box) => box.checked)).toEqual([true, false, false]);
     await tick(boxes()[2]);
-    await type(byId("lock-password"), "secret");
-    await submit("lock-password");
+    expect(byId("lock-password")).toBeNull(); // no password to type
+    await submit();
     expect(text()).toContain("This kind of file can't be locked yet. Keep it in a private folder instead.");
     expect(locked).toEqual([]);
 
-    await type(byId("lock-password"), "secret");
-    await submit("lock-password");
+    expect(byId("lock-password")).toBeNull(); // no password to type
+    await submit();
     expect(calls.at(-1)).toEqual({
       call: "POST /api/documents/d1/lock",
-      body: { open_to: ["u1", "u3"], password: "secret" },
+      body: { open_to: ["u1", "u3"] },
     });
     expect(locked).toEqual(["File locked."]);
   });
@@ -532,13 +459,36 @@ describe("the lock dialog", () => {
     await settle();
     expect(calls[0]).toEqual({ call: "POST /api/documents/lock-preview", body: { document_ids: ["d1", "d2"] } });
     expect(text()).toContain("Lock 2 files?");
-    await type(byId("lock-password"), "secret");
-    await submit("lock-password");
+    expect(byId("lock-password")).toBeNull(); // no password to type
+    await submit();
     expect(text()).toContain("Prices.xlsx can't be locked yet. Keep it in a private folder instead.");
-    await type(byId("lock-password"), "secret");
-    await submit("lock-password");
-    expect(calls.at(-1)?.body).toEqual({ document_ids: ["d1", "d2"], open_to: ["u1"], password: "secret" });
+    expect(byId("lock-password")).toBeNull(); // no password to type
+    await submit();
+    expect(calls.at(-1)?.body).toEqual({ document_ids: ["d1", "d2"], open_to: ["u1"] });
     expect(locked).toEqual(["2 files locked."]);
+  });
+
+  it("starts the company sign-in when the server asks for a fresh one, and locks nothing", async () => {
+    const assign = vi.fn();
+    (window as unknown as { location: unknown }).location = { href: "http://localhost/documents/d1", pathname: "/documents/d1", origin: "https://kaagaz.example", assign };
+    serve({
+      "GET /api/documents/d1/lock-preview": [[200, { people }]],
+      "POST /api/documents/d1/lock": [error(403, "keycloak_reauth_required", "Sign in again to go on.")],
+      "POST /api/auth/keycloak/reauth/locks/start": [[200, { url: "https://idp.example/authorize" }]],
+    });
+    const locked: string[] = [];
+    await mount(
+      createElement(LockDialog, {
+        documents: [{ id: "d1", display_name: "Sale deed.pdf" }],
+        onClose: () => undefined,
+        onLocked: (message: string) => locked.push(message),
+      }),
+    );
+    await settle();
+    await submit();
+    expect(asked()).toContain("POST /api/auth/keycloak/reauth/locks/start");
+    expect(assign).toHaveBeenCalledWith("https://idp.example/authorize");
+    expect(locked).toEqual([]);
   });
 
   it("says when the people could not be loaded, and keeps Lock off", async () => {
@@ -582,7 +532,7 @@ describe("Lock in the document's menu", () => {
     serve({ "GET /api/documents/d1/lock-preview": [[200, { people }]] });
     await menu();
     await press(byLabel("More actions for Sale deed.pdf"));
-    await press(button("LockKeep it out of Ask and open it only with a password"));
+    await press(button("LockKeep it out of Ask and open it only after a fresh sign-in"));
     await settle();
     expect(all().find((each) => each.tagName === "DIALOG")?.textContent).toContain('Lock "Sale deed.pdf"?');
   });
@@ -664,9 +614,9 @@ describe("the selection's Lock", () => {
     await tickRow("Will.pdf"); // locked already: not counted
     await press(button("Lock 2 files"));
     await settle();
-    await type(byId("lock-password"), "secret");
-    await submit("lock-password");
-    expect(calls.at(-1)?.body).toEqual({ document_ids: ["d1", "d2"], open_to: ["u1"], password: "secret" });
+    expect(byId("lock-password")).toBeNull(); // no password to type
+    await submit();
+    expect(calls.at(-1)?.body).toEqual({ document_ids: ["d1", "d2"], open_to: ["u1"] });
     expect(saved).toEqual(["2 files locked."]);
   });
 
@@ -723,7 +673,6 @@ describe("focus after a lock or unlock", () => {
       createElement(LockedDocument, {
         detail: lockedFile(),
         back: { href: "/documents", name: "documents" },
-        openError: null,
         onChanged: () => undefined,
         headingRef,
       }),
@@ -756,7 +705,7 @@ describe("focus after a lock or unlock", () => {
     const menuButton = () => byLabel("More actions for Sale deed.pdf");
     // Cancelled: focus goes back to the menu's button.
     await press(menuButton());
-    await press(button("LockKeep it out of Ask and open it only with a password"));
+    await press(button("LockKeep it out of Ask and open it only after a fresh sign-in"));
     await settle();
     await press(button("Cancel"));
     const onMenu = () => doc.activeElement?.getAttribute("aria-label") === "More actions for Sale deed.pdf";
@@ -764,10 +713,10 @@ describe("focus after a lock or unlock", () => {
     // Locked: the screen changes under it, so onLocked (DocumentView: focusAfterReload, then the
     // reload) has the locked screen's heading take the focus, not onChanged.
     await press(menuButton());
-    await press(button("LockKeep it out of Ask and open it only with a password"));
+    await press(button("LockKeep it out of Ask and open it only after a fresh sign-in"));
     await settle();
-    await type(byId("lock-password"), "secret");
-    await submit("lock-password");
+    expect(byId("lock-password")).toBeNull(); // no password to type
+    await submit();
     expect(locked).toEqual(["File locked."]);
     expect(changed).toEqual([]);
   });
@@ -799,8 +748,8 @@ describe("focus after a lock or unlock", () => {
     const opener = button("Lock 2 files")!;
     await press(opener);
     await settle();
-    await type(byId("lock-password"), "secret");
-    await submit("lock-password");
+    expect(byId("lock-password")).toBeNull(); // no password to type
+    await submit();
     expect(opener.isConnected).toBe(false); // the bar's buttons are gone
     const focused = doc.activeElement;
     expect(focused?.tagName === "INPUT" && focused.type === "checkbox" ? "select-all box" : focusedList.length ? "list" : "lost").not.toBe("lost");

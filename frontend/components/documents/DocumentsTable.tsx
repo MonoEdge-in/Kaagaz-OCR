@@ -12,9 +12,8 @@
 // own columns and the next row); focus goes to Cancel, and back to the menu button. Restore
 // needs no question: nothing is lost. Ticked rows can be moved to Trash
 // together; in Trash they can be restored together, or deleted forever together
-// by whoever may (canDeleteForever, asked first; a granted member or reviewer, or an admin
-// without two-step sign-in, #538, types their password in that step, and again after a 403
-// password_confirm_required, with the question kept open). In Trash the list shows when each
+// by whoever may (canDeleteForever, asked first; a 403 keycloak_reauth_required sends the person to
+// the company sign-in, and they confirm again after returning). In Trash the list shows when each
 // document was trashed. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
@@ -42,7 +41,6 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
-import { flushSync } from "react-dom";
 import { accessAbilities } from "@/components/access/abilities";
 import { AudiencePanel } from "@/components/access/AudiencePanel";
 import { GiveAccessDialog } from "@/components/access/GiveAccessDialog";
@@ -54,13 +52,11 @@ import { labelName } from "@/components/files/labels";
 import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { Icon as KIcon } from "@/components/ui/Icon/Icon";
-import { PasswordField } from "@/components/ui/PasswordField";
 import { beingRead, canReprocess, reprocessErrorText } from "@/components/viewer/reprocess";
 import { newerVersionText } from "@/components/viewer/versions";
 import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
 import {
   ApiError,
-  confirmPassword,
   deleteDocument,
   deleteDocumentForever,
   deleteTrashedFolderForever,
@@ -73,7 +69,7 @@ import { useSession } from "@/lib/session";
 import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative } from "@/lib/format";
 import type { DocumentSummary, FilePlaced, FolderBack, FolderRestored, Me, Tag, TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
-import { beginKeycloakReauth, isKeycloakManaged, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
+import { beginKeycloakReauth, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { LockDialog } from "./LockDialog";
 import { DOCUMENT_DRAG } from "./FolderNav";
@@ -111,15 +107,13 @@ import {
   folderBackMessage,
   folderKey,
   folderOf,
-  foreverNeedsPassword,
   isFolderKey,
   folderRestoredMessage,
   foreverQuestion,
   lostTheRight,
-  passwordAgain,
   placedMessage,
   restoredMessage,
-  runForever,
+  runEach,
   selectable,
   trashQuestion,
   undoRemoval,
@@ -257,9 +251,6 @@ export function DocumentsTable({
   }, [items]);
   const { refresh } = useSession();
   const canForever = canDeleteForever(me);
-  // A 403 password_confirm_required asks for the password from then on (passwordAgain, #538).
-  const [passwordAsked, setPasswordAsked] = useState(false);
-  const askPassword = foreverNeedsPassword(me) || passwordAsked;
   // Read again (PRD 5 U2): a reviewer or an admin, for a document that can be read again.
   const readable = useCallback(
     (item: DocumentSummary) => !inTrash && canReprocess(me.user.role, item),
@@ -282,7 +273,6 @@ export function DocumentsTable({
   const [locking, setLocking] = useState(false);
   const bulkLocked = useRef(false);
   const bulkMoved = useRef(false);
-  const [password, setPassword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   // The selection's action waiting for its "now" button: Move to Trash or Delete forever.
   const [confirming, setConfirming] = useState<BulkAction | null>(null);
@@ -366,7 +356,6 @@ export function DocumentsTable({
     setSelectedIds(new Set());
     setConfirming(null);
     setError(null);
-    setPassword("");
   }
 
   // Each selected document in turn. The ones that worked leave the list (it is
@@ -378,27 +367,6 @@ export function DocumentsTable({
     setBusyAction(action);
     setDeleteProgress({ done: 0, total: ids.length });
     setError(null);
-    const typed = action === "forever" && askPassword ? password : null;
-    if (action === "forever" && me.user.auth_authority === "keycloak") {
-      try {
-        await confirmPassword();
-      } catch (caught) {
-        setBusy(false);
-        setBusyAction(null);
-        setDeleteProgress(null);
-        if (isKeycloakReauthRequired(caught)) {
-          try {
-            await beginKeycloakReauth("delete_forever", window.location.pathname);
-            return;
-          } catch (failed) {
-            setError(keycloakStartFailure(failed));
-            return;
-          }
-        }
-        setError(errorText(caught));
-        return;
-      }
-    }
     // #542: a restore that put a folder somewhere else, or brought folders back with a file, says so,
     // and then has no Undo (Undo would send the files back alone).
     const notes: string[] = [];
@@ -419,33 +387,25 @@ export function DocumentsTable({
       }
       return reply;
     };
-    const calls = { confirm: confirmPassword, remove: call };
-    const outcome = await runForever(ids, typed, calls, (handled) =>
-      setDeleteProgress({ done: handled, total: ids.length }),
-    );
-    setPassword("");
+    const result = await runEach(ids, call, (handled) => setDeleteProgress({ done: handled, total: ids.length }));
     setBusy(false);
     setBusyAction(null);
     setDeleteProgress(null);
-    const failure = outcome.kind === "password" ? outcome.error : outcome.result.firstError;
-    if (lostTheRight(failure)) {
-      refresh();
-      setPasswordAsked(false); // the fresh me decides who types a password
+    // Delete forever needs a fresh company sign-in: nothing was deleted, so start it and come back.
+    if (action === "forever" && result.done.length === 0 && isKeycloakReauthRequired(result.firstError)) {
+      try {
+        await beginKeycloakReauth("delete_forever", window.location.pathname);
+        return;
+      } catch (failed) {
+        setError(keycloakStartFailure(failed));
+        return;
+      }
     }
-    // A refused password deleted nothing: the question stays open, with why, and focus in the box.
-    if (outcome.kind === "password") {
-      flushSync(() => setError(errorText(failure)));
-      window.document.getElementById("bulk-forever-password")?.focus();
-      return;
-    }
-    const { result } = outcome;
+    if (lostTheRight(result.firstError)) refresh();
     setSelectedIds(new Set(result.failed));
-    // No typed password counted (none was typed, or it ran out partway: then every later one
-    // failed too, so the last failure says it): the question stays open and asks for it.
-    const askAgain = action === "forever" && passwordAgain(result.lastError);
-    if (!askAgain) setConfirming(null);
+    setConfirming(null);
     if (result.failed.length > 0) {
-      const why = errorText(askAgain ? result.lastError : result.firstError);
+      const why = errorText(result.firstError);
       const folders = result.failed.filter(isFolderKey).length;
       setError(bulkFailedMessage(action, result.failed.length - folders, why, folders));
     }
@@ -456,12 +416,6 @@ export function DocumentsTable({
       const message = [bulkDoneMessage(action, result.done.length - folders, folders), ...notes].join(" ");
       if (action === "read") events.onSaved(message);
       else onRemoved(message, folders > 0 || foldersBack ? undefined : undoRemoval(action, result.done));
-    }
-    if (askAgain) {
-      // The question is still open: focus waits in the password box, shown now if it was not.
-      flushSync(() => setPasswordAsked(true));
-      window.document.getElementById("bulk-forever-password")?.focus();
-      return;
     }
     // The buttons pressed are gone now: keep keyboard focus on the select-all box shown.
     selectAll.current.find((input) => input.isConnected && input.offsetParent !== null)?.focus();
@@ -490,7 +444,7 @@ export function DocumentsTable({
       type="button"
       className={confirming === "read" ? "btn btn-primary" : `btn btn-danger ${styles.apart}`}
       onClick={() => void runSelected(confirming)}
-      disabled={busy || (confirming === "forever" && askPassword && password === "")}
+      disabled={busy}
     >
       <Icon name={confirming === "read" ? "refresh" : "trash"} />
       <BusyLabel busy={busy} idle={NOW_WORDS[confirming]} working={BUSY_WORDS[confirming]} />
@@ -549,7 +503,6 @@ export function DocumentsTable({
               whenSpoken={whenSpokenAt(folder.deleted_at, now)}
               onDone={onFolderDone}
               canForever={canForever}
-              askPassword={askPassword}
               tickable={folderTickable(folder)}
               selected={selectedIds.has(folderKey(folder.id))}
               onToggle={toggle}
@@ -567,7 +520,6 @@ export function DocumentsTable({
               linkVersions={canLink && document.locked !== true}
               readable={readable(document)}
               canForever={canForever}
-              askPassword={askPassword}
               selected={selectedIds.has(document.id)}
               onToggle={toggle}
               tree={tree}
@@ -699,17 +651,8 @@ export function DocumentsTable({
                     ? bulkReadQuestion(readableIds.length)
                     : bulkTrashQuestion(restorableIds.length)}
               </span>
-              {confirming === "forever" && me.user.auth_authority === "keycloak" && (
+              {confirming === "forever" && (
                 <span className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; return, reselect items if needed, and confirm again.</span>
-              )}
-              {confirming === "forever" && askPassword && (
-                <PasswordField
-                  id="bulk-forever-password"
-                  label="Your password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={setPassword}
-                />
               )}
               {/* [Destructive] ... [Cancel], or [Cancel] [Read again now]; focus starts on Cancel. */}
               {confirming !== "read" && nowButton}
@@ -782,7 +725,6 @@ export function DocumentsTable({
       {givingMany && (
         <GiveAccessDialog
           files={movable}
-          myId={me.user.id}
           onClose={() => setGivingMany(false)}
           onGiven={(message) => {
             setGivingMany(false);
@@ -884,7 +826,6 @@ const DocumentRow = memo(function DocumentRow({
   readable,
   linkVersions,
   canForever,
-  askPassword,
   selected,
   onToggle,
   tree,
@@ -902,7 +843,6 @@ const DocumentRow = memo(function DocumentRow({
   readable: boolean; // it may be read again (canReprocess): its status cell may offer Retry
   linkVersions: boolean; // #648: its menu offers Make it a version of… (PRD 9 F-09)
   canForever: boolean;
-  askPassword: boolean;
   selected: boolean;
   onToggle: (id: string) => void;
   tree: FolderTree;
@@ -920,16 +860,10 @@ const DocumentRow = memo(function DocumentRow({
   // What the row says while Restore or Retry runs (Trash and Delete forever say it in their dialog).
   const [working, setWorking] = useState(BUSY_WORDS.restore);
   const [error, setError] = useState<string | null>(null);
-  const [password, setPassword] = useState("");
-  // A 403 password_confirm_required asks for the password from then on (passwordAgain, #538).
-  const [passwordAsked, setPasswordAsked] = useState(false);
-  const needsPassword = askPassword || passwordAsked;
   const { refresh } = useSession();
   const actionsButton = useRef<HTMLButtonElement | null>(null);
   const refocusActions = useRef(false);
   const afterEdit = useRef<"actions" | "list">("actions");
-  // B6: Delete forever is checking the typed password; refused, the question stays open.
-  const checkingPassword = useRef(false);
 
   // A stable callback ref, so it runs once when its button appears.
   const holdActions = useCallback((element: HTMLButtonElement | null) => {
@@ -1018,8 +952,7 @@ const DocumentRow = memo(function DocumentRow({
         typeof undo === "function" ? undo() : undo,
       );
     } catch (caught) {
-      if (confirming === "forever" && isKeycloakManaged(me) && isKeycloakReauthRequired(caught)) {
-        checkingPassword.current = false;
+      if (confirming === "forever" && isKeycloakReauthRequired(caught)) {
         try {
           await beginKeycloakReauth("delete_forever", window.location.pathname);
           return;
@@ -1029,22 +962,11 @@ const DocumentRow = memo(function DocumentRow({
           return;
         }
       }
-      if (lostTheRight(caught)) {
-        refresh();
-        setPasswordAsked(false); // the fresh me decides who types a password
-      }
+      if (lostTheRight(caught)) refresh();
       setError(
         caught instanceof ApiError ? caught.message : `${failed} Check your connection, then try again.`,
       );
       setBusy(false);
-      const refused = checkingPassword.current && !lostTheRight(caught);
-      checkingPassword.current = false;
-      if (passwordAgain(caught) || refused) {
-        // The dialog stays open, says why, and asks for the password; focus waits in its box.
-        flushSync(() => setPasswordAsked(true));
-        window.document.getElementById(`forever-password-${document.id}`)?.focus();
-        return;
-      }
       refocusActions.current = true;
       setConfirming(null);
     }
@@ -1052,18 +974,8 @@ const DocumentRow = memo(function DocumentRow({
 
   function confirm() {
     if (confirming === "forever") {
-      // A typed password is checked first: if it is refused, nothing is deleted.
-      const typed = needsPassword ? password : null;
-      setPassword("");
       void act(
-        async (id) => {
-          if (typed !== null || isKeycloakManaged(me)) {
-            checkingPassword.current = true;
-            await confirmPassword(typed ?? undefined);
-            checkingPassword.current = false;
-          }
-          await deleteDocumentForever(id);
-        },
+        deleteDocumentForever,
         deletedForeverMessage(document.display_name),
         "Could not delete this document.",
       );
@@ -1080,7 +992,7 @@ const DocumentRow = memo(function DocumentRow({
   // The dialog hands focus back to the menu button once it is shut (onClosed).
   function cancel() {
     setConfirming(null);
-    setError(null); // a "type your password again" said in the dialog goes with it
+    setError(null);
   }
 
   // Issue 407: the status cell's Retry is Read again (POST .../reprocess); the row stays and
@@ -1333,7 +1245,6 @@ const DocumentRow = memo(function DocumentRow({
         {sharing === "give" && (
           <GiveAccessDialog
             files={[document]}
-            myId={me.user.id}
             onClose={() => setSharing(null)}
             onClosed={() => actionsButton.current?.focus()}
             onGiven={(message) => {
@@ -1361,17 +1272,8 @@ const DocumentRow = memo(function DocumentRow({
           >
             <div className={library.dialogForm}>
               <p>{question}</p>
-              {confirming === "forever" && isKeycloakManaged(me) && (
+              {confirming === "forever" && (
                 <p className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; reopen this item and confirm again after returning.</p>
-              )}
-              {confirming === "forever" && needsPassword && (
-                <PasswordField
-                  id={`forever-password-${document.id}`}
-                  label="Your password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={setPassword}
-                />
               )}
               {error && (
                 <p className="error-text" role="alert">
@@ -1383,7 +1285,7 @@ const DocumentRow = memo(function DocumentRow({
                   type="button"
                   className={`btn btn-danger ${library.apart}`}
                   onClick={confirm}
-                  disabled={busy || (confirming === "forever" && needsPassword && password === "")}
+                  disabled={busy}
                 >
                   <BusyLabel
                     busy={busy}

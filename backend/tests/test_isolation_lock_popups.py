@@ -14,7 +14,7 @@ import pytest
 
 from kaagaz.db.engine import Database
 from tests.db_support import insert_folder
-from tests.test_api_support import CSRF, PASSWORD, Api, Signed
+from tests.test_api_support import CSRF, Api, Signed
 from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
@@ -295,15 +295,16 @@ def test_naming_on_a_private_folder_gives_its_ticked_locked_files(db: Database) 
     )
 
 
-def test_an_admin_ticking_themselves_types_their_password(db: Database) -> None:
+def test_an_admin_ticking_themselves_needs_the_company_sign_in(db: Database) -> None:
     api = Api(db)
     org = _org(api)
     me = org.admin.user_id
     _owner(db, _MEMBER, {"c": org.c, "d": org.folders["land"], "u": me, "head": False, "by": org.first})
     path = f"/api/admin/users/{me}/departments/{org.folders['land']}"  # a member already: only the tick
     reply = org.admin.client.put(path, json={"locked_files": [org.files["loan"]]}, headers=CSRF)
-    assert _code(reply) == (403, "password_required")
+    assert _code(reply) == (403, "keycloak_reauth_required")
     assert me not in _grants(db, org.files["loan"])
-    body = {"locked_files": [org.files["loan"]], "password": PASSWORD}
+    api.prove(org.admin, "access")
+    body = {"locked_files": [org.files["loan"]]}
     assert org.admin.client.put(path, json=body, headers=CSRF).status_code == 200
     assert me in _grants(db, org.files["loan"])

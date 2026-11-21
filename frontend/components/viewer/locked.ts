@@ -1,7 +1,6 @@
 // Locked files (PRD 7 section 6, PR 13): the words and the small rules of opening one, locking
 // and unlocking, kept pure so they are unit tested in node (tests/locked-open.test.ts). A locked
-// file opens only as page pictures, after the person's own Kaagaz password (or a fresh Google
-// sign-in for a person who signs in with Google only), for 10 minutes in this browser; it is never
+// file opens only as page pictures, after a fresh company sign-in, for 10 minutes in this browser; it is never
 // downloaded, printed or read as text.
 
 import type { CSSProperties } from "react";
@@ -12,15 +11,7 @@ import type { LockRefusal, PageSummary } from "@/lib/types";
 
 export const LOCKED_TEXT = {
   heading: "This file is locked",
-  prompt:
-    "Enter your password to open locked files. This keeps locked files safe on shared computers. They stay open for 10 minutes.",
-  googlePrompt:
-    "Confirm with Google to open locked files. This keeps locked files safe on shared computers. They stay open for 10 minutes.",
-  password: "Your Kaagaz password",
   open: "Open",
-  opening: "Opening…",
-  google: "Continue with Google",
-  goingToGoogle: "Opening Google…",
   checking: "Checking…",
   checkFailed: "Kaagaz couldn't check whether locked files are open. Try again.",
   preparing: "This file is still being prepared. Its pages show here once they are ready.",
@@ -34,21 +25,9 @@ export const LOCKED_TEXT = {
 
 const OFFLINE = "Check your internet connection, then try again.";
 
-/** What the Google confirm came back with (?open_error=), in plain words; null for none. */
-export function openErrorText(code: string | null): string | null {
-  if (code === null || code === "") return null;
-  if (code === "not_fresh") return "Sign in with Google again to open locked files.";
-  if (code === "not_yours") return "That Google account isn't the one connected to you.";
-  return "Google couldn't confirm it was you. Try again.";
-}
-
-/** Why the password did not open locked files: the server's words alone, which already say when
- * to try again after a block ("Try again in 15 minutes.", "1 minute" for one), so one wait shows;
- * `google` when this person confirms with Google instead. */
-export function openFailure(caught: unknown): { message: string; google: boolean } {
-  if (!(caught instanceof ApiError)) return { message: OFFLINE, google: false };
-  if (caught.code === "google_confirm_required") return { message: "", google: true };
-  return { message: caught.message, google: false };
+/** Why locked files did not open: the server's own words, or the plain words for a lost connection. */
+export function openFailure(caught: unknown): { message: string } {
+  return { message: caught instanceof ApiError ? caught.message : OFFLINE };
 }
 
 /** Whole seconds left of the check: the server's `seconds` when it was read, less the time
@@ -97,7 +76,7 @@ export function lockExplainText(count: number): string {
   const which = count === 1 ? "this file" : "these files";
   return (
     "Locked files are kept out of Ask, search inside files and totals, for everyone, including you. " +
-    `People open them directly after entering their Kaagaz password. Dashboard totals will no longer count ${which}.`
+    `People open them directly after a fresh company sign-in. Dashboard totals will no longer count ${which}.`
   );
 }
 
@@ -105,12 +84,11 @@ export const LOCK_TEXT = {
   photograph: "People who can open it can still photograph the screen.",
   who: "Who can still open it:",
   loadingPeople: "Loading who can see it…",
-  password: "Your password",
   lock: (count: number) => (count === 1 ? "Lock file" : `Lock ${formatNumber(count)} files`),
   locking: "Locking…",
   cancel: "Cancel",
   menu: "Lock",
-  menuHint: "Keep it out of Ask and open it only with a password",
+  menuHint: "Keep it out of Ask and open it only after a fresh sign-in",
   unlockMenu: "Unlock",
   unlockTitle: (name: string) => `Unlock "${name}"?`,
   unlockWarning: "Everyone who can see its folder can open it, and Ask can use it again.",
@@ -146,5 +124,5 @@ export function refusalsOf(caught: unknown): LockRefusal[] {
   return Array.isArray(details?.refused) ? (details.refused as LockRefusal[]) : [];
 }
 
-/** A failed lock or unlock in words: the server's own (wrong password, not lockable, in Trash). */
+/** A failed lock or unlock in words: the server's own (not lockable, in Trash). */
 export const lockFailureText = (caught: unknown) => (caught instanceof ApiError ? caught.message : OFFLINE);

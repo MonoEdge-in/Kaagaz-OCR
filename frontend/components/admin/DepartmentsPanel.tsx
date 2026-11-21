@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
-import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
+import { useProofStep } from "@/components/access/proofStep";
 import {
   ADD_PEOPLE,
   DEPARTMENT_ONLY,
@@ -46,7 +46,7 @@ import styles from "./Admin.module.css";
 
 const NOBODY: Person = { id: "", name: "" };
 
-/** `me`: the signed-in admin (the head step's Me, and the password step). `initial` and
+/** `me`: the signed-in admin (the head step's Me, and the company sign-in step). `initial` and
  * `initialAccess`: what to show without asking (the render tests). */
 export function DepartmentsPanel({
   initial,
@@ -70,7 +70,7 @@ export function DepartmentsPanel({
   const [switching, setSwitching] = useState<AdminDepartment | null>(null); // Department only, asked
   const [heading, setHeading] = useState<Folder | null>(null); // a new department: who heads it?
   const closeNotice = useCallback(() => setNotice(null), []);
-  const passwordStep = usePasswordStep();
+  const proofStep = useProofStep();
 
   useEffect(() => {
     if (initial) return;
@@ -116,11 +116,11 @@ export function DepartmentsPanel({
     }
   }
 
-  function switchDepartmentOnly(department: AdminDepartment, passwordFirst: boolean) {
+  function switchDepartmentOnly(department: AdminDepartment) {
     const on = !department.department_only;
     setSwitching(null);
     void run(
-      () => passwordStep.run(department.name, (password) => setDepartmentOnly(department.id, on, password), passwordFirst),
+      () => proofStep.run(() => setDepartmentOnly(department.id, on)),
       departmentOnlyToast(department.name, on),
     );
   }
@@ -202,7 +202,7 @@ export function DepartmentsPanel({
                   me={me}
                   adding={people.adding}
                   onAdding={(adding) => setPeople({ id: department.id, adding })}
-                  run={passwordStep.run}
+                  run={proofStep.run}
                   onChanged={() => setAttempt((n) => n + 1)}
                   onNotice={setNotice}
                 />
@@ -216,7 +216,7 @@ export function DepartmentsPanel({
           key={heading.id}
           department={heading}
           me={me}
-          run={passwordStep.run}
+          run={proofStep.run}
           onDone={(head) => {
             setNotice({ text: newDepartmentToast(heading.name, head?.name ?? null) });
             setHeading(null);
@@ -244,16 +244,14 @@ export function DepartmentsPanel({
       {switching && (
         <DepartmentOnlyDialog
           department={switching}
-          myId={me.id}
           onClose={() => setSwitching(null)}
           onAddPeople={() => {
             setSwitching(null);
             setPeople({ id: switching.id, adding: true });
           }}
-          onConfirm={(passwordFirst) => switchDepartmentOnly(switching, passwordFirst)}
+          onConfirm={() => switchDepartmentOnly(switching)}
         />
       )}
-      {passwordStep.dialog}
       <Toast notice={notice} onClose={closeNotice} />
       {error && folders === null && (
         <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>

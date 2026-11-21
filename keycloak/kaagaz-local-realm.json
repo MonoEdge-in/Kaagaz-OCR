@@ -1,6 +1,8 @@
 {
   "realm": "kaagaz-local",
-  "displayName": "Kaagaz local development",
+  "displayName": "Kaagaz",
+  "loginTheme": "kaagaz",
+  "emailTheme": "kaagaz",
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": false,
@@ -9,7 +11,7 @@
   "verifyEmail": false,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
-  "resetPasswordAllowed": false,
+  "resetPasswordAllowed": true,
   "editUsernameAllowed": false,
   "bruteForceProtected": true,
   "permanentLockout": false,
@@ -22,7 +24,7 @@
   "maxDeltaTimeSeconds": 43200,
   "failureFactor": 5,
   "maxSecondaryAuthFailures": 100,
-  "passwordPolicy": "length(14) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and notUsername",
+  "passwordPolicy": "length(10) and notUsername",
   "otpPolicyType": "totp",
   "otpPolicyAlgorithm": "HmacSHA1",
   "otpPolicyInitialCounter": 0,
@@ -40,7 +42,19 @@
   ],
   "adminEventsEnabled": true,
   "adminEventsDetailsEnabled": false,
-  "users": [],
+  "users": [
+    {
+      "username": "service-account-kaagaz-provisioner",
+      "enabled": true,
+      "serviceAccountClientId": "kaagaz-provisioner",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users"
+        ]
+      }
+    }
+  ],
   "identityProviders": [],
   "identityProviderMappers": [],
   "clients": [
@@ -60,7 +74,8 @@
       "frontchannelLogout": false,
       "fullScopeAllowed": false,
       "redirectUris": [
-        "http://localhost:3000/api/auth/keycloak/callback"
+        "http://localhost:3000/api/auth/keycloak/callback",
+        "http://localhost:3000/login"
       ],
       "webOrigins": [
         "http://localhost:3000"
@@ -73,7 +88,8 @@
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "backchannel.logout.url": "http://api:8000/api/auth/keycloak/backchannel-logout",
-        "backchannel.logout.session.required": "true"
+        "backchannel.logout.session.required": "true",
+        "post.logout.redirect.uris": "http://localhost:3000/login"
       },
       "protocolMappers": [
         {
@@ -125,8 +141,37 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "kaagaz-provisioner",
+      "name": "Kaagaz account provisioner",
+      "description": "Server-to-server only: makes and manages company sign-in accounts. No browser sign-in.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "clientAuthenticatorType": "client-secret",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": ["roles", "kc-admin-api"],
+      "optionalClientScopes": []
     }
   ],
+  "clientScopeMappings": {
+    "realm-management": [
+      {
+        "client": "kaagaz-provisioner",
+        "roles": ["manage-users", "view-users"]
+      }
+    ]
+  },
   "authenticationFlows": [
     {
       "alias": "kaagaz-browser",
@@ -192,6 +237,43 @@
           "userSetupAllowed": false
         }
       ]
+    },
+    {
+      "alias": "kaagaz-reset",
+      "description": "Forgot password: email link, then the authenticator code, then a new password. Never the built-in step that deletes the OTP.",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "reset-credentials-choose-user",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "reset-credential-email",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "reset-password",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40,
+          "userSetupAllowed": false
+        }
+      ]
     }
   ],
   "authenticatorConfig": [
@@ -217,5 +299,6 @@
       }
     }
   ],
-  "browserFlow": "kaagaz-browser"
+  "browserFlow": "kaagaz-browser",
+  "resetCredentialsFlow": "kaagaz-reset"
 }

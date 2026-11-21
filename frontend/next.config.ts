@@ -39,15 +39,10 @@ const nextConfig: NextConfig = {
       {
         // The emailed links' pages (#457): their token is in the fragment, never sent anyway;
         // no referrer at all leaves these pages, as the spec asks for link paths.
-        source: "/:page(reset-password|invite|email/confirm)",
+        source: "/email/confirm",
         headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
       },
-      {
-        // The provider sign-in's routes (#457 phase 1): the callback's address holds Google's
-        // one-time code and state, so no referrer leaves it either.
-        source: "/api/auth/oidc/:path*",
-        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
-      },
+
       {
         // Keycloak callbacks carry one-time authorization data in their query string.
         source: "/api/auth/keycloak/:path*",

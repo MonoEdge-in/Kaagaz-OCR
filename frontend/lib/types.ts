@@ -81,24 +81,11 @@ export interface Me {
     two_step_required?: boolean; // the super admin requires it for this organisation's admins (#481)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
     email_confirmed: boolean; // false: the "Confirm your email" banner (#457; true while email is off)
-    // #507: the organisation asks this person to sign in with Google and they have no connected
-    // account that passes its rules yet: every route but Ways to sign in replies 403
-    // google_link_required, so the app sends them there (lib/session.tsx).
-    google_link_required?: boolean;
-    // #507 review: in that session, the connected account is from before its domain could be
-    // checked, so the banner asks for one Google sign-in instead of a new connection.
-    google_unchecked?: boolean;
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
   /** Server configuration only; false or absent means Keycloak sign-in is unavailable. */
   keycloak_enabled?: boolean;
-  // The sign-in providers switched on ("google"), for every role (#457 review): empty while none
-  // is, and Ways to sign in is hidden; the copy names only these.
-  providers: string[];
-  // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
-  // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
-  recent_connections?: { provider: string; linked_at: string }[];
   // PRD 7 (#601): Management, and the departments this person heads. Older servers leave it out.
   // in_department (PR 10c): a member of a live department; walled (PR 11c): the organisation has
   // kept something to some people, ever.
@@ -108,11 +95,9 @@ export interface Me {
 }
 
 /** Account, WhatsApp (GET /whatsapp/me): off for the organisation, not for this role, or the
- * person's connection (the last 4 digits only). ``google``: they confirm with Google. */
+ * person's connection (the last 4 digits only). */
 export interface WhatsAppMe {
   state: "off" | "not_allowed" | "none" | "connected";
-  google: boolean;
-  totp: boolean;
   last4?: string;
   linked_at?: string;
   last_used_at?: string | null;
@@ -142,36 +127,6 @@ export interface WhatsAppPerson {
   last4: string;
   linked_at: string;
   last_used_at: string | null;
-}
-
-/** One connected account of the signed-in user (GET /auth/identities). */
-export interface ConnectedIdentity {
-  id: string;
-  provider: string; // "google"
-  email: string | null; // the account's email when it was connected, a label only
-  status: "pending" | "approved";
-  linked_at: string;
-  last_used_at: string | null;
-}
-
-/** Account, Ways to sign in: the providers switched on, and the user's own connections. */
-export interface WaysToSignIn {
-  providers: string[];
-  identities: ConnectedIdentity[];
-  // #507: the organisation's rules for this person: Google only for their role, and the
-  // company domains a Google account must be from (empty: any).
-  rules?: { google_only: boolean; domains: string[] };
-}
-
-/** Admin, People, Connections to approve (GET /admin/identities). */
-export interface PendingConnection {
-  id: string;
-  user_id: string;
-  display_name: string;
-  user_email: string;
-  provider: string;
-  email: string | null;
-  linked_at: string;
 }
 
 /** "Turn on" two-step sign-in (POST /auth/2fa/start, or after a right password). Nothing is stored yet. */
@@ -1467,13 +1422,8 @@ export interface AdminUser {
   two_step_turned_off: boolean; // this admin turned their own two-step off
   must_change_password: boolean;
   can_delete_forever: boolean; // an admin allowed Delete forever (never set for an admin)
-  // #457 phase 1: "password" and each approved provider. Only the list and the replies that
-  // removed connections send it; a row keeps what it had otherwise.
-  signs_in_with?: string[];
-  // #507: their role signs in with Google only and they have no connected account that passes.
-  google_needed?: boolean;
-  // #507 review: and their connected account's domain is not checked yet (one Google sign-in does).
-  google_unchecked?: boolean;
+  // Whether the person is linked to a company sign-in account yet (Connected), or waits for setup.
+  company_sign_in: "connected" | "waiting" | "not_moved";
   // PRD 7 (#601): sees every file. The list also sends their departments (head: they head it).
   management?: boolean;
   departments?: { id: string; name: string; head: boolean }[];
@@ -1574,9 +1524,15 @@ export interface NamedList {
   can_edit: boolean;
 }
 
-/** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
+/** POST /admin/users (#737): the new user, and the result line (whether the setup email went). */
 export interface AddedUser extends AdminUser {
-  invited?: boolean;
+  setup_email_sent: boolean;
+  message: string;
+}
+
+/** POST /admin/users/{id}/reset-2fa and the setup email resend: the result line to show. */
+export interface ResultLine {
+  message: string;
 }
 
 /** POST /auth/signup with email on (#457): no set-up yet, the email is confirmed first. */
@@ -1585,43 +1541,12 @@ export interface SignUpConfirming {
   sent: boolean; // false: the confirm email could not be sent
 }
 
-/** A reset password: the temporary password is in this one reply only. */
-export interface PasswordReset {
-  user: AdminUser;
-  temporary_password: string;
-}
-
 export interface CustomerSettings {
   customer_name: string;
   max_upload_mb: number | null; // null: the platform limit applies
   platform_max_upload_mb: number;
   // Feature 28: the platform allowed auto-filing (granted), and the admin switched it on.
   autofile: { granted: boolean; on: boolean };
-  // #457 phase 1: "Approve new sign-in connections automatically"; left out while no provider is on.
-  auto_approve_connections?: boolean;
-  // #507: Ways to sign in, per role; left out while Google sign-in is off for the product.
-  google?: GoogleRules;
-}
-
-/** The admin's Google sign-in rules (#507). available: Google sign-in is on for the organisation
- * (the super admin's switch). */
-export interface GoogleRules {
-  available: boolean;
-  allowed_roles: Role[];
-  only_roles: Role[];
-  domains: string[];
-}
-
-/** PATCH /admin/settings' google: it replaces all three. */
-export type GoogleRulesChange = Pick<GoogleRules, "allowed_roles" | "only_roles" | "domains">;
-
-/** Operator: one organisation's Google sign-in (#507). on: null follows the platform. */
-export interface OrgGoogleSignIn {
-  on: boolean | null;
-  platform_on: boolean;
-  effective: boolean;
-  google_only_roles: Role[];
-  domains: string[];
 }
 
 export interface AuditEntry {
@@ -1742,10 +1667,11 @@ export interface OrgModelRates {
   users: ModelRateUser[];
 }
 
-/** POST /operator/orgs: the temporary password is in this one reply only. */
+/** POST /operator/orgs (#737): no password; the result line says whether the setup email went. */
 export interface OrganisationCreated {
   organisation: { id: string; name: string; admin: { email: string; name: string } };
-  temporary_password: string;
+  setup_email_sent: boolean;
+  message: string;
 }
 
 /** One admin of one organisation (GET /operator/orgs/{id}/admins). Never members or reviewers. */
@@ -1763,10 +1689,29 @@ export interface OrgAdmin {
 
 export type AdminChange = "disable" | "enable" | "unlock" | "reset-2fa";
 
-/** POST /operator/orgs/{id}/admins: the temporary password is in this one reply only. */
+/** POST /operator/orgs/{id}/admins (#737): no password; the result line says whether the setup email went. */
 export interface AdminCreated {
   admin: { id: string; email: string; name: string };
-  temporary_password: string;
+  setup_email_sent: boolean;
+  message: string;
+}
+
+/** GET /operator/orgs/{id}/sign-in: how many active people are on company sign-in, and how many are still to move. */
+export interface SignInSummary {
+  status: OrgStatus;
+  available: boolean;
+  connected: number;
+  to_move: number;
+}
+
+/** POST /operator/orgs/{id}/move-everyone: the counts, and the emails that need attention. */
+export interface MoveResult {
+  moved: number;
+  connected: number;
+  attention: { email: string; reason: string; kind?: "exists" }[];
+  still_to_move: number;
+  email_not_sent: { user_id: string; email: string }[];
+  message: string;
 }
 
 /** One row of GET /operator/activity: no details, target id, person or document. */
@@ -2520,7 +2465,7 @@ export interface LockedOpen {
   open: boolean;
   until: string | null; // ISO 8601
   seconds: number | null; // whole seconds left by the server's clock; null when not open
-  via: "password" | "google" | "keycloak";
+  via: "keycloak";
 }
 
 /** Someone the lock dialog may tick (GET /documents/{id}/lock-preview): everyone who can see

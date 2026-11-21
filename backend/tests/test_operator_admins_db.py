@@ -10,10 +10,13 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.api import totp
+from kaagaz.db import keycloak as keycloak_sql
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate
-from tests.test_api_support import CSRF, PASSWORD, Api, wrong_code
+from tests.settings_factory import make_settings
+from tests.test_api_admin import ISSUER, KEYCLOAK_ON, _Keycloak
+from tests.test_api_support import CSRF, Api, wrong_code
 from tests.test_operator_auth_db import _owner
 from tests.test_operator_orgs_db import ORGS, _platform, _signed_in
 
@@ -69,8 +72,11 @@ def test_an_organisations_admins_only_and_nothing_changes_through_another_organi
     assert _platform(operator) == []
 
 
-def test_an_operator_manages_one_admin_with_one_row_per_change(db: Database) -> None:
-    api = Api(db)
+def test_an_operator_manages_one_admin_with_one_row_per_change(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keycloak = _Keycloak(monkeypatch)
+    api = Api(db, settings=make_settings(**KEYCLOAK_ON))
     operator, client = _signed_in(api)
     admin = api.new_admin("Org A")  # two-step on, signed in on the admin screen
     a, uid = admin.customer_id, admin.user_id
@@ -84,14 +90,28 @@ def test_an_operator_manages_one_admin_with_one_row_per_change(db: Database) -> 
     code = api.code(operator.secret)
     created = client.post(base, json={**new, "code": code}, headers=CSRF)
     assert created.status_code == 201, created.text
-    new_id, temporary = created.json()["admin"]["id"], created.json()["temporary_password"]
+    new_id = created.json()["admin"]["id"]
+    assert "temporary_password" not in created.json() and created.json()["setup_email_sent"] is True
+    assert keycloak.names() == ["create_user", "send_setup_email"]
+    with db.system() as conn:  # the new admin is linked to exactly the account that was made
+        assert keycloak_sql.lookup(conn, ISSUER, keycloak.subject()) is not None
     assert client.post(base, json={**new, "email": other, "code": code}, headers=CSRF).status_code == 403
     api.clock.advance(totp.STEP_SECONDS)
     taken = client.post(base, json={**new, "code": api.code(operator.secret)}, headers=CSRF)
     assert taken.json()["error"]["message"] == "That e-mail is already in use."
     assert other not in client.get(base).text  # the reused code made nothing
-    signed = api.client().post("/api/auth/login", json={"email": email, "password": temporary}, headers=CSRF)
-    assert (signed.json()["customer"]["id"], signed.json()["user"]["must_change_password"]) == (a, True)
+    keycloak.calls.clear()
+    subject = f"subject-{uuid.uuid4().hex}"  # the existing admin joins company sign-in
+    with (
+        db.engine.begin() as conn
+    ):  # linked as the callback leaves it (the sign-in helper made them Keycloak's)
+        conn.execute(
+            text(
+                "INSERT INTO keycloak_identities (customer_id, user_id, issuer, subject, status, linked_at,"
+                " activated_at) VALUES (:c, :u, :i, :s, 'active', :t, :t)"
+            ),
+            {"c": a, "u": uid, "i": ISSUER, "s": subject, "t": api.clock()},
+        )
 
     assert client.post(f"{base}/{uid}/disable", headers=CSRF).json()["admin"]["disabled"] is True
     assert admin.client.get("/api/auth/me").status_code == 401
@@ -118,8 +138,12 @@ def test_an_operator_manages_one_admin_with_one_row_per_change(db: Database) -> 
     state = api.user_state(a, uid)
     assert (state["failed_logins"], state["totp_secret_enc"], state["totp_enabled_at"]) == (0, None, None)
     assert state["totp_off_at"] is None  # a reset means set it up again, not turned off
-    again = api.admin_login(api.client(), admin.email, password=PASSWORD)  # sets two-step up again
-    assert (again.status_code, again.json()["error"]["code"]) == (403, "mfa_enrol_required")
+    assert keycloak.calls == [
+        ("set_enabled", (subject, False)),
+        ("set_enabled", (subject, True)),
+        ("clear_lock", (subject,)),
+        ("remove_otp", (subject,)),
+    ]  # each change reached the linked account, and only that one
 
     failed = ("operator.step_up_failed", None, "operator", operator.id)
     assert _platform(operator) == [

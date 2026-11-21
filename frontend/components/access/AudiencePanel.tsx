@@ -3,9 +3,9 @@
 // "Who can see this, and why" (PRD 7 PR 11b, #604; lead decision 1): one panel for a folder or a
 // file. It lists who can see it by why (GET .../audience), how many people can't, and Check a
 // person. For a folder an Admin may Make private or Make open again (each reads its preview
-// first, and asks for the password first when the Admin is among those who gain the files); on a
+// first; the company sign-in starts when the server asks for it); on a
 // private folder, the Admin or its department's Head edits the named list. Each change is a view
-// of the same dialog, Cancel first and focused; the password step opens over it. The server
+// of the same dialog, Cancel first and focused. The server
 // checks every rule again; nothing here is kept anywhere but in this dialog's state.
 // ponytail: a dialog, not the side Drawer the plan named: the Drawer closes itself from 1024 px.
 
@@ -26,10 +26,9 @@ import {
 import type { Audience, NamedList, Person, PlacePreview } from "@/lib/types";
 import type { AccessAbilities } from "./abilities";
 import { addPeople } from "./addPeople";
-import { asksFirst } from "./passwordStep";
 import { PeoplePicker } from "./PeoplePicker";
 import type { FolderPlace } from "./places";
-import { usePasswordStep } from "./SelfPasswordDialog";
+import { useProofStep } from "./proofStep";
 import {
   ACCESS_REMOVED,
   ADD_PEOPLE,
@@ -129,7 +128,7 @@ export function AudiencePanel(props: PanelProps) {
   const [notice, setNotice] = useState("");
   // Seeded from the tree, then from the server's reply to Make private / Make open again.
   const [isPrivate, setIsPrivate] = useState(place?.isPrivate === true);
-  const passwordStep = usePasswordStep();
+  const proofStep = useProofStep();
   const withNamed = target.kind === "folder" && isPrivate && abilities.editNamed;
 
   useEffect(() => {
@@ -161,7 +160,7 @@ export function AudiencePanel(props: PanelProps) {
     setMode({ kind: "view" });
   };
 
-  /** Sends one change; null (the password step cancelled) keeps the form open and says nothing. */
+  /** Sends one change; null (the company sign-in was started) keeps the form open and says nothing. */
   async function send(change: () => Promise<string | null | undefined>) {
     setBusy(true);
     setError(null);
@@ -183,10 +182,9 @@ export function AudiencePanel(props: PanelProps) {
 
   const switchPrivate = (on: boolean, chosen: readonly Person[], preview: PlacePreview, dropped: readonly Person[]) =>
     send(async () => {
-      const first = asksFirst({ myId, gaining: [...preview.gaining, ...chosen] }); // naming myself is a self-grant too
       const ids = chosen.map((person) => person.id);
       const off = dropped.map((person) => person.id);
-      const reply = await passwordStep.run(quoted(target.name), (password) => setPrivate(target.id, on, ids, password, off), first);
+      const reply = await proofStep.run(() => setPrivate(target.id, on, ids, off));
       if (reply === null) return undefined;
       setIsPrivate(reply.private);
       // The people named before and unticked go in the same call (drop_named, PR 10c), in Make
@@ -207,10 +205,9 @@ export function AudiencePanel(props: PanelProps) {
       const result = await addPeople(
         chosen,
         myId,
-        // A Head names themselves with no password (the server asks it of an Admin only); a 403
-        // password_required still opens the step.
-        (person, first) =>
-          passwordStep.run(quoted(target.name), (password) => addNamed(target.id, person.id, password), first && abilities.makePrivate),
+        // A Head names themselves with no check (the server asks it of an Admin only); a 403
+        // keycloak_reauth_required starts the company sign-in.
+        (person) => proofStep.run(() => addNamed(target.id, person.id)),
         accessErrorText,
       );
       if (result.cancelled && result.added === 0) return undefined;
@@ -289,7 +286,6 @@ export function AudiencePanel(props: PanelProps) {
           {notice}
         </p>
       </ActionDialog>
-      {passwordStep.dialog}
     </>
   );
 }

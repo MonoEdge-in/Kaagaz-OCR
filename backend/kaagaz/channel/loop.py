@@ -151,7 +151,6 @@ class Channel:
     number_key: str
     clock: Callable[[], datetime]
     chat: Replier  # W4: the reply to every other message (kaagaz.channel.chat.Chat)
-    keycloak_enabled: bool = False  # during coexistence, un-enrolled legacy users lose bot access
     # W4: the replies made and not yet sent, by (customer, person, message): kept until sent or failed.
     made: dict[tuple[str, str, str], Outgoing] = field(default_factory=dict)
     slow_seconds: float = SLOW_SECONDS
@@ -222,11 +221,7 @@ class Channel:
                     return
                 with self.db.user(linked.customer_id, linked.user_id) as conn:
                     message = wa.next_message(conn, linked)
-                    check = (
-                        None
-                        if message is None
-                        else wa.check(conn, linked, keycloak_enabled=self.keycloak_enabled)
-                    )
+                    check = None if message is None else wa.check(conn, linked)
                 if message is None or check is None:
                     break
                 try:
@@ -302,7 +297,7 @@ class Channel:
                     self.made.pop(next(iter(self.made)))
                 self.made[key] = made
             with self.db.user(linked.customer_id, linked.user_id) as conn:  # just before it goes
-                again = wa.check(conn, linked, keycloak_enabled=self.keycloak_enabled)
+                again = wa.check(conn, linked)
             if again.sealed is None or again.refused is not None:
                 self.made.pop(key, None)
                 if again.sealed is None:
@@ -398,7 +393,7 @@ class Channel:
         if message.document_id is not None:
             return
         with self.db.user(linked.customer_id, linked.user_id) as conn:
-            check = wa.check(conn, linked, keycloak_enabled=self.keycloak_enabled)
+            check = wa.check(conn, linked)
         if check.sealed is None or check.refused is not None:
             return
         try:

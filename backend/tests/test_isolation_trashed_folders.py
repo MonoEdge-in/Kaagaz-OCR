@@ -39,6 +39,9 @@ def test_b_never_reaches_a_s_folder_in_trash(db: Database) -> None:
     before, b_before = _state(db, a.customer_id), _state(db, b.customer_id)
 
     assert b.client.get("/api/documents/trash/folders").json() == {"items": []}
+    # Changed on purpose (#737, 21 Nov 2026): delete forever needs a fresh sign-in proof first; B has
+    # it, so B still reaches the lookup and gets 404.
+    api.prove(b, "delete_forever")
     replies = [
         b.client.get(f"/api/documents/trash/folders/{sub}"),
         b.client.get(f"/api/documents?trashed=true&trashed_folder_id={sub}"),

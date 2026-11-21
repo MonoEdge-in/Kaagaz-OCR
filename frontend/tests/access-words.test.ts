@@ -22,7 +22,6 @@ import {
   removeFileQuestion,
   removeFolderQuestion,
   removeHeadQuestion,
-  selfGrantText,
   sharedToast,
   stopManagementQuestion,
 } from "@/components/access/words";
@@ -118,20 +117,12 @@ describe("questions", () => {
       "Remove Priya's access to “Sale deed.pdf”? This takes away every version of the file.",
     );
   });
-
-  it("names what the admin gives themselves, never a file in the email", () => {
-    expect(selfGrantText("Finance")).toBe(
-      "You're giving yourself access to Finance. Enter your Kaagaz password to go on. Management and the other admins will get an email saying you gave yourself access. The email doesn't name any file.",
-    );
-  });
 });
 
 describe("accessErrorText", () => {
   const refused = (status: number, code: string, message = "The server's words.") => new ApiError(status, code, message);
 
   it("says each access refusal in its own words", () => {
-    expect(accessErrorText(refused(400, "wrong_password"))).toBe("That password isn't right. Try again.");
-    expect(accessErrorText(refused(400, "password_locked", "Try again in 15 minutes."))).toBe("Try again in 15 minutes.");
     expect(accessErrorText(refused(409, "disabled"))).toBe("This account is disabled. Enable it before giving access.");
     expect(accessErrorText(refused(409, "not_a_department"))).toBe("This isn't a department any more. Reload the page.");
     expect(accessErrorText(refused(409, "not_private"))).toBe("This folder isn't private any more. Reload the page.");
