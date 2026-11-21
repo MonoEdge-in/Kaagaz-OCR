@@ -139,7 +139,7 @@ def test_the_setup_email_asks_for_both_actions_for_twelve_hours(opener: _Opener)
     method, url, body, _ = opener.sent[-1]
     assert (method, json.loads(str(body))) == ("PUT", ["UPDATE_PASSWORD", "CONFIGURE_TOTP"])
     assert "client_id=kaagaz-web" in url and "lifespan=43200" in url
-    assert "redirect_uri=https%3A%2F%2Fapp.example.test%2Fapi%2Fauth%2Fkeycloak%2Fcallback" in url
+    assert "redirect_uri=https%3A%2F%2Fapp.example.test%2Flogin&lifespan=43200" in url
 
 
 def test_remove_otp_deletes_only_otp_credentials(opener: _Opener) -> None:

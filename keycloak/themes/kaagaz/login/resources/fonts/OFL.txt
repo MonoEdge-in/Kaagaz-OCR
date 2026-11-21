@@ -1,0 +1,3 @@
+Archivo (Omnibus-Type) and IBM Plex Sans and IBM Plex Sans Devanagari (IBM Corp.)
+are licensed under the SIL Open Font License 1.1: https://openfontlicense.org
+The latin and devanagari woff2 files here are the same files the Kaagaz app serves.

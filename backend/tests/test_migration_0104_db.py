@@ -1,93 +1,76 @@
-"""Migration 0104 (#737): the one read of a customer's Keycloak links, and how Kaagaz uses it."""
+"""Migration 0104: the Keycloak policies, and that a colleague's link or session is never seen."""
 
 import uuid
-from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
 
-from kaagaz.db import keycloak
 from kaagaz.db.engine import Database
-from tests.db_support import APP_ROLE, new_customer
-from tests.test_isolation_logins import WORKER
+from tests import test_migration_0002_db as base
+from tests.db_support import migrate, new_customer
 
 pytestmark = pytest.mark.db
-NOW = datetime(2026, 11, 20, 10, 0, tzinfo=UTC)
-ISSUER = "https://id.example.test/realms/kaagaz-test"
+fresh = base.fresh
+
+_POLICIES = text(
+    "SELECT tablename, policyname, permissive FROM pg_policies WHERE schemaname = 'public'"
+    " AND tablename IN ('keycloak_identities', 'keycloak_sessions', 'keycloak_flows')"
+)
 
 
-def _subject() -> str:
-    return f"subject-{uuid.uuid4().hex}"  # unique: a link's issuer and subject are unique for good
-
-
-def _linked(db: Database, customer: str, user: str, subject: str) -> None:
-    with db.user(customer, user) as conn:
-        keycloak.link_account(conn, ISSUER, subject, now=NOW)
-
-
-def test_the_function_is_commented_and_both_roles_may_call_it_but_not_the_public(db: Database) -> None:
+def _policies(db: Database) -> set[tuple[str, str, str]]:
     with db.engine.begin() as conn:
-        comment = conn.execute(
-            text("SELECT obj_description('public.kaagaz_keycloak_subjects()'::regprocedure, 'pg_proc')")
+        return {tuple(row) for row in conn.execute(_POLICIES)}
+
+
+def test_upgrade_adds_and_downgrade_removes_the_policies(fresh: tuple[str, Database]) -> None:
+    url, db = fresh
+    migrate(url, "0103")
+    assert ("keycloak_flows", "customer_only", "PERMISSIVE") not in _policies(db)
+    migrate(url, "0104")
+    assert _policies(db) == {
+        ("keycloak_identities", "customer_only", "PERMISSIVE"),
+        ("keycloak_identities", "own_user_only", "RESTRICTIVE"),
+        ("keycloak_sessions", "customer_only", "PERMISSIVE"),
+        ("keycloak_sessions", "own_user_only", "RESTRICTIVE"),
+        ("keycloak_flows", "customer_only", "PERMISSIVE"),
+    }
+    base._downgrade(url, "0103")
+    assert {name for _, name, _ in _policies(db)} == {"customer_only"}
+    assert ("keycloak_flows", "customer_only", "PERMISSIVE") not in _policies(db)
+    migrate(url, "0104")
+
+
+def test_a_user_sees_no_other_users_session_rows(db: Database) -> None:
+    customer, user = new_customer(db)
+    with db.engine.begin() as conn:  # the owner, past the policies, sets the rows up
+        identity = conn.execute(
+            text(
+                "INSERT INTO keycloak_identities (customer_id, user_id, issuer, subject, status, linked_at)"
+                " VALUES (:c, :u, 'https://id.example.test/realm', :s, 'pending', now()) RETURNING id"
+            ),
+            {"c": customer, "u": user, "s": uuid.uuid4().hex},
         ).scalar_one()
-        rights = {
-            role: conn.execute(
-                text("SELECT has_function_privilege(:r, 'public.kaagaz_keycloak_subjects()', 'EXECUTE')"),
-                {"r": role},
-            ).scalar_one()
-            for role in (APP_ROLE, WORKER)
-        }
-        public = conn.execute(
-            text("SELECT has_function_privilege('public', 'public.kaagaz_keycloak_subjects()', 'EXECUTE')")
-        ).scalar_one()
-    assert comment
-    assert rights == {APP_ROLE: True, WORKER: True} and public is False
-
-
-def test_subjects_are_the_current_customers_active_links_only(db: Database) -> None:
-    mine, my_admin = new_customer(db)
-    other, other_admin = new_customer(db)
-    mine_subject = _subject()
-    _linked(db, mine, my_admin, mine_subject)
-    _linked(db, other, other_admin, _subject())
-    with db.customer(mine) as conn:
-        assert keycloak.subjects(conn, ISSUER) == {my_admin: mine_subject}
-        assert keycloak.subjects(conn, "https://another.example.test/realms/x") == {}
-        assert keycloak.subject_of(conn, other_admin, ISSUER) is None
-    with db.system() as conn:  # no customer: nothing
-        assert keycloak.subjects(conn, ISSUER) == {}
-
-
-def test_a_pending_link_is_not_listed_and_people_say_who_is_linked(db: Database) -> None:
-    customer, admin = new_customer(db)
-    with db.customer(customer) as conn:
-        member = str(
-            conn.execute(
-                text(
-                    "INSERT INTO users (customer_id, email, display_name, role, password_hash)"
-                    " VALUES (:c, 'm-' || gen_random_uuid() || '@example.test', 'Member', 'member', 'x')"
-                    " RETURNING id"
-                ),
-                {"c": customer},
-            ).scalar_one()
+        conn.execute(
+            text(
+                "INSERT INTO keycloak_sessions (customer_id, user_id, identity_id, keycloak_session_id,"
+                " local_session_id, expires_at) VALUES (:c, :u, :i, 'sid-0104', gen_random_uuid(),"
+                " now() + interval '1 hour')"
+            ),
+            {"c": customer, "u": user, "i": identity},
         )
-    with db.user(customer, member) as conn:  # staged but never finalized
-        keycloak.stage_link(conn, ISSUER, _subject(), now=NOW, expected_session_version=1)
-    admin_subject = _subject()
-    _linked(db, customer, admin, admin_subject)
-    with db.customer(customer) as conn:
-        assert keycloak.subjects(conn, ISSUER) == {admin: admin_subject}
-        people = {p.user_id: p for p in keycloak.people(conn, customer, ISSUER)}
-    assert people[admin].linked is True and people[member].linked is False
-    assert people[member].disabled is False and people[member].name == "Member"
-
-
-def test_a_second_link_for_the_same_person_or_subject_is_refused(db: Database) -> None:
-    customer, admin = new_customer(db)
-    other, other_admin = new_customer(db)
-    shared = _subject()
-    _linked(db, customer, admin, shared)
-    with pytest.raises(keycloak.IdentityTaken):
-        _linked(db, other, other_admin, shared)  # the subject belongs to someone else
-    with pytest.raises(Exception, match="no active legacy user"):
-        _linked(db, customer, admin, _subject())  # this person is already on Keycloak
+        other = conn.execute(
+            text(
+                "INSERT INTO users (customer_id, email, display_name, role, password_hash)"
+                " VALUES (:c, 'colleague@example.test', 'Colleague', 'member', 'not-a-real-hash')"
+                " RETURNING id"
+            ),
+            {"c": customer},
+        ).scalar_one()
+    count = "SELECT count(*) FROM keycloak_sessions"
+    with db.user(customer, user) as conn:
+        assert conn.execute(text(count)).scalar_one() == 1
+    with db.user(customer, str(other)) as conn:  # a colleague in the same customer
+        assert conn.execute(text(count)).scalar_one() == 0
+    with db.customer(customer) as conn:  # no user set: fails closed
+        assert conn.execute(text(count)).scalar_one() == 0

@@ -1,6 +1,8 @@
 {
   "realm": "kaagaz-local",
-  "displayName": "Kaagaz local development",
+  "displayName": "Kaagaz",
+  "loginTheme": "kaagaz",
+  "emailTheme": "kaagaz",
   "enabled": true,
   "sslRequired": "external",
   "registrationAllowed": false,
@@ -9,7 +11,7 @@
   "verifyEmail": false,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
-  "resetPasswordAllowed": false,
+  "resetPasswordAllowed": true,
   "editUsernameAllowed": false,
   "bruteForceProtected": true,
   "permanentLockout": false,
@@ -22,7 +24,7 @@
   "maxDeltaTimeSeconds": 43200,
   "failureFactor": 5,
   "maxSecondaryAuthFailures": 100,
-  "passwordPolicy": "length(14) and upperCase(1) and lowerCase(1) and digits(1) and specialChars(1) and notUsername",
+  "passwordPolicy": "length(10) and notUsername",
   "otpPolicyType": "totp",
   "otpPolicyAlgorithm": "HmacSHA1",
   "otpPolicyInitialCounter": 0,
@@ -72,7 +74,8 @@
       "frontchannelLogout": false,
       "fullScopeAllowed": false,
       "redirectUris": [
-        "http://localhost:3000/api/auth/keycloak/callback"
+        "http://localhost:3000/api/auth/keycloak/callback",
+        "http://localhost:3000/login"
       ],
       "webOrigins": [
         "http://localhost:3000"
@@ -225,6 +228,43 @@
           "userSetupAllowed": false
         }
       ]
+    },
+    {
+      "alias": "kaagaz-reset",
+      "description": "Forgot password: email link, then the authenticator code, then a new password. Never the built-in step that deletes the OTP.",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "reset-credentials-choose-user",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "reset-credential-email",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 30,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "reset-password",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 40,
+          "userSetupAllowed": false
+        }
+      ]
     }
   ],
   "authenticatorConfig": [
@@ -250,5 +290,6 @@
       }
     }
   ],
-  "browserFlow": "kaagaz-browser"
+  "browserFlow": "kaagaz-browser",
+  "resetCredentialsFlow": "kaagaz-reset"
 }

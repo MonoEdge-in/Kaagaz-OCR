@@ -506,7 +506,6 @@ class Settings:
     keycloak_client_secret: str | None = field(default=None, repr=False)
     keycloak_redirect_uri: str | None = None
     keycloak_required_acr: str | None = None
-    keycloak_provider_claim: str = "auth_provider"
     keycloak_flow_encryption_key: str | None = field(default=None, repr=False)
     # The service account that makes company sign-in accounts (API only, like the client secret).
     keycloak_admin_client_id: str | None = None
@@ -571,7 +570,6 @@ class Settings:
         keycloak_issuer = keycloak_client_id = keycloak_redirect_uri = keycloak_required_acr = None
         keycloak_client_secret = None
         keycloak_admin_client_id = keycloak_admin_client_secret = None
-        keycloak_provider_claim = "auth_provider"
         keycloak_flow_key = None
         if keycloak_on:
             keycloak_issuer = _https_url(env.text("KEYCLOAK_ISSUER"), "KEYCLOAK_ISSUER")
@@ -585,7 +583,6 @@ class Settings:
             keycloak_required_acr = env.optional("KEYCLOAK_REQUIRED_ACR") or "1"
             if len(keycloak_required_acr) > 255 or any(ord(char) < 33 for char in keycloak_required_acr):
                 raise SettingsError("KEYCLOAK_REQUIRED_ACR must be a non-empty printable value")
-            keycloak_provider_claim = env.optional("KEYCLOAK_PROVIDER_CLAIM") or "auth_provider"
             keycloak_flow_key = env.secret("KEYCLOAK_FLOW_ENCRYPTION_KEY")
             keycloak_admin_client_id = env.token("KEYCLOAK_ADMIN_CLIENT_ID")
             keycloak_admin_client_secret = env.secret("KEYCLOAK_ADMIN_CLIENT_SECRET")
@@ -904,7 +901,6 @@ class Settings:
             keycloak_client_secret=keycloak_client_secret,
             keycloak_redirect_uri=keycloak_redirect_uri,
             keycloak_required_acr=keycloak_required_acr,
-            keycloak_provider_claim=keycloak_provider_claim,
             keycloak_flow_encryption_key=keycloak_flow_key,
             keycloak_admin_client_id=keycloak_admin_client_id,
             keycloak_admin_client_secret=keycloak_admin_client_secret,

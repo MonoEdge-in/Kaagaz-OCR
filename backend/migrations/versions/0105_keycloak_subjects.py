@@ -6,14 +6,14 @@ application role has no table access to ``keycloak_identities``, so this one own
 returns the current customer's active links, taken from the transaction context and never from a
 caller-supplied customer id.
 
-Revision ID: 0104
-Revises: 0103 (Keycloak identity)
+Revision ID: 0105
+Revises: 0104 (Keycloak isolation)
 """
 
 from alembic import op
 
-revision = "0104"
-down_revision = "0103"
+revision = "0105"
+down_revision = "0104"
 branch_labels = None
 depends_on = None
 

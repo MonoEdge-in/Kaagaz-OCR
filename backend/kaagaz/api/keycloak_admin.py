@@ -82,7 +82,7 @@ def send_setup_email(settings: Settings, user_id: str) -> None:
     query = urllib.parse.urlencode(
         {
             "client_id": settings.keycloak_client_id or "",
-            "redirect_uri": settings.keycloak_redirect_uri or "",
+            "redirect_uri": _login_page(settings),
             "lifespan": str(SETUP_LINK_SECONDS),
         }
     )
@@ -209,3 +209,10 @@ def _send(request: urllib.request.Request) -> tuple[Any, str | None]:
         return json.loads(body), location
     except (ValueError, UnicodeError):
         raise KeycloakAdminError() from None
+
+
+def _login_page(settings: Settings) -> str:
+    """Where "back to application" leads after setup: the site's sign-in page, exactly the origin of
+    the configured callback plus /login (the realm's client must allow it)."""
+    parts = urllib.parse.urlsplit(settings.keycloak_redirect_uri or "")
+    return f"{parts.scheme}://{parts.netloc}/login"

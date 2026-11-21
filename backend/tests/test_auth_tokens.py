@@ -479,7 +479,6 @@ def test_keycloak_defaults_match_stock_realm_and_worker_mfa_policy_is_optional()
         )
     )
     assert settings.keycloak_required_acr == "1"
-    assert settings.keycloak_provider_claim == "auth_provider"
     assert settings.customer_mfa_required is True
 
 
