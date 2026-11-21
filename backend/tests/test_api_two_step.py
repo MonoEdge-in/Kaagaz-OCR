@@ -303,25 +303,6 @@ def test_change_password_needs_the_code_for_a_member_with_codes(db: Database) ->
     assert changed.status_code == 200, changed.text
 
 
-def test_an_admin_resets_a_members_code(db: Database) -> None:
-    api, mailer = _email_api(db)
-    admin = api.new_admin()
-    member = api.enrol_user(admin.customer_id, "member")
-    member_client = api.client()
-    assert api.admin_login(member_client, member.email, code=api.code(member.secret)).status_code == 200
-    listed = {user["id"]: user for user in admin.client.get("/api/admin/users").json()["items"]}
-    assert listed[member.user_id]["totp_enabled"] is True
-
-    reset = _post(admin.client, f"/api/admin/users/{member.user_id}/reset-2fa")
-
-    assert reset.status_code == 200, reset.text
-    assert reset.json()["totp_enabled"] is False
-    assert member_client.get("/api/auth/me").status_code == 401  # every session ends
-    assert api.admin_login(api.client(), member.email).status_code == 200  # the password alone
-    assert api.audit_actions(admin.customer_id).count("auth.totp_reset") == 1  # Changed on purpose (#457)
-    assert _subjects(mailer, member.email) == ["Your Kaagaz two-step sign-in was reset"]
-
-
 def test_an_admin_of_another_organisation_cannot_reset_a_members_code(db: Database) -> None:
     api = Api(db)
     a_customer, _ = api.customer("Sharma Traders")

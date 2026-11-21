@@ -121,7 +121,8 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     0098, and linking files as versions (0100) follows 0099.
     Changed on purpose (#664, 18 Nov 2026): the backup reader (0101) follows 0100 and is the head.
     Changed on purpose (PRD 9 F-03, #680): the Trash re-upload rule (0102) follows 0101.
-    Changed on purpose (S2): Keycloak identity foundation (0103) follows 0102 and is the head."""
+    Changed on purpose (S2): Keycloak identity foundation (0103) follows 0102.
+    Changed on purpose (#737): reading a customer's Keycloak links (0104) follows 0103 and is the head."""
     scripts = _scripts()
     assert scripts.get_revision("0082").down_revision == "0081"
     assert scripts.get_revision("0083").down_revision == "0082"
@@ -146,4 +147,5 @@ def test_the_trashed_folder_parent_0082_the_worker_role_0083_and_the_access_tabl
     assert scripts.get_revision("0101").down_revision == "0100"
     assert scripts.get_revision("0102").down_revision == "0101"
     assert scripts.get_revision("0103").down_revision == "0102"
-    assert scripts.get_heads() == ["0103"]
+    assert scripts.get_revision("0104").down_revision == "0103"
+    assert scripts.get_heads() == ["0104"]

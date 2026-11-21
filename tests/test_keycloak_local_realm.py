@@ -30,6 +30,8 @@ class KeycloakLocalRealmTests(unittest.TestCase):
         self.assertEqual(
             {
                 "KEYCLOAK_CLIENT_SECRET": "",
+                "KEYCLOAK_ADMIN_CLIENT_ID": "kaagaz-provisioner",
+                "KEYCLOAK_ADMIN_CLIENT_SECRET": "",
                 "KEYCLOAK_FLOW_ENCRYPTION_KEY": "",
                 "KEYCLOAK_ENABLED": "false",
             },
@@ -44,8 +46,25 @@ class KeycloakLocalRealmTests(unittest.TestCase):
             values(admin_template),
         )
 
-    def test_realm_has_no_users_or_unconfigured_brokers(self) -> None:
-        self.assertEqual([], REALM["users"])
+    def test_provisioner_is_a_server_only_client_with_only_user_management(self) -> None:
+        client = next(c for c in REALM["clients"] if c["clientId"] == "kaagaz-provisioner")
+        self.assertFalse(client["publicClient"])
+        self.assertTrue(client["serviceAccountsEnabled"])
+        self.assertFalse(client["standardFlowEnabled"])
+        self.assertFalse(client["implicitFlowEnabled"])
+        self.assertFalse(client["directAccessGrantsEnabled"])
+        self.assertEqual([], client["redirectUris"])
+        self.assertNotIn("secret", client)
+        [account] = REALM["users"]  # the only user: no people are imported
+        self.assertEqual("kaagaz-provisioner", account["serviceAccountClientId"])
+        self.assertEqual({"realm-management": ["manage-users", "view-users"]}, account["clientRoles"])
+        self.assertNotIn("realmRoles", account)
+        self.assertNotIn("credentials", account)
+
+    def test_realm_has_no_people_or_unconfigured_brokers(self) -> None:
+        self.assertEqual(
+            ["service-account-kaagaz-provisioner"], [user["username"] for user in REALM["users"]]
+        )
         self.assertEqual([], REALM["identityProviders"])
         self.assertEqual([], REALM["identityProviderMappers"])
         self.assertFalse(REALM["registrationAllowed"])

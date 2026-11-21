@@ -292,24 +292,6 @@ def test_a_stale_unconfirmed_sign_up_no_longer_holds_its_email(db: Database) -> 
     _post(api.client(), "/api/auth/signup", {**body, "email": fresh})  # still held: nothing sent
     assert len(_to(mailer, fresh)) == 1
 
-    admin = api.new_admin()
-    for_admin = _pending_sign_up(api)
-    _age(db, for_admin, 25)
-    person = {"email": for_admin, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
-    added = admin.client.post("/api/admin/users", json=person, headers=CSRF)
-    assert added.status_code == 201, added.text
-
-    for_operator = _pending_sign_up(api)
-    _age(db, for_operator, 25)
-    operator, ops = _Operator(api), api.client()
-    assert operator.login(ops).status_code == 200
-    org = {
-        "name": f"Patel Exports {uuid.uuid4().hex[:6]}",
-        "admin_email": for_operator,
-        "admin_name": "Ramesh",
-    }
-    assert _post(ops, "/api/operator/orgs", org).status_code == 201
-
 
 @pytest.mark.db
 def test_a_sign_up_with_a_taken_email_answers_like_a_new_one_and_sends_nothing(db: Database) -> None:
@@ -389,7 +371,6 @@ def test_a_wrong_link_or_a_link_for_something_else_says_so(db: Database) -> None
     for path, body in (
         ("/api/auth/email/confirm", {"token": "x" * 43}),
         ("/api/auth/email/confirm", {"token": reset}),  # a reset link does not confirm
-        ("/api/auth/invite/accept", {"token": reset, "new_password": NEW_PASSWORD}),
     ):
         reply = _post(client, path, body)
         assert (reply.status_code, reply.json()) == (400, LINK_GONE), path
@@ -578,22 +559,16 @@ def test_a_reset_link_removes_connected_accounts_and_change_password_keeps_them(
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("action", ["change", "reset", "invite", "disable", "admin_reset"])
+@pytest.mark.parametrize("action", ["change", "reset", "disable", "admin_reset"])
 def test_setting_a_password_or_an_admins_disable_or_reset_ends_every_open_link(
     db: Database, action: str
 ) -> None:
     api, mailer = _email_api(db)
     admin = api.new_admin()
-    if action == "invite":
-        email = f"ramesh-{uuid.uuid4().hex[:8]}@example.com"
-        person = {"email": email, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
-        user_id = admin.client.post("/api/admin/users", json=person, headers=CSRF).json()["id"]
-        invite = _token(mailer, email, "/invite")
-    else:
-        member = api.sign_in(admin.customer_id, "member")
-        email, user_id = member.email, member.user_id
-        _post(member.client, "/api/auth/email/send-confirm")
-        confirm = _token(mailer, email, "/email/confirm")
+    member = api.sign_in(admin.customer_id, "member")
+    email, user_id = member.email, member.user_id
+    _post(member.client, "/api/auth/email/send-confirm")
+    confirm = _token(mailer, email, "/email/confirm")
     _post(api.client(), "/api/auth/forgot", {"email": email})
     reset = _token(mailer, email, "/reset-password")
     new = {"new_password": NEW_PASSWORD}
@@ -605,17 +580,16 @@ def test_setting_a_password_or_an_admins_disable_or_reset_ends_every_open_link(
         )
     elif action == "reset":
         assert _post(api.client(), "/api/auth/reset", {"token": reset, **new}).json() == {"ok": True}
-    elif action == "invite":
-        assert _post(api.client(), "/api/auth/invite/accept", {"token": invite, **new}).json() == {"ok": True}
     elif action == "disable":
         changed = admin.client.patch(f"/api/admin/users/{user_id}", json={"disabled": True}, headers=CSRF)
         assert changed.status_code == 200, changed.text
     else:
         assert _post(admin.client, f"/api/admin/users/{user_id}/reset-password").status_code == 200
 
-    for path, body in [("/api/auth/reset", {"token": reset, **new})] + (
-        [] if action == "invite" else [("/api/auth/email/confirm", {"token": confirm})]
-    ):
+    for path, body in [
+        ("/api/auth/reset", {"token": reset, **new}),
+        ("/api/auth/email/confirm", {"token": confirm}),
+    ]:
         assert _post(api.client(), path, body).json() == LINK_GONE, (action, path)
 
 
@@ -630,79 +604,6 @@ def test_a_reset_link_lasts_thirty_minutes(db: Database) -> None:
         _post(api.client(), "/api/auth/reset", {"token": token, "new_password": NEW_PASSWORD}).json()
         == LINK_GONE
     )
-
-
-# --- invites ------------------------------------------------------------------------------------
-
-
-@pytest.mark.db
-def test_an_invite_sets_the_password_and_proves_the_email(db: Database) -> None:
-    api, mailer = _email_api(db)
-    admin = api.new_admin("Invite Co")
-    api.add_document(admin.customer_id, name="secret-plan.pdf", page_count=2)
-    email = f"ramesh-{uuid.uuid4().hex[:8]}@example.com"
-    body = {"email": email, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
-
-    added = admin.client.post("/api/admin/users", json=body, headers=CSRF)
-    assert added.status_code == 201, added.text
-    assert added.json()["invited"] is True
-    assert "temporary_password" not in added.json()
-    [(subject, invite)] = _to(mailer, email)
-    assert subject == "You're invited to Kaagaz"
-    assert "Invite Co" in invite
-    # Changed on purpose (#457 review): the typed password is kept as a temporary one, the
-    # fallback when the email never arrives.
-    kept = api.admin_login(api.client(), email)
-    assert (kept.status_code, kept.json()["user"]["must_change_password"]) == (200, True)
-
-    token = _token(mailer, email, "/invite")
-    api.clock.advance(7 * 24 * 3600 - 1)  # 7 days
-    accepted = _post(api.client(), "/api/auth/invite/accept", {"token": token, "new_password": NEW_PASSWORD})
-    assert accepted.json() == {"ok": True}
-    again = _post(api.client(), "/api/auth/invite/accept", {"token": token, "new_password": PASSWORD})
-    assert again.json() == LINK_GONE
-    signed = api.admin_login(api.client(), email, password=NEW_PASSWORD)
-    assert signed.status_code == 200, signed.text
-    assert (signed.json()["user"]["email_confirmed"], signed.json()["user"]["must_change_password"]) == (
-        True,
-        False,
-    )
-    actions = api.audit_actions(admin.customer_id)
-    assert {"user.create", "auth.invite_sent", "auth.invite_accepted"} <= set(actions)
-    for sent in mailer.sent:  # no document, its name or an id in any email
-        assert "secret-plan" not in sent.text and not _UUID.search(sent.subject + sent.text)
-
-
-@pytest.mark.db
-def test_an_invite_that_cannot_be_sent_falls_back_to_the_temporary_password(
-    db: Database, caplog: pytest.LogCaptureFixture
-) -> None:
-    api, _ = _email_api(db, FailingMailer())
-    admin = api.new_admin()
-    email = f"ramesh-{uuid.uuid4().hex[:8]}@example.com"
-    body = {"email": email, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
-
-    with caplog.at_level(logging.WARNING, logger="kaagaz.api.emails"):
-        added = admin.client.post("/api/admin/users", json=body, headers=CSRF)
-    assert added.status_code == 201, added.text
-    assert added.json()["invited"] is False
-    # Changed on purpose (#457 review): the failure says why (SES's code), at error level.
-    assert '{"event":"email_failed","purpose":"invite","error":"MessageRejected"}' in caplog.messages
-    assert email not in caplog.text  # never the address
-    signed = api.admin_login(api.client(), email)
-    assert (signed.status_code, signed.json()["user"]["must_change_password"]) == (200, True)
-    user_id = added.json()["id"]
-    with db.customer(admin.customer_id) as conn:  # the link was made with the user, before the send
-        purposes = (
-            conn.execute(
-                text("SELECT purpose FROM email_links WHERE customer_id = :c AND user_id = :u"),
-                {"c": admin.customer_id, "u": user_id},
-            )
-            .scalars()
-            .all()
-        )
-    assert purposes == ["invite"]
-    assert "auth.invite_sent" not in api.audit_actions(admin.customer_id)
 
 
 # --- Change password and the security notices --------------------------------------------------
@@ -734,23 +635,17 @@ def test_change_password_asks_for_the_code_when_two_step_is_on_and_sends_a_notic
 
 
 @pytest.mark.db
-def test_turning_two_step_on_and_an_admins_reset_send_notices(db: Database) -> None:
+def test_turning_two_step_on_sends_a_notice(db: Database) -> None:
     api, mailer = _email_api(db)
     admin = api.new_admin()
     customer_id = admin.customer_id
-    new_admin_id, new_admin_email = api.add_user(customer_id, "admin")
+    _, new_admin_email = api.add_user(customer_id, "admin")
     offer = api.admin_login(api.client(), new_admin_email).json()["error"]["details"]
     secret = base64.b32decode(offer["secret"].replace(" ", ""))
     enrol = {"enrol_token": offer["enrol_token"], "code": api.code(secret)}
     enrolled = _post(api.client(), "/api/auth/admin/enrol", enrol)
     assert enrolled.status_code == 200, enrolled.text
     assert [subject for subject, _ in _to(mailer, new_admin_email)] == ["Two-step sign-in is on"]
-
-    reset = _post(admin.client, f"/api/admin/users/{new_admin_id}/reset-2fa")
-    assert reset.status_code == 200, reset.text
-    assert [subject for subject, _ in _to(mailer, new_admin_email)][
-        -1
-    ] == "Your Kaagaz two-step sign-in was reset"
 
 
 @pytest.mark.db
@@ -926,26 +821,21 @@ def test_a_waiting_sign_ups_admin_never_locks_themselves_out_and_approve_clears_
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("purpose", ["reset", "invite"])
-def test_a_password_set_from_a_link_clears_the_lock(db: Database, purpose: str) -> None:
+def test_a_password_set_from_a_reset_link_clears_the_lock(db: Database) -> None:
     api, mailer = _email_api(db)
     admin = api.new_admin()
-    if purpose == "invite":
-        email = f"ramesh-{uuid.uuid4().hex[:8]}@example.com"
-        person = {"email": email, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
-        user_id = admin.client.post("/api/admin/users", json=person, headers=CSRF).json()["id"]
-    else:
-        member = api.sign_in(admin.customer_id, "member")
-        email, user_id = member.email, member.user_id
-        _post(api.client(), "/api/auth/forgot", {"email": email})
-    token = _token(mailer, email, "/invite" if purpose == "invite" else "/reset-password")
+    member = api.sign_in(admin.customer_id, "member")
+    email, user_id = member.email, member.user_id
+    _post(api.client(), "/api/auth/forgot", {"email": email})
+    token = _token(mailer, email, "/reset-password")
     with db.customer(admin.customer_id) as conn:  # someone kept guessing
         conn.execute(
             text("UPDATE users SET failed_logins = 9, locked_until = :t WHERE id = :u"),
             {"t": api.clock() + timedelta(hours=1), "u": user_id},
         )
-    path = "/api/auth/invite/accept" if purpose == "invite" else "/api/auth/reset"
-    assert _post(api.client(), path, {"token": token, "new_password": NEW_PASSWORD}).json() == {"ok": True}
+
+    reset = _post(api.client(), "/api/auth/reset", {"token": token, "new_password": NEW_PASSWORD})
+    assert reset.json() == {"ok": True}
     state = api.user_state(admin.customer_id, user_id)
     assert (state["failed_logins"], state["locked_until"]) == (0, None)
     assert api.admin_login(api.client(), email, password=NEW_PASSWORD).status_code == 200

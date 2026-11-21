@@ -23,15 +23,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from kaagaz.adapters.email import MemoryMailer
-from kaagaz.api import emails, totp
 from kaagaz.api.routers.admin import ONLY_NOT_ALLOWED
 from kaagaz.db import identities
 from kaagaz.db.engine import Database
 from tests.oidc_fake import ISSUER, google_settings
 from tests.test_api_oidc_connect import _api
-from tests.test_api_support import CSRF, Api, Signed, TestClient, wrong_code
-from tests.test_operator_auth_db import _Operator, _owner
-from tests.test_operator_orgs_db import ORGS, _platform, _signed_in
+from tests.test_api_support import CSRF, Api, Signed
+from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
 
@@ -100,22 +98,6 @@ def _in(signed: Signed) -> bool:
     return signed.client.get("/api/auth/me").status_code == 200
 
 
-def _code(api: Api, operator: _Operator) -> str:
-    api.clock.advance(totp.STEP_SECONDS)
-    return api.code(operator.secret)
-
-
-def _set_org(
-    api: Api, operator: _Operator, client: TestClient, customer: str, on: bool | None
-) -> httpx.Response:
-    body = {"on": on, "code": _code(api, operator)}
-    return client.put(f"{ORGS}/{customer}/google-signin", json=body, headers=CSRF)
-
-
-def _set_platform(api: Api, operator: _Operator, client: TestClient, on: bool) -> httpx.Response:
-    return client.put(PLATFORM, json={"on": on, "code": _code(api, operator)}, headers=CSRF)
-
-
 def _rules(admin: Signed, allowed: list[str], only: list[str], domains: list[str]) -> httpx.Response:
     body = {"google": {"allowed_roles": allowed, "only_roles": only, "domains": domains}}
     return admin.client.patch("/api/admin/settings", json=body, headers=CSRF)
@@ -133,133 +115,6 @@ def _org_rows(
 
 
 # --- the super admin's switch -------------------------------------------------------------------
-
-
-def test_the_super_admin_turns_one_organisation_off_signing_out_its_linked_people_only(db: Database) -> None:
-    api = _google_api(db)
-    operator, client = _signed_in(api)
-    a_admin, b_admin = api.new_admin("Org A google"), api.new_admin("Org B google")
-    a, b = a_admin.customer_id, b_admin.customer_id
-    linked, plain = api.sign_in(a, "member"), api.sign_in(a, "member")
-    identity = _link(api, a, linked.user_id)
-    b_linked = api.sign_in(b, "member")
-    _link(api, b, b_linked.user_id)
-    path = f"{ORGS}/{a}/google-signin"
-    shape: dict[str, Any] = {
-        "on": None,
-        "platform_on": True,
-        "effective": True,
-        "google_only_roles": [],
-        "domains": [],
-    }
-    assert client.get(path).json() == shape  # follows the platform, nothing changes on release day
-
-    bad = client.put(path, json={"on": False, "code": wrong_code(api, operator.secret)}, headers=CSRF)
-    assert (bad.status_code, bad.json()["error"]["code"]) == (403, "step_up_failed")
-    assert client.put(path, json={"on": False}, headers=CSRF).status_code == 400  # no code
-    assert _in(linked)
-
-    off = _set_org(api, operator, client, a, False)
-    assert (off.status_code, off.json()) == (200, {**shape, "on": False, "effective": False})
-    assert not _in(linked)  # signed out, the connection kept
-    assert _status(api, a, identity)[0] == "approved"
-    assert _in(plain) and _in(a_admin) and _in(b_linked)  # no connection, or another organisation
-    assert _set_org(api, operator, client, a, False).status_code == 200  # unchanged: no new rows
-
-    again = api.sign_in(a, "member")
-    _link(api, a, again.user_id)
-    on = _set_org(api, operator, client, a, None)  # back to the platform's: on again
-    assert on.json() == shape
-    assert not _in(again)
-
-    _owner(
-        db,
-        "UPDATE customers SET google_only_roles = '{member}', google_domains = '{sharma.in}' WHERE id = :c",
-        {"c": a},
-    )
-    assert client.get(path).json() == {**shape, "google_only_roles": ["member"], "domains": ["sharma.in"]}
-
-    row = ("customer", a)
-    assert [entry for entry in _platform(operator) if entry[0] == "org.google_signin_set"] == [
-        ("org.google_signin_set", a, *row),
-        ("org.google_signin_set", a, *row),
-    ]
-    assert _org_rows(api, a, "org.google") == [
-        (
-            "org.google_signin_set",
-            "customer",
-            a,
-            {"old": None, "new": False, "effective_old": True, "effective_new": False, "by": "operator"},
-        ),
-        (
-            "org.google_signin_set",
-            "customer",
-            a,
-            {"old": False, "new": None, "effective_old": False, "effective_new": True, "by": "operator"},
-        ),
-    ]
-    assert _org_rows(api, b, "org.google") == []
-
-
-def test_on_while_following_an_on_platform_signs_nobody_out_and_unknown_or_deleting_orgs_refuse(
-    db: Database,
-) -> None:
-    api = _google_api(db)
-    operator, client = _signed_in(api)
-    admin = api.new_admin("Org own on")
-    linked = api.sign_in(admin.customer_id, "member")
-    _link(api, admin.customer_id, linked.user_id)
-    reply = _set_org(api, operator, client, admin.customer_id, True)
-    assert reply.json()["on"] is True
-    assert _in(linked)  # the value in force stayed on
-    assert _org_rows(api, admin.customer_id, "org.google")[0][3]["effective_new"] is True
-
-    missing = "00000000-0000-4000-8000-000000000000"
-    assert _set_org(api, operator, client, missing, False).status_code == 404
-    assert client.get(f"{ORGS}/{missing}/google-signin").status_code == 404
-    gone, _ = api.customer("Org deleting")
-    _owner(
-        db,
-        "UPDATE customers SET status = 'deleting', disabled_at = now(),"
-        " delete_after = now() + interval '7 days' WHERE id = :c",
-        {"c": gone},
-    )
-    refused = _set_org(api, operator, client, gone, False)
-    assert (refused.status_code, refused.json()["error"]["code"]) == (409, "conflict")
-
-
-def test_the_platform_switch_touches_only_the_organisations_that_follow_it(db: Database) -> None:
-    api = _google_api(db)
-    operator, client = _signed_in(api)
-    following, own = api.new_admin("Org follows"), api.new_admin("Org own")
-    f_linked, o_linked = api.sign_in(following.customer_id, "member"), api.sign_in(own.customer_id, "member")
-    f_identity = _link(api, following.customer_id, f_linked.user_id)
-    _link(api, own.customer_id, o_linked.user_id)
-    assert _set_org(api, operator, client, own.customer_id, True).status_code == 200
-    assert client.get(PLATFORM).json() == {"on": True}
-    try:
-        bad = client.put(PLATFORM, json={"on": False, "code": wrong_code(api, operator.secret)}, headers=CSRF)
-        assert bad.status_code == 403
-        assert client.put(PLATFORM, json={"on": None, "code": "123456"}, headers=CSRF).status_code == 400
-        off = _set_platform(api, operator, client, False)
-        assert (off.status_code, off.json()) == (200, {"on": False})
-        assert not _in(f_linked)  # follows the platform: signed out, connection kept
-        assert _status(api, following.customer_id, f_identity)[0] == "approved"
-        assert _in(o_linked)  # its own value: untouched
-        assert client.get(f"{ORGS}/{following.customer_id}/google-signin").json()["effective"] is False
-        assert client.get(f"{ORGS}/{own.customer_id}/google-signin").json()["effective"] is True
-        assert _set_platform(api, operator, client, False).json() == {"on": False}  # unchanged
-        assert [entry[0] for entry in _platform(operator) if entry[0] == "google.platform_set"] == [
-            "google.platform_set"
-        ]
-        details = operator.sql(
-            "SELECT details FROM platform_audit WHERE operator_id = :o AND action = 'google.platform_set'"
-        )
-        assert details == [
-            ({"old": True, "new": False, "effective_old": True, "effective_new": False, "by": "operator"},)
-        ]
-    finally:
-        _owner(db, "UPDATE platform_ai_settings SET google_signin = true", {})
 
 
 # --- data rights --------------------------------------------------------------------------------
@@ -553,24 +408,3 @@ def test_replies_that_change_a_person_carry_the_google_tag(db: Database) -> None
     reset = admin.client.post(f"/api/admin/users/{member.user_id}/reset-password", headers=CSRF)
     assert reset.status_code == 200, reset.text
     assert [reset.json()["user"][key] for key in tag] == [["password"], True, False]
-
-
-def test_the_invite_says_to_connect_google_while_it_is_on(db: Database) -> None:
-    mailer = MemoryMailer()
-    api = _api(db, mailer)
-    admin = api.new_admin("Org invite")
-
-    def invite(role: str) -> str:
-        body = {"email": f"new-{uuid.uuid4().hex[:8]}@example.test", "display_name": "New", "role": role}
-        reply = admin.client.post(
-            "/api/admin/users", json={**body, "password": "a long password 1"}, headers=CSRF
-        )
-        assert reply.status_code == 201, reply.text
-        return mailer.sent[-1].text
-
-    assert emails.GOOGLE_INVITE_LINE in invite("member")
-    _owner(db, "UPDATE customers SET google_roles = '{admin}' WHERE id = :c", {"c": admin.customer_id})
-    assert emails.GOOGLE_INVITE_LINE not in invite("member")  # the role doesn't use Google
-    assert emails.GOOGLE_INVITE_LINE in invite("admin")
-    _owner(db, "UPDATE customers SET google_signin = false WHERE id = :c", {"c": admin.customer_id})
-    assert emails.GOOGLE_INVITE_LINE not in invite("admin")

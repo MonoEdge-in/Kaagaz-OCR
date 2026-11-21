@@ -508,6 +508,9 @@ class Settings:
     keycloak_required_acr: str | None = None
     keycloak_provider_claim: str = "auth_provider"
     keycloak_flow_encryption_key: str | None = field(default=None, repr=False)
+    # The service account that makes company sign-in accounts (API only, like the client secret).
+    keycloak_admin_client_id: str | None = None
+    keycloak_admin_client_secret: str | None = field(default=None, repr=False)
     # The WhatsApp worker can enforce MFA without receiving Keycloak client credentials.
     customer_mfa_required: bool = False
     # Mistral OCR, the second page reader the operator may choose per organisation (#473, Tushar,
@@ -567,6 +570,7 @@ class Settings:
             raise SettingsError("TOTP_ENCRYPTION_KEY must differ from SESSION_SECRET")
         keycloak_issuer = keycloak_client_id = keycloak_redirect_uri = keycloak_required_acr = None
         keycloak_client_secret = None
+        keycloak_admin_client_id = keycloak_admin_client_secret = None
         keycloak_provider_claim = "auth_provider"
         keycloak_flow_key = None
         if keycloak_on:
@@ -583,6 +587,8 @@ class Settings:
                 raise SettingsError("KEYCLOAK_REQUIRED_ACR must be a non-empty printable value")
             keycloak_provider_claim = env.optional("KEYCLOAK_PROVIDER_CLAIM") or "auth_provider"
             keycloak_flow_key = env.secret("KEYCLOAK_FLOW_ENCRYPTION_KEY")
+            keycloak_admin_client_id = env.token("KEYCLOAK_ADMIN_CLIENT_ID")
+            keycloak_admin_client_secret = env.secret("KEYCLOAK_ADMIN_CLIENT_SECRET")
             if keycloak_flow_key in {session_secret, totp_encryption_key}:
                 raise SettingsError("KEYCLOAK_FLOW_ENCRYPTION_KEY must differ from other keys")
         queue_lease_seconds = env.integer("QUEUE_LEASE_SECONDS")
@@ -900,6 +906,8 @@ class Settings:
             keycloak_required_acr=keycloak_required_acr,
             keycloak_provider_claim=keycloak_provider_claim,
             keycloak_flow_encryption_key=keycloak_flow_key,
+            keycloak_admin_client_id=keycloak_admin_client_id,
+            keycloak_admin_client_secret=keycloak_admin_client_secret,
             customer_mfa_required=env.optional("CUSTOMER_MFA_REQUIRED") is not None
             and env.boolean("CUSTOMER_MFA_REQUIRED"),
             mistral_api_key=mistral_api_key,

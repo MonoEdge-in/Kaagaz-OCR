@@ -27,8 +27,6 @@
   admin's reset: someone may have taken the account; audited ``auth.identity_unlinked``
   {count}), is audited ``auth.password_reset`` and sends a security notice. No session
   starts: the page sends them to sign in, and an admin still types their code.
-* ``POST /auth/invite/accept`` {token, new_password}: the same for an invite from an admin
-  (``routers/admin.py``), audited ``auth.invite_accepted``.
 
 A link that is unknown, for something else, used or expired: 400 ``link_expired``, the
 same words for each. A link is used in the same transaction that acts on it, by one UPDATE
@@ -150,12 +148,6 @@ def reset_password(body: NewPasswordBody, background: BackgroundTasks, context: 
     notice = emails.password_was_reset
     who = (context, link.customer_id, link.user_id)
     emails.after(background, "password_reset", emails.notify, *who, "password_reset", notice)
-    return {"ok": True}
-
-
-@router.post("/auth/invite/accept")
-def accept_invite(body: NewPasswordBody, context: Context) -> dict[str, bool]:
-    _set_password(context, body, "invite", "auth.invite_accepted")
     return {"ok": True}
 
 

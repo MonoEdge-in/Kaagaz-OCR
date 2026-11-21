@@ -7,11 +7,15 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.api import totp
+from kaagaz.db import keycloak as keycloak_sql
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate
+from tests.settings_factory import make_settings
+from tests.test_api_admin import ISSUER, KEYCLOAK_ON, _Keycloak
 from tests.test_api_support import CSRF, NOW, PDF_BYTES, Api, TestClient, wrong_code
 from tests.test_operator_auth_db import _UNLOCK, WRONG, _Operator
 
@@ -73,28 +77,81 @@ def test_the_list_has_counts_and_names_no_document_or_user(db: Database) -> None
     assert _platform(operator) == []  # a read writes nothing
 
 
-def test_a_new_organisation_whose_first_admin_must_change_the_temporary_password(db: Database) -> None:
-    api = Api(db)
+def test_a_new_organisation_gets_its_admin_a_linked_company_sign_in_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keycloak = _Keycloak(monkeypatch)
+    api = Api(db, settings=make_settings(**KEYCLOAK_ON))
     operator, client = _signed_in(api)
     email = f"boss-{uuid.uuid4().hex[:12]}@example.test"
     body = {"name": "Org New", "admin_email": email.upper(), "admin_name": "Boss"}
     created = client.post(ORGS, json=body, headers=CSRF)
     assert created.status_code == 201, created.text
-    customer_id, temporary = created.json()["organisation"]["id"], created.json()["temporary_password"]
+    reply = created.json()
+    customer_id = reply["organisation"]["id"]
+    assert "temporary_password" not in reply and reply["setup_email_sent"] is True
+    assert reply["message"].startswith(f"Created. We emailed {email} a link to set their password")
+    assert keycloak.names() == ["create_user", "send_setup_email"]
+    with db.system() as conn:  # the admin is linked to exactly the account that was made
+        found = keycloak_sql.lookup(conn, ISSUER, keycloak.subject())
+    assert found is not None and found.customer_id == customer_id
     taken = client.post(ORGS, json={**body, "name": "Org Probe"}, headers=CSRF)
     assert taken.json()["error"]["message"] == "That e-mail is already in use."  # and nothing is made
-
-    admin = api.client()
-    signed = admin.post("/api/auth/login", json={"email": email, "password": temporary}, headers=CSRF)
-    assert signed.status_code == 200, signed.text
-    assert signed.json()["customer"]["id"] == customer_id  # this organisation only
-    assert (signed.json()["user"]["role"], signed.json()["user"]["must_change_password"]) == ("admin", True)
-    assert admin.get("/api/documents").json()["error"]["code"] == "password_change_required"
+    assert keycloak.names() == ["create_user", "send_setup_email"]  # no second account either
     assert _platform(operator) == [
         ("customer.create", customer_id, "customer", customer_id),
         ("customer.create_refused", None, "customer", None),  # the probe leaves a trace, no e-mail
     ]
     assert "Org Probe" not in client.get(ORGS).text
+
+
+def test_an_email_keycloak_already_has_makes_no_organisation(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keycloak = _Keycloak(monkeypatch)
+    api = Api(db, settings=make_settings(**KEYCLOAK_ON))
+    operator, client = _signed_in(api)
+    email = f"known-{uuid.uuid4().hex[:12]}@example.test"
+    keycloak.existing.add(email)
+    reply = client.post(
+        ORGS, json={"name": "Org Known", "admin_email": email, "admin_name": "Boss"}, headers=CSRF
+    )
+    assert reply.status_code == 409
+    assert "already has a company sign-in account" in reply.json()["error"]["message"]
+    assert keycloak.calls == [] and _platform(operator) == []
+    assert "Org Known" not in client.get(ORGS).text
+
+
+def test_move_everyone_links_each_active_person_once_and_never_an_existing_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keycloak = _Keycloak(monkeypatch)
+    api = Api(db, settings=make_settings(**KEYCLOAK_ON))
+    _, client = _signed_in(api)
+    customer, admin_id = api.customer("Org Move")
+    new_id, _ = api.add_user(customer, "member")
+    taken_id, taken_email = api.add_user(customer, "reviewer")
+    off_id, _ = api.add_user(customer, "member")
+    with db.customer(customer) as conn:
+        conn.execute(text("UPDATE users SET disabled = true WHERE id = :u"), {"u": off_id})
+    keycloak.existing.add(taken_email)
+
+    summary = client.get(f"{ORGS}/{customer}/sign-in").json()
+    assert (summary["connected"], summary["to_move"]) == (0, 3)  # the admin, the member, the reviewer
+    moved = client.post(f"{ORGS}/{customer}/move-everyone", headers=CSRF)
+    assert moved.status_code == 200, moved.text
+    body = moved.json()
+    assert (body["moved"], body["connected"], len(body["attention"])) == (2, 0, 1)
+    assert body["attention"][0]["email"] == taken_email
+    assert body["message"] == "2 moved, 0 already connected, 1 need attention."
+    assert keycloak.names().count("create_user") == 2  # the admin and the member; not the taken email
+    again = client.post(f"{ORGS}/{customer}/move-everyone", headers=CSRF).json()
+    assert (again["moved"], again["connected"]) == (0, 2)  # safe to run again: the linked are skipped
+    assert [a["email"] for a in again["attention"]] == [taken_email]
+    with db.customer(customer) as conn:
+        linked = {p.user_id: p.linked for p in keycloak_sql.people(conn, customer, ISSUER)}
+    assert linked == {admin_id: True, new_id: True, taken_id: False, off_id: False}
+    assert keycloak.names().count("send_setup_email") == 2
 
 
 def test_disabling_takes_a_fresh_code_once_and_ends_only_that_organisations_sessions(db: Database) -> None:

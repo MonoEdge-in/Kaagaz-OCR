@@ -40,7 +40,19 @@
   ],
   "adminEventsEnabled": true,
   "adminEventsDetailsEnabled": false,
-  "users": [],
+  "users": [
+    {
+      "username": "service-account-kaagaz-provisioner",
+      "enabled": true,
+      "serviceAccountClientId": "kaagaz-provisioner",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users"
+        ]
+      }
+    }
+  ],
   "identityProviders": [],
   "identityProviderMappers": [],
   "clients": [
@@ -125,6 +137,27 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "kaagaz-provisioner",
+      "name": "Kaagaz account provisioner",
+      "description": "Server-to-server only: makes and manages company sign-in accounts. No browser sign-in.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "clientAuthenticatorType": "client-secret",
+      "publicClient": false,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "redirectUris": [],
+      "webOrigins": [],
+      "defaultClientScopes": [],
+      "optionalClientScopes": []
     }
   ],
   "authenticationFlows": [

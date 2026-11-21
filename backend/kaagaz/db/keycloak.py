@@ -372,3 +372,73 @@ def revoke_all_sessions(conn: Connection, *, now: datetime) -> int:
     if not isinstance(count, int):
         raise TypeError("session revocation count is not an integer")
     return count
+
+
+@dataclass(frozen=True, slots=True)
+class Person:
+    user_id: str
+    email: str
+    name: str
+    disabled: bool
+    linked: bool
+
+
+def link_account(
+    conn: Connection, issuer: str, subject: str, *, now: datetime, as_user: str | None = None
+) -> int:
+    """Link the user of this ``Database.user`` transaction to a Keycloak account an admin made.
+
+    The Keycloak account was created by Kaagaz itself a moment ago (never found by email), so
+    stage and finalize run together. Returns the raised session_version. IdentityTaken when the
+    subject or user already has a link. ``as_user``: a user this same transaction just created, so
+    the context moves to them first (the functions take the user from the context).
+    """
+    if as_user is not None:
+        conn.execute(text("SELECT set_config('kaagaz.user_id', :u, true)"), {"u": str(UUID(as_user))})
+    version = conn.execute(
+        text(
+            "SELECT session_version FROM public.users"
+            " WHERE id = CAST(NULLIF(current_setting('kaagaz.user_id', true), '') AS uuid)"
+        )
+    ).scalar_one()
+    stage_link(conn, issuer, subject, now=now, expected_session_version=int(version))
+    return finalize_link(conn, issuer, subject, now=now, expected_session_version=int(version))
+
+
+def people(conn: Connection, customer_id: str, issuer: str) -> list[Person]:
+    """Every user of the customer and whether a Keycloak account of this issuer is linked.
+
+    ``conn`` from ``Database.customer``. Uses the read-only link function of 0104.
+    """
+    linked = subjects(conn, issuer)
+    rows = conn.execute(
+        text(
+            "SELECT id, email, display_name, disabled FROM public.users"
+            " WHERE customer_id = :c ORDER BY created_at, id"
+        ),
+        {"c": customer_id},
+    ).mappings()
+    return [
+        Person(
+            str(r["id"]), str(r["email"]), str(r["display_name"]), bool(r["disabled"]), str(r["id"]) in linked
+        )
+        for r in rows
+    ]
+
+
+def subjects(conn: Connection, issuer: str) -> dict[str, str]:
+    """The customer's linked Keycloak subjects of this issuer by user id (0104).
+
+    ``conn`` from ``Database.customer`` or ``Database.user``."""
+    return {
+        str(row["user_id"]): str(row["subject"])
+        for row in conn.execute(
+            text("SELECT user_id, issuer, subject FROM public.kaagaz_keycloak_subjects()")
+        ).mappings()
+        if row["issuer"] == issuer
+    }
+
+
+def subject_of(conn: Connection, user_id: str, issuer: str) -> str | None:
+    """The Keycloak subject linked to this user, or None."""
+    return subjects(conn, issuer).get(user_id)

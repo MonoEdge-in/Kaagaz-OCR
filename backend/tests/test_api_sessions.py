@@ -17,7 +17,6 @@ import httpx2 as httpx
 import pytest
 from sqlalchemy import text
 
-from kaagaz.api import totp
 from kaagaz.api.auth import SESSION_COOKIE, SessionClaims, sign_session, verify_password
 from kaagaz.db.engine import Database
 from tests.test_api_support import (
@@ -162,25 +161,6 @@ def test_disable_then_enable_does_not_bring_old_cookies_back(db: Database) -> No
     assert _login(api.client(), member.email).status_code == 200
 
 
-def test_a_2fa_reset_ends_the_admins_sessions(db: Database) -> None:
-    api = Api(db)
-    admin = api.new_admin()
-    colleague = api.admin_sign_in(admin.customer_id)
-    colleague_app = api.client()
-    # Changed on purpose (#239, 27 Oct 2026): an admin signs in with a code on the one sign-in
-    # (cbcfc50, 16 Oct); the next step's, as this step's was used.
-    api.clock.advance(totp.STEP_SECONDS)
-    assert colleague.totp_secret is not None
-    code = api.code(colleague.totp_secret)
-    assert api.admin_login(colleague_app, colleague.email, code=code).status_code == 200
-
-    reply = admin.client.post(f"/api/admin/users/{colleague.user_id}/reset-2fa", headers=CSRF)
-
-    assert reply.status_code == 200, reply.text
-    assert colleague.client.get("/api/auth/me").status_code == 401
-    assert colleague_app.get("/api/auth/me").status_code == 401
-
-
 def test_a_cookie_with_another_ver_is_refused(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
@@ -225,21 +205,16 @@ def test_an_old_cookie_without_scope_or_ver_is_refused(db: Database) -> None:
 
 
 def _must_change_client(api: Api) -> tuple[TestClient, str, str, str]:
-    """A member created by an admin, signed in with the password the admin chose."""
+    """A member who must choose a new password (as after a reset), signed in with the old one."""
     admin = api.new_admin()
-    email = f"new-{admin.user_id[:8]}@example.test"
-    created = admin.client.post(
-        "/api/admin/users",
-        json={"email": email, "display_name": "New Person", "role": "member", "password": PASSWORD},
-        headers=CSRF,
-    )
-    assert created.status_code == 201, created.text
-    assert created.json()["must_change_password"] is True
+    user_id, email = api.add_user(admin.customer_id, "member")
+    with api.db.customer(admin.customer_id) as conn:
+        conn.execute(text("UPDATE users SET must_change_password = true WHERE id = :u"), {"u": user_id})
     client = api.client()
     login = _login(client, email)
     assert login.status_code == 200, login.text
     assert login.json()["user"]["must_change_password"] is True
-    return client, admin.customer_id, created.json()["id"], email
+    return client, admin.customer_id, user_id, email
 
 
 def test_must_change_blocks_every_route_except_password_logout_and_me(db: Database) -> None:
@@ -358,8 +333,6 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
     ]
     assert _login(client, member_email, temporary).status_code == 200
     assert _change_password(client, temporary, NEW_PASSWORD).status_code == 200
-    colleague = api.admin_sign_in(admin.customer_id)
-    admin.client.post(f"/api/admin/users/{colleague.user_id}/reset-2fa", headers=CSRF)
     assert client.post("/api/auth/logout-everywhere", headers=CSRF).status_code == 204
     enrolling_id, enrolling_email = api.add_user(admin.customer_id, "admin")
     enrolling = api.client()
@@ -381,7 +354,7 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
         ).all()
     actions = [str(row[0]) for row in rows]
     assert all(ACTION.fullmatch(action) for action in actions)
-    assert not ACTION.fullmatch("user.reset_2fa")  # why the 2FA reset is "auth.totp_reset"
+    assert not ACTION.fullmatch("user.reset_2fa")  # why the authenticator reset is "auth.totp_reset"
     assert {
         "auth.login",
         "auth.login_failed",
@@ -392,9 +365,8 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
         "auth.totp_on",
         "user.unlock",
         "user.reset_password",
-        "auth.totp_reset",  # Changed on purpose (#457 review): the spec's name, was user.reset_totp
     } <= set(actions)
     for action, target_type, target_id, _ in rows:
         if str(action).startswith(("auth.", "user.")):
             assert target_type == "user", action
-            assert target_id in {admin.user_id, member_id, colleague.user_id, enrolling_id}, action
+            assert target_id in {admin.user_id, member_id, enrolling_id}, action

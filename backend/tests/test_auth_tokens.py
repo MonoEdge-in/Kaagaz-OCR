@@ -471,6 +471,8 @@ def test_keycloak_defaults_match_stock_realm_and_worker_mfa_policy_is_optional()
             KEYCLOAK_ISSUER="http://keycloak.localhost:8081/realms/kaagaz-local",
             KEYCLOAK_CLIENT_ID="kaagaz-web",
             KEYCLOAK_CLIENT_SECRET="a-valid-test-keycloak-client-secret-000",
+            KEYCLOAK_ADMIN_CLIENT_ID="kaagaz-provisioner",
+            KEYCLOAK_ADMIN_CLIENT_SECRET="a-valid-test-keycloak-admin-secret-0000",
             KEYCLOAK_REDIRECT_URI="http://localhost:3000/api/auth/keycloak/callback",
             KEYCLOAK_FLOW_ENCRYPTION_KEY="a-distinct-keycloak-flow-key-for-tests-000",
             CUSTOMER_MFA_REQUIRED="true",
@@ -479,6 +481,41 @@ def test_keycloak_defaults_match_stock_realm_and_worker_mfa_policy_is_optional()
     assert settings.keycloak_required_acr == "1"
     assert settings.keycloak_provider_claim == "auth_provider"
     assert settings.customer_mfa_required is True
+
+
+def _keycloak_env(**changes: str | None) -> dict[str, str]:
+    values: dict[str, str | None] = {
+        "KEYCLOAK_ENABLED": "true",
+        "KEYCLOAK_ISSUER": "http://keycloak.localhost:8081/realms/kaagaz-local",
+        "KEYCLOAK_CLIENT_ID": "kaagaz-web",
+        "KEYCLOAK_CLIENT_SECRET": "a-valid-test-keycloak-client-secret-000",
+        "KEYCLOAK_REDIRECT_URI": "http://localhost:3000/api/auth/keycloak/callback",
+        "KEYCLOAK_FLOW_ENCRYPTION_KEY": "a-distinct-keycloak-flow-key-for-tests-000",
+        "KEYCLOAK_ADMIN_CLIENT_ID": "kaagaz-provisioner",
+        "KEYCLOAK_ADMIN_CLIENT_SECRET": "a-valid-test-keycloak-admin-secret-0000",
+        **changes,
+    }
+    return _example_env(**values)
+
+
+def test_keycloak_admin_client_is_read_and_its_secret_is_hidden() -> None:
+    settings = Settings.from_env(_keycloak_env())
+    assert settings.keycloak_admin_client_id == "kaagaz-provisioner"
+    assert settings.keycloak_admin_client_secret == "a-valid-test-keycloak-admin-secret-0000"
+    assert "keycloak-admin-secret" not in repr(settings)
+
+
+@pytest.mark.parametrize("name", ["KEYCLOAK_ADMIN_CLIENT_ID", "KEYCLOAK_ADMIN_CLIENT_SECRET"])
+def test_keycloak_admin_client_is_required_when_keycloak_is_on(name: str) -> None:
+    with pytest.raises(SettingsError, match=name):
+        Settings.from_env(_keycloak_env(**{name: None}))
+
+
+def test_a_short_keycloak_admin_secret_is_refused_without_the_value() -> None:
+    short = "only-31-characters-long-0000000"
+    with pytest.raises(SettingsError, match="KEYCLOAK_ADMIN_CLIENT_SECRET") as caught:
+        Settings.from_env(_keycloak_env(KEYCLOAK_ADMIN_CLIENT_SECRET=short))
+    assert short not in str(caught.value)
 
 
 @pytest.mark.parametrize(

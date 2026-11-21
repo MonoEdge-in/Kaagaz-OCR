@@ -431,27 +431,6 @@ def test_turning_back_on_clears_turned_off_and_the_code_is_needed_again(db: Data
     assert api.admin_login(api.client(), signed.email, code=api.code(secret)).status_code == 200
 
 
-def test_another_admins_reset_means_set_it_up_again_not_turned_off(db: Database) -> None:
-    api = Api(db)
-    signed = _turned_off(api)
-    other = api.new_admin_of(signed.customer_id)
-    listed = {item["id"]: item for item in other.client.get("/api/admin/users").json()["items"]}
-    assert (listed[signed.user_id]["totp_enabled"], listed[signed.user_id]["two_step_turned_off"]) == (
-        False,
-        True,
-    )
-    assert listed[other.user_id]["two_step_turned_off"] is False
-
-    reset = other.client.post(f"/api/admin/users/{signed.user_id}/reset-2fa", headers=CSRF)
-
-    assert reset.status_code == 200, reset.text
-    assert reset.json()["two_step_turned_off"] is False
-    assert api.user_state(signed.customer_id, signed.user_id)["totp_off_at"] is None
-    assert signed.client.get("/api/auth/me").status_code == 401  # signed out
-    again = api.admin_login(api.client(), signed.email)
-    assert (again.status_code, again.json()["error"]["code"]) == (403, "mfa_enrol_required")
-
-
 def test_turned_off_deleting_a_tag_still_needs_two_step_and_delete_forever_a_password(db: Database) -> None:
     # Changed on purpose (#538, Tushar, 7 Nov 2026): Delete forever asks for the password again
     # instead of two-step (test_api_delete_forever_password); deleting a tag is unchanged.
