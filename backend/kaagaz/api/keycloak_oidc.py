@@ -140,6 +140,11 @@ def verified_identity(settings: Settings, token: str, *, nonce: str, now: int, s
         # The first post-enrollment OTP flow may still carry only the password AMR. One fresh
         # company sign-in then executes both authenticators and succeeds without trusting ACR.
         raise OidcError("mfa_verify_again")
+    # No brokered or social sign-in is allowed: the realm emits this claim only for one, so any
+    # value refuses; absent or empty is the local password-plus-OTP execution.
+    provider_claim = claims.get(settings.keycloak_provider_claim)
+    if provider_claim is not None and provider_claim != "":
+        raise OidcError("organization_provider_policy_unconfigured")
     provider = "local"
     return Identity(
         issuer=settings.keycloak_issuer or "",

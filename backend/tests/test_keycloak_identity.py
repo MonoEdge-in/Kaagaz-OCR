@@ -109,7 +109,7 @@ def test_finalize_call_has_no_caller_selected_user_or_customer() -> None:
 ISSUER = "https://id.example.test/realms/kaagaz"
 CLIENT_ID = "kaagaz-api"
 ACR = "1"
-PROVIDER_CLAIM = "auth_provider"
+PROVIDER_CLAIM = "authentication_provider"
 OIDC_NOW = 1_800_000_000
 
 
@@ -121,7 +121,7 @@ def _settings(**overrides: object) -> Settings:
         "keycloak_client_secret": "server-side-confidential-secret",
         "keycloak_redirect_uri": "https://app.example.test/api/auth/keycloak/callback",
         "keycloak_required_acr": ACR,
-        "keycloak_provider_claim": "auth_provider",
+        "keycloak_provider_claim": "authentication_provider",
         "keycloak_flow_encryption_key": "a-distinct-keycloak-flow-encryption-secret-value",
     }
     values.update(overrides)
@@ -202,7 +202,6 @@ def _identity_claims(**overrides: object) -> dict[str, object]:
         "sid": "opaque-keycloak-session",
         "acr": ACR,
         "amr": ["pwd", "otp"],
-        PROVIDER_CLAIM: "local",
     }
     claims.update(overrides)
     return claims
@@ -320,7 +319,6 @@ def test_rs256_identity_accepts_rotated_key_and_uses_amr_despite_a_stale_broker_
         private,
         _identity_claims(
             **{
-                PROVIDER_CLAIM: "google-broker",
                 "amr": ["pwd", "otp"],
                 "email": "  Person@Example.Test ",
                 "email_verified": True,
@@ -338,11 +336,37 @@ def test_rs256_identity_accepts_rotated_key_and_uses_amr_despite_a_stale_broker_
     assert refreshes == [False, True]
 
 
+@pytest.mark.parametrize("value", ["google", "company-password", "local", ["google"], 1, False])
+def test_a_configured_provider_claim_with_any_value_is_refused(
+    monkeypatch: pytest.MonkeyPatch, value: object
+) -> None:
+    private = _key()
+    _install_fake_provider(monkeypatch, private)
+    token = _token(private, _identity_claims(**{PROVIDER_CLAIM: value}))
+    with pytest.raises(keycloak_oidc.OidcError, match="organization_provider_policy_unconfigured"):
+        keycloak_oidc.verified_identity(
+            _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW
+        )
+
+
+@pytest.mark.parametrize("claims", [{}, {PROVIDER_CLAIM: ""}, {PROVIDER_CLAIM: None}])
+def test_an_absent_or_empty_provider_claim_is_the_local_password_sign_in(
+    monkeypatch: pytest.MonkeyPatch, claims: dict[str, object]
+) -> None:
+    private = _key()
+    _install_fake_provider(monkeypatch, private)
+    token = _token(private, _identity_claims(**claims))
+    identity = keycloak_oidc.verified_identity(
+        _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW
+    )
+    assert identity.authentication_provider == "local"
+
+
 @pytest.mark.parametrize("amr", [["pwd"], ["otp"], [], None, "pwd otp"])
 def test_identity_requires_executed_password_and_otp(monkeypatch: pytest.MonkeyPatch, amr: object) -> None:
     private = _key()
     _install_fake_provider(monkeypatch, private)
-    token = _token(private, _identity_claims(amr=amr, **{PROVIDER_CLAIM: "company-password"}))
+    token = _token(private, _identity_claims(amr=amr))
     with pytest.raises(keycloak_oidc.OidcError, match="mfa_verify_again"):
         keycloak_oidc.verified_identity(
             _settings(), token, nonce="flow-nonce", now=OIDC_NOW, started_at=OIDC_NOW
