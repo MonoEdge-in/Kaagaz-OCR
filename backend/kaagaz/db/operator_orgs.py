@@ -168,3 +168,14 @@ def step_up_failed(conn: Connection, operator_id: str, *, locked: bool) -> None:
 def _write(conn: Connection, call: TextClause, params: dict[str, Any]) -> Outcome:
     row = conn.execute(call, params).one()
     return Outcome(str(row[0]), None if row[1] is None else str(row[1]))
+
+
+def record_move_everyone(
+    conn: Connection, operator_id: str, customer_id: str, *, moved: int, attention: int, step: int
+) -> Outcome:
+    """Use up the fresh code (``step``), then write the audit rows for a Move everyone run (0105)."""
+    return _write(
+        conn,
+        text("SELECT outcome, result_id FROM kaagaz_op_move_everyone(:o, :c, :moved, :attention, :step)"),
+        {"o": operator_id, "c": customer_id, "moved": moved, "attention": attention, "step": step},
+    )

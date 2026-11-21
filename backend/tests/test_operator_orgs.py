@@ -133,7 +133,13 @@ class _Offline:
         monkeypatch.setattr(operators_sql, "begin_login", None)  # never the sign-in's count
         monkeypatch.setattr(orgs_sql, "begin_step_up", self._begin)
         monkeypatch.setattr(orgs_sql, "list_customers", lambda conn, oid: [ORG_ROW])
-        for name in ("create_customer", "set_customer_status", "step_up_failed", "set_org_autofile"):
+        for name in (
+            "create_customer",
+            "set_customer_status",
+            "step_up_failed",
+            "set_org_autofile",
+            "record_move_everyone",
+        ):
             monkeypatch.setattr(orgs_sql, name, self._recorder(name))
         # Changed on purpose (#457 review): a new organisation first frees a stale sign-up's
         # e-mail through the app's database (tests/test_api_email.py proves it).
@@ -151,6 +157,8 @@ class _Offline:
         monkeypatch.setattr(kc_admin, "find_user_by_email", self._find)
         monkeypatch.setattr(kc_admin, "create_user", self._create)
         monkeypatch.setattr(kc_admin, "send_setup_email", self._send)
+        self.unfinished = True
+        monkeypatch.setattr(kc_admin, "setup_unfinished", lambda settings, subject: self.unfinished)
         for name in ("remove_otp", "set_enabled", "delete_user", "clear_lock"):
             monkeypatch.setattr(kc_admin, name, self._kc_recorder(name))
         monkeypatch.setattr(db, "customer", lambda customer_id: nullcontext(None))
@@ -284,6 +292,7 @@ def _first_admin_row(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(orgs_sql, "list_admins", lambda conn, oid, cid: [{"user_id": UID}])
 
 
+GO = {"code": totp.code_at(OWN, STEP)}  # a fresh code from the operator's own authenticator
 NEW_ORG = {"name": " Mehta ", "admin_email": "Boss@Mehta.Example", "admin_name": "Boss"}
 
 
@@ -378,15 +387,20 @@ def test_move_everyone_counts_moved_connected_and_those_needing_attention(offlin
         Person("00000000-0000-4000-8000-000000000003", "off@x.test", "Off", True, False),
     ]
     offline.existing.add("taken@x.test")
-    reply = offline.post(f"/{CID}/move-everyone")
+    reply = offline.post(f"/{CID}/move-everyone", GO)
     assert reply.status_code == 200, reply.text
     assert reply.json() == {
         "moved": 1,
         "connected": 1,
         "attention": [
-            {"email": "taken@x.test", "reason": "This email already has a company sign-in account."}
+            {
+                "email": "taken@x.test",
+                "reason": "This email already has a company sign-in account.",
+                "kind": "exists",
+            }
         ],
         "email_not_sent": [],
+        "still_to_move": 0,
         "message": "1 moved, 1 already connected, 1 need attention.",
     }
     # the taken email was neither created nor linked; the switched-off person was left alone
@@ -402,11 +416,11 @@ def test_move_everyone_reports_emails_not_sent_and_refuses_an_organisation_that_
 ) -> None:
     offline.people = [Person(CID, "new@x.test", "New", False, False)]
     offline.email_fails = True
-    reply = offline.post(f"/{CID}/move-everyone").json()
+    reply = offline.post(f"/{CID}/move-everyone", GO).json()
     assert (reply["moved"], reply["email_not_sent"]) == (1, [{"user_id": CID, "email": "new@x.test"}])
     assert reply["message"].endswith("1 setup email(s) were not sent: use Resend setup email.")
     monkeypatch.setattr(orgs_router, "_people", lambda context, customer_id: ("disabled", offline.people))
-    refused = offline.post(f"/{CID}/move-everyone")
+    refused = offline.post(f"/{CID}/move-everyone", GO)
     assert (refused.status_code, refused.json()["error"]["message"]) == (
         409,
         "Enable the organisation first.",
@@ -423,7 +437,7 @@ def test_move_everyone_stops_when_keycloak_is_down(
         raise kc_admin.KeycloakAdminError()
 
     monkeypatch.setattr(kc_admin, "find_user_by_email", down)
-    reply = offline.post(f"/{CID}/move-everyone").json()
+    reply = offline.post(f"/{CID}/move-everyone", GO).json()
     assert reply["moved"] == 0 and [a["email"] for a in reply["attention"]] == ["a@x.test", "b@x.test"]
     assert offline.kc == [("find", ("a@x.test",))]  # the second person was not tried
 
@@ -525,3 +539,67 @@ def test_the_two_step_grant_route_is_gone(offline: _Offline) -> None:
     reply = offline.client.put(f"{ORGS}/{CID}/two-step", json={"granted": True}, headers=offline.headers)
     assert reply.status_code in (404, 405)
     assert offline.calls == []
+
+
+def test_move_everyone_needs_a_fresh_code_and_records_one_audit_row_with_counts(offline: _Offline) -> None:
+    offline.people = [Person(UID, "new@x.test", "New", False, False)]
+    assert offline.post(f"/{CID}/move-everyone").status_code == 400  # no code at all
+    wrong = offline.post(f"/{CID}/move-everyone", {"code": totp.code_at(totp.new_secret(), STEP)})
+    assert (wrong.status_code, wrong.json()["error"]["code"]) == (403, "step_up_failed")
+    assert offline.kc == []  # nobody was moved
+    offline.calls.clear()
+    assert offline.post(f"/{CID}/move-everyone", GO).status_code == 200
+    [(name, args, kwargs)] = offline.calls
+    assert (name, args[1:], kwargs["moved"], kwargs["attention"], kwargs["step"]) == (
+        "record_move_everyone",
+        (CID,),
+        1,
+        0,
+        STEP,
+    )
+
+
+def test_move_everyone_moves_at_most_fifty_and_says_how_many_are_still_to_move(offline: _Offline) -> None:
+    offline.people = [
+        Person(f"00000000-0000-4000-8000-{n:012d}", f"p{n}@x.test", f"P {n}", False, False) for n in range(53)
+    ]
+    first = offline.post(f"/{CID}/move-everyone", GO).json()
+    assert (first["moved"], first["still_to_move"]) == (50, 3)
+    assert first["message"].endswith("3 still to move. Press Move again to continue.")
+    assert offline.kc_names().count("create_user") == 50
+
+
+def test_move_everyone_does_not_count_a_taken_email_against_the_fifty(offline: _Offline) -> None:
+    offline.people = [
+        Person(f"00000000-0000-4000-8000-{n:012d}", f"p{n}@x.test", f"P {n}", False, False) for n in range(52)
+    ]
+    offline.existing.update(f"p{n}@x.test" for n in range(2))  # the first two never move
+    reply = offline.post(f"/{CID}/move-everyone", GO).json()
+    assert (reply["moved"], len(reply["attention"]), reply["still_to_move"]) == (50, 2, 0)
+
+
+def test_resend_setup_is_refused_for_a_person_who_finished_setting_up(offline: _Offline) -> None:
+    offline.unfinished = False
+    reply = offline.post(f"/{CID}/people/{UID}/resend-setup")
+    assert reply.status_code == 409
+    assert reply.json()["error"]["message"] == accounts.ALREADY_SET_UP
+    assert offline.kc == []  # no email: a finished account is left alone
+
+
+def test_disabling_an_organisation_stops_at_the_first_unreachable_call(
+    offline: _Offline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    offline.people = [
+        Person(f"00000000-0000-4000-8000-{n:012d}", f"p{n}@x.test", f"P{n}", False, True) for n in range(3)
+    ]
+    offline.subjects = {p.user_id: f"sub-{i}" for i, p in enumerate(offline.people)}
+    seen: list[str] = []
+
+    def down(settings: Any, subject: str, enabled: bool) -> None:
+        seen.append(subject)
+        raise kc_admin.KeycloakAdminError()
+
+    monkeypatch.setattr(kc_admin, "set_enabled", down)
+    reply = offline.post(f"/{CID}/enable")
+    assert reply.status_code == 502 and seen == ["sub-0"]  # the others were not tried
+    assert "3 sign-in account(s) could not be updated" in reply.json()["error"]["message"]

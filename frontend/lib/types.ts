@@ -1708,7 +1708,8 @@ export interface SignInSummary {
 export interface MoveResult {
   moved: number;
   connected: number;
-  attention: { email: string; reason: string }[];
+  attention: { email: string; reason: string; kind?: "exists" }[];
+  still_to_move: number;
   email_not_sent: { user_id: string; email: string }[];
   message: string;
 }

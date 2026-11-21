@@ -24,9 +24,16 @@ from kaagaz.settings import Settings
 
 logger = logging.getLogger(__name__)
 
-NOT_SET_UP = "Company sign-in is not set up on this server."
+NOT_SET_UP = kc.NOT_SET_UP
 EMAIL_NOT_SENT = "Added, but the setup email could not be sent. Use Resend setup email."
-NOT_LINKED = "This person is not on company sign-in yet."
+NOT_LINKED = "This person is not on company sign-in yet. Use Move everyone for their organisation first."
+NOT_LINKED_FOR_ADMIN = (
+    "This person is not on company sign-in yet."
+    " Ask your super admin to move your organisation to company sign-in."
+)
+ALREADY_SET_UP = (
+    "They have already set up their account. Ask them to use Forgot password, or reset their authenticator."
+)
 
 
 class AccountExists(Exception):
@@ -112,6 +119,17 @@ def subject_of(context: AppContext, customer_id: str, user_id: str) -> str | Non
         return keycloak_sql.subject_of(conn, user_id, context.settings.keycloak_issuer or "")
 
 
+def linked_subject(
+    context: AppContext, customer_id: str, user_id: str, *, not_linked: str = NOT_LINKED
+) -> str:
+    """The Keycloak subject of a LINKED person, else 409 with ``not_linked`` (or the server off)."""
+    require(context)
+    subject = subject_of(context, customer_id, user_id)
+    if subject is None:
+        raise ApiError(409, "conflict", not_linked)
+    return subject
+
+
 def act(
     context: AppContext,
     customer_id: str,
@@ -119,6 +137,7 @@ def act(
     action: Callable[[Settings, str], None],
     *,
     needs_link: bool = True,
+    not_linked: str = NOT_LINKED,
 ) -> bool:
     """Run one Keycloak action on a person's LINKED account. False: no link (nothing done), and
     ``needs_link`` raises 409 instead. A no-op while Keycloak is off unless ``needs_link``."""
@@ -128,7 +147,7 @@ def act(
     subject = subject_of(context, customer_id, user_id)
     if subject is None:
         if needs_link:
-            raise ApiError(409, "conflict", NOT_LINKED)
+            raise ApiError(409, "conflict", not_linked)
         return False
     try:
         action(context.settings, subject)
@@ -137,13 +156,29 @@ def act(
     return True
 
 
+def resend_setup(
+    context: AppContext, customer_id: str, user_id: str, *, not_linked: str = NOT_LINKED
+) -> None:
+    """Email a linked person a fresh setup link, only while their setup is unfinished: a finished
+    account would get its password and authenticator put back on it."""
+    subject = linked_subject(context, customer_id, user_id, not_linked=not_linked)
+    try:
+        unfinished = kc.setup_unfinished(context.settings, subject)
+    except kc.KeycloakAdminError as error:
+        raise _failed(error) from None
+    if not unfinished:
+        raise ApiError(409, "conflict", ALREADY_SET_UP)
+    if not send_setup(context, subject):
+        raise ApiError(502, "keycloak_unavailable", "We could not send the email. Try again in a minute.")
+
+
 def mirror_enabled(
     context: AppContext, customer_id: str, *, enabled_now: bool, only: Iterable[str] | None = None
 ) -> int:
     """Switch the linked accounts of some people (``only``) or the whole organisation on or off.
 
     Switching an organisation on leaves people an admin switched off still off. Returns how many
-    were changed; 502 after trying everyone when any failed (the Kaagaz change is kept, a second
+    were changed; 502 at the first failure, with the rest not tried (the Kaagaz change is kept, a second
     try finishes). Does nothing while Keycloak is off."""
     if not enabled(context):
         return 0
@@ -152,22 +187,22 @@ def mirror_enabled(
         issuer = context.settings.keycloak_issuer or ""
         people = keycloak_sql.people(conn, customer_id, issuer)
         subjects = keycloak_sql.subjects(conn, issuer)
-    changed = failed = 0
-    for person in people:
-        subject = subjects.get(person.user_id)
-        if subject is None or (wanted is not None and person.user_id not in wanted):
-            continue
-        if enabled_now and person.disabled and wanted is None:
-            continue
+    todo = [
+        subjects[p.user_id]
+        for p in people
+        if p.user_id in subjects
+        and (wanted is None or p.user_id in wanted)
+        and not (enabled_now and p.disabled and wanted is None)
+    ]
+    for index, subject in enumerate(todo):
         try:
             kc.set_enabled(context.settings, subject, enabled_now)
-            changed += 1
         except kc.KeycloakAdminError:
-            failed += 1
-    if failed:
-        raise ApiError(
-            502,
-            "keycloak_unavailable",
-            f"Saved here, but {failed} sign-in account(s) could not be updated. Try the same action again.",
-        )
-    return changed
+            # Keycloak is unreachable: stop here, and say how many were not tried.
+            raise ApiError(
+                502,
+                "keycloak_unavailable",
+                f"Saved here, but {len(todo) - index} sign-in account(s) could not be updated."
+                " Try the same action again.",
+            ) from None
+    return len(todo)

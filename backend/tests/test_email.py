@@ -189,7 +189,7 @@ class _Refusing(MemoryMailer):
         ),
     ],
 )
-def test_a_failed_send_says_why_and_an_invite_is_an_error(
+def test_a_failed_send_says_why_as_a_warning(
     caplog: pytest.LogCaptureFixture, error: Exception, said: str
 ) -> None:
     """SES's own error code, else the exception's type; never the address."""
@@ -197,11 +197,11 @@ def test_a_failed_send_says_why_and_an_invite_is_an_error(
         AppContext, SimpleNamespace(mailer=_Refusing(error), settings=SimpleNamespace(email_enabled=True))
     )
     caplog.set_level(logging.WARNING, logger="kaagaz.api.emails")
-    for purpose in ("invite", "reset"):
+    for purpose in ("confirm", "reset"):
         assert emails.send(context, "ramesh@example.com", purpose, ("S", "T")) is False
-    [invite, reset] = caplog.records
-    assert invite.getMessage() == f'{{"event":"email_failed","purpose":"invite","error":"{said}"}}'
-    assert (invite.levelno, reset.levelno) == (logging.ERROR, logging.WARNING)
+    [confirm, reset] = caplog.records
+    assert confirm.getMessage() == f'{{"event":"email_failed","purpose":"confirm","error":"{said}"}}'
+    assert (confirm.levelno, reset.levelno) == (logging.WARNING, logging.WARNING)
     assert "ramesh" not in caplog.text
 
 

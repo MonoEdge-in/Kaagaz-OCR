@@ -636,6 +636,7 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.email_confirmed": "Confirmed their email",
   "auth.password_reset": "Reset their password from an email",
   "auth.invite_sent": "Sent an invite",
+  "org.move_everyone": "Moved people to company sign-in",
   "auth.setup_email_sent": "Sent a setup email",
   "auth.invite_accepted": "Accepted an invite",
   "auth.logout_everywhere": "Signed out everywhere",

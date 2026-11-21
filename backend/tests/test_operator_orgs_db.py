@@ -127,7 +127,7 @@ def test_move_everyone_links_each_active_person_once_and_never_an_existing_accou
 ) -> None:
     keycloak = _Keycloak(monkeypatch)
     api = Api(db, settings=make_settings(**KEYCLOAK_ON))
-    _, client = _signed_in(api)
+    operator, client = _signed_in(api)
     customer, admin_id = api.customer("Org Move")
     new_id, _ = api.add_user(customer, "member")
     taken_id, taken_email = api.add_user(customer, "reviewer")
@@ -138,20 +138,37 @@ def test_move_everyone_links_each_active_person_once_and_never_an_existing_accou
 
     summary = client.get(f"{ORGS}/{customer}/sign-in").json()
     assert (summary["connected"], summary["to_move"]) == (0, 3)  # the admin, the member, the reviewer
-    moved = client.post(f"{ORGS}/{customer}/move-everyone", headers=CSRF)
+    moved = client.post(
+        f"{ORGS}/{customer}/move-everyone", json={"code": api.code(operator.secret)}, headers=CSRF
+    )
     assert moved.status_code == 200, moved.text
     body = moved.json()
     assert (body["moved"], body["connected"], len(body["attention"])) == (2, 0, 1)
     assert body["attention"][0]["email"] == taken_email
     assert body["message"] == "2 moved, 0 already connected, 1 need attention."
     assert keycloak.names().count("create_user") == 2  # the admin and the member; not the taken email
-    again = client.post(f"{ORGS}/{customer}/move-everyone", headers=CSRF).json()
+    api.clock.advance(totp.STEP_SECONDS)  # the next code: each run uses one up
+    code = {"code": api.code(operator.secret)}
+    again = client.post(f"{ORGS}/{customer}/move-everyone", json=code, headers=CSRF).json()
     assert (again["moved"], again["connected"]) == (0, 2)  # safe to run again: the linked are skipped
     assert [a["email"] for a in again["attention"]] == [taken_email]
     with db.customer(customer) as conn:
         linked = {p.user_id: p.linked for p in keycloak_sql.people(conn, customer, ISSUER)}
     assert linked == {admin_id: True, new_id: True, taken_id: False, off_id: False}
     assert keycloak.names().count("send_setup_email") == 2
+    move = ("org.move_everyone", customer, "customer", customer)
+    assert _platform(operator) == [move, move]  # one row per run, counts in the organisation's own log
+    with db.customer(customer) as conn:
+        counts = [
+            (row[0]["moved"], row[0]["need_attention"])
+            for row in conn.execute(
+                text("SELECT details FROM audit_log WHERE action = 'org.move_everyone' ORDER BY id")
+            )
+        ]
+    assert counts == [(2, 1), (0, 1)]
+    api.clock.advance(totp.STEP_SECONDS)
+    no_code = client.post(f"{ORGS}/{customer}/move-everyone", headers=CSRF)
+    assert no_code.status_code == 400  # a fresh code is needed
 
 
 def test_disabling_takes_a_fresh_code_once_and_ends_only_that_organisations_sessions(db: Database) -> None:

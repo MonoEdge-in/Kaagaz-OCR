@@ -159,10 +159,18 @@
       "fullScopeAllowed": false,
       "redirectUris": [],
       "webOrigins": [],
-      "defaultClientScopes": [],
+      "defaultClientScopes": ["roles", "kc-admin-api"],
       "optionalClientScopes": []
     }
   ],
+  "clientScopeMappings": {
+    "realm-management": [
+      {
+        "client": "kaagaz-provisioner",
+        "roles": ["manage-users", "view-users"]
+      }
+    ]
+  },
   "authenticationFlows": [
     {
       "alias": "kaagaz-browser",

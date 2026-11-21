@@ -219,3 +219,27 @@ def test_an_id_that_is_not_an_id_is_never_put_in_a_url(opener: _Opener) -> None:
         with pytest.raises(kc.KeycloakAdminError):
             kc.delete_user(SETTINGS, bad)
     assert opener.sent == []
+
+
+def test_setup_is_unfinished_while_an_action_is_required_or_there_is_no_authenticator(
+    opener: _Opener,
+) -> None:
+    user, credentials = ("GET", f"{ADMIN}/users/u-1"), ("GET", f"{ADMIN}/users/u-1/credentials")
+    opener.routes[user] = (200, {"requiredActions": ["UPDATE_PASSWORD"]}, {})
+    assert kc.setup_unfinished(SETTINGS, "u-1") is True
+    opener.routes[user] = (200, {"requiredActions": []}, {})
+    opener.routes[credentials] = (200, [{"id": "c1", "type": "password"}], {})
+    assert kc.setup_unfinished(SETTINGS, "u-1") is True  # no authenticator yet
+    opener.routes[credentials] = (200, [{"id": "c1", "type": "password"}, {"id": "c2", "type": "otp"}], {})
+    assert kc.setup_unfinished(SETTINGS, "u-1") is False  # finished: leave the account alone
+
+
+def test_a_refused_call_logs_its_status_code_and_nothing_else(
+    opener: _Opener, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("WARNING")
+    opener.routes[("GET", f"{ADMIN}/users")] = (403, None, {})
+    with pytest.raises(kc.KeycloakAdminError):
+        kc.find_user_by_email(SETTINGS, "a@x.test")
+    assert "status 403" in caplog.text
+    assert "a@x.test" not in caplog.text and SECRET not in caplog.text

@@ -606,6 +606,7 @@ OPERATOR_RIGHTS = {
             "kaagaz_op_change_admin",
             "kaagaz_op_schedule_delete",  # 0018
             "kaagaz_op_cancel_delete",
+            "kaagaz_op_move_everyone",  # 0105 (#737)
         ),
         ("record", EMPTY_PATH),
     ),

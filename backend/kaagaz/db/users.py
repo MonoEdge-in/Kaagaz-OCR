@@ -230,7 +230,9 @@ _ATTEMPT_COLUMNS = (
 _ADMIN_COLUMNS = (
     " u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
     " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
-    " u.session_version, u.delete_forever_allowed_at, u.auth_authority, EXISTS (SELECT 1 FROM customers c"
+    " u.session_version, u.delete_forever_allowed_at,"
+    " (u.auth_authority <> 'keycloak' OR u.last_login_at IS NULL) AS setup_waiting,"
+    " EXISTS (SELECT 1 FROM customers c"
     " WHERE c.id = u.customer_id AND c.admin_two_step_required) AS two_step_required, u.management"
 )
 

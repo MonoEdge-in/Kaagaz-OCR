@@ -493,7 +493,7 @@ function UserRow({
     ...(can.reset2fa
       ? [{ label: "Reset authenticator", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
       : []),
-    ...(user.company_sign_in === "connected"
+    ...(user.company_sign_in === "waiting" && user.role !== "admin"
       ? [{ label: "Resend setup email", description: USER_MENU_HELP.resendSetup, onSelect: () => void resend() }]
       : []),
     ...(whatsapp?.kind === "connected"
