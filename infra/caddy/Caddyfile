@@ -43,6 +43,12 @@
 	handle /kc/realms/master* {
 		respond 404
 	}
+	# Nor is a realm's own account console (/kc/realms/<realm>/account): Kaagaz's menu opens the
+	# password and authenticator pages through Keycloak's sign-in (#737).
+	@keycloak_account path /kc/realms/*/account /kc/realms/*/account/*
+	handle @keycloak_account {
+		respond 404
+	}
 	@keycloak_pages path /kc/realms/* /kc/resources/*
 	handle @keycloak_pages {
 		reverse_proxy keycloak:8080
