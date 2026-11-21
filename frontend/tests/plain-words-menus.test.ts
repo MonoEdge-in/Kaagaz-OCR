@@ -78,15 +78,15 @@ describe("the admin's user menu", () => {
     const labels = items.match(/\blabel: "/g)?.length ?? 0;
     // Changed on purpose (#457 phase 1): Remove connected accounts; (#603): Disconnect WhatsApp;
     // (PRD 7, #604): Access, Make Management, Stop Management; (#737): Resend setup email.
-    expect(labels).toBe(13);
+    expect(labels).toBe(11);
     expect(items.match(/\bdescription: USER_MENU_HELP\.\w+/g)).toHaveLength(labels);
-    // Reset password makes a one-time password the admin gives them (POST .../reset-password).
-    expect(USER_MENU_HELP.password).toMatch(/one-time password for you to give them/);
+    // Resend setup email: Keycloak sends the link that sets a password and an authenticator.
+    expect(USER_MENU_HELP.resendSetup).toMatch(/new link to set their password and authenticator/);
   });
 
   it("asks first before every item that takes something away", () => {
     // Changed on purpose (#457 phase 3): the spec's "Reset two-step code".
-    for (const label of ["Allow Delete forever", "Reset password", "Reset authenticator", "Disable"]) {
+    for (const label of ["Allow Delete forever", "Reset authenticator", "Disable"]) {
       expect(items, label).toMatch(new RegExp(`label: "${label}"[^}]*onSelect: \\(\\) => setConfirming\\(`));
     }
     expect(items).toMatch(/label: "Disable"[^}]*destructive: true/);
@@ -105,7 +105,7 @@ describe("the admin's user menu", () => {
   });
 
   it("says the item's own verb on the confirm button", () => {
-    expect(panel).toMatch(/disable: "Disable",\s*password: "Reset password",\s*"2fa": "Reset authenticator",\s*forever: "Allow Delete forever",/);
+    expect(panel).toMatch(/disable: "Disable",\s*"2fa": "Reset authenticator",\s*forever: "Allow Delete forever",/);
     expect(panel).not.toMatch(/Yes, (disable|reset|allow)|2FA/);
   });
 

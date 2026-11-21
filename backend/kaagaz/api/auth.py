@@ -535,7 +535,7 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
         "legacy_google",
         "legacy_google_mfa",
         "keycloak",
-    }:
+    }:  # old cookies still parse, to be refused by name in ``current_user``
         return None
     if (source == "keycloak") != (isinstance(assurance, str) and bool(assurance)):
         return None
@@ -728,15 +728,6 @@ class CurrentUser:
     idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
     seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
     email_confirmed: bool = False  # the user proved their e-mail with a link (0061)
-    # Google sign-in (#507, ``users._GOOGLE_COLUMNS``): the organisation's switch, else the
-    # platform's; the role may use Google; uses it only; a passing link; the domains; an approved
-    # link whose domain is not checked yet (``users.google_unchecked``).
-    google_on: bool = True
-    google_allowed: bool = True
-    google_only: bool = False
-    google_linked: bool = False
-    google_domains: tuple[str, ...] = ()
-    google_unchecked: bool = False
     auth_authority: str = "legacy"
     auth_source: str = "legacy_password"
     assurance: str | None = None
@@ -791,8 +782,8 @@ def set_confirm_cookie(
 def current_user(request: Request) -> CurrentUser:
     """The signed-in user, re-checked in the database on every request: 401 ``not_signed_in``
     unless the session is genuine and still matches the user (enabled, same role, same session
-    version, same sign-in authority). Keycloak is the only sign-in (21 Nov 2026): with it on, a
-    session of any other source is refused."""
+    version, same sign-in authority). Keycloak is the only sign-in (21 Nov 2026): a session of any
+    other source is refused, whatever the settings, so an old password cookie ends at the deploy."""
     context = get_context(request)
     now = context.clock()
     claims = session_claims(request, context.settings, int(now.timestamp()))
@@ -807,8 +798,8 @@ def current_user(request: Request) -> CurrentUser:
         raise ApiError(401, "not_signed_in")
     if claims.auth_source == "keycloak" and claims.assurance != context.settings.keycloak_required_acr:
         raise ApiError(401, "not_signed_in")
-    if context.settings.keycloak_enabled and claims.auth_source != "keycloak":
-        raise ApiError(401, "not_signed_in")  # an old password session ends at the switch
+    if claims.auth_source != "keycloak":
+        raise ApiError(401, "not_signed_in")  # an old password session ends at the deploy
     if user.role == "admin" and claims.scope != "admin":
         # An admin's app session from before 16 Oct 2026 rested on the password alone.
         raise ApiError(401, "not_signed_in")
@@ -864,12 +855,6 @@ def load_user(
         seen_at=row["seen_at"],
         email_confirmed=bool(row["email_confirmed"]),
         auth_authority=str(row["auth_authority"]),
-        google_on=bool(row["google_on"]),
-        google_allowed=bool(row["google_allowed"]),
-        google_only=bool(row["google_only"]),
-        google_linked=users_sql.google_linked(row),
-        google_domains=tuple(row["google_domains"]),
-        google_unchecked=users_sql.google_unchecked(row),
     )
 
 

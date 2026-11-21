@@ -127,7 +127,7 @@ def test_a_disabled_users_words_stay_and_stay_out_of_reach(db: Database) -> None
     a = _a1(db)
     before = _state(db, a)
     with db.customer(a["customer"]) as conn:
-        assert users.update_user(conn, a["customer"], a["a1"], role=None, disabled=True, password_hash=None)
+        assert users.update_user(conn, a["customer"], a["a1"], role=None, disabled=True)
     assert _state(db, a) == before  # kept: users are only disabled, never deleted
     with db.user(a["customer"], a["a2"]) as conn:
         _reaches_nothing(conn, a["customer"], a["a2"], a)

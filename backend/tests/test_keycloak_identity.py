@@ -316,12 +316,7 @@ def test_rs256_identity_accepts_rotated_key_and_uses_amr_despite_a_stale_broker_
     token = _token(
         private,
         _identity_claims(
-            **{
-                "amr": ["pwd", "otp"],
-                "email": "  Person@Example.Test ",
-                "email_verified": True,
-                "hd": "Example.Test",
-            }
+            amr=["pwd", "otp"], email="  Person@Example.Test ", email_verified=True, hd="Example.Test"
         ),
         kid="rotated-key",
     )

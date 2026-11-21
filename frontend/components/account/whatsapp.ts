@@ -1,6 +1,6 @@
 // Account, WhatsApp (#603), kept pure so vitest can prove the words and the rules: the number as
 // typed (+91 filled in), masked to its last 4 digits, the Connect screen's privacy text, what the
-// page says for each state, and the notice after coming back from Google (?proved=, ?error=).
+// page says for each state.
 
 import { formatDate } from "@/lib/format";
 import type { WhatsAppMe } from "@/lib/types";
@@ -42,18 +42,4 @@ export function stateText(me: WhatsAppMe): string {
   if (me.state === "none") return "Ask about your files and get links to them from WhatsApp. Files never leave Kaagaz.";
   const used = me.last_used_at ? ` Last used ${formatDate(me.last_used_at)}.` : "";
   return `Connected: ••••${me.last4 ?? ""}, since ${formatDate(me.linked_at ?? "")}.${used}`;
-}
-
-const ERRORS: Record<string, string> = {
-  not_yours: "That Google account isn't the one connected to your Kaagaz account.",
-  signed_out: "Sign in again, then connect WhatsApp.",
-  cancelled: "Google sign-in was cancelled.",
-  expired: "That sign-in expired. Try again.",
-};
-
-/** On the way back from Google: proved (go on to the number), or why not. */
-export function pageNotice(params: Record<string, string | undefined>): { proved: boolean; error: string | null } {
-  if (params.proved) return { proved: true, error: null };
-  if (params.error) return { proved: false, error: ERRORS[params.error] ?? "Confirming with Google didn't work. Try again." };
-  return { proved: false, error: null };
 }

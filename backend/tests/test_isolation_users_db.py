@@ -11,7 +11,7 @@ from sqlalchemy.exc import NoResultFound
 
 from kaagaz.db import users
 from kaagaz.db.engine import Database
-from tests.test_users_db import LOCK, MAX, NOW, SEALED, _state, _user
+from tests.test_users_db import LOCK, MAX, NOW, _state, _user
 
 pytestmark = pytest.mark.db
 
@@ -30,13 +30,9 @@ def test_another_customers_user_is_never_touched(db: Database) -> None:
             users.begin_attempt(conn, customer_a, user_a, now=NOW, max_failures=MAX, lock_minutes=LOCK)
             is None
         )
-        assert users.set_password(conn, customer_b, user_a, password_hash="x", must_change=False) is None
         assert users.unlock(conn, customer_b, user_a) is None
         assert users.reset_totp(conn, customer_b, user_a) is None
-        assert (
-            users.update_user(conn, customer_b, user_a, role=None, disabled=True, password_hash="x") is None
-        )
-        assert users.enrol_totp(conn, customer_b, user_a, secret_enc=SEALED, step=1, now=NOW, ver=1) is False
+        assert users.update_user(conn, customer_b, user_a, role=None, disabled=True) is None
         assert users.accept_totp_step(conn, customer_b, user_a, 1) is False
         assert users.session_user(conn, customer_b, user_a) is None
         users.attempt_succeeded(conn, customer_b, user_a, now=NOW)

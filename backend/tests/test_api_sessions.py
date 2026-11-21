@@ -137,3 +137,34 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
         if str(action).startswith(("auth.", "user.")):
             assert target_type == "user", action
             assert target_id in {admin.user_id, member.user_id, other.user_id}, action
+
+
+# --- an old password cookie ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("source", ["legacy_password", "legacy_mfa", "legacy_google", "legacy_google_mfa"])
+def test_a_cookie_of_the_old_sign_in_is_refused_whatever_the_settings(db: Database, source: str) -> None:
+    """Keycloak is the only sign-in (21 Nov 2026): a cookie from before it must not keep working
+    after the deploy, whether or not Keycloak is switched on, and whoever the person is."""
+    api = Api(db)
+    signed = api.new_signed()
+    for authority in ("legacy", "keycloak"):
+        with api.db.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE users SET auth_authority = :a WHERE id = :u"),
+                {"a": authority, "u": signed.user_id},
+            )
+        claims = SessionClaims(
+            user_id=signed.user_id,
+            customer_id=signed.customer_id,
+            role="member",
+            scope="app",
+            session_version=1,
+            expires_at=int(NOW.timestamp()) + 3600,
+            auth_source=source,
+        )
+        client = api.client()
+        client.cookies.set(SESSION_COOKIE, sign_session(claims, api.settings.session_secret))
+        reply = client.get("/api/auth/me")
+        assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), authority
+    assert signed.client.get("/api/auth/me").status_code == 200  # the Keycloak session still works

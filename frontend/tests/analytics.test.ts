@@ -80,11 +80,8 @@ describe("the page titles", () => {
   it("are fixed, one per public page", () => {
     // Changed on purpose (#457): the emailed links' pages hold a token or a new password, so
     // they are no longer tracked.
-    expect(PAGE_TITLES).toEqual({
-      "/login": "Sign in",
-      "/signup": "Sign up",
-      "/forgot-password": "Forgot password",
-    });
+    // Changed on purpose (21 Nov 2026): sign-up and forgot-password are gone; /login is the one page.
+    expect(PAGE_TITLES).toEqual({ "/login": "Sign in" });
   });
 });
 
@@ -155,7 +152,7 @@ describe("the remembered choice", () => {
   it("remembers Accept", () => {
     const storage = memoryStorage();
     saveConsent(() => storage, "accepted");
-    expect(viewFor("G-ABC123", "/signup", readConsent(() => storage))).toBe("on");
+    expect(viewFor("G-ABC123", "/login", readConsent(() => storage))).toBe("on");
   });
 
   it("ignores anything else stored under its key", () => {
@@ -195,11 +192,11 @@ describe("startGtag", () => {
     const { win, doc, appended, calls } = fakeBrowser();
     // Changed on purpose (#457): /reset-password is no longer tracked, and the page is set for
     // every event before the config.
-    startGtag(win, doc, "G-ABC123", "/forgot-password");
+    startGtag(win, doc, "G-ABC123", "/login");
     expect(appended).toEqual([{ async: true, src: "https://www.googletagmanager.com/gtag/js?id=G-ABC123" }]);
     const page = {
-      page_location: "https://kaagaz.example/forgot-password",
-      page_title: "Forgot password",
+      page_location: "https://kaagaz.example/login",
+      page_title: "Sign in",
       page_referrer: "",
     };
     expect(calls().slice(1)).toEqual([
@@ -245,11 +242,11 @@ describe("startGtag", () => {
   it("sets the page again before every page view it sends", () => {
     const { win, doc, calls } = fakeBrowser();
     startGtag(win, doc, "G-ABC123", "/login?next=/documents/abc");
-    startGtag(win, doc, "G-ABC123", "/signup?ref=x");
+    startGtag(win, doc, "G-ABC123", "/login?ref=x");
     const sets = calls().filter(([kind]) => kind === "set");
     expect(sets.map(([, page]) => (page as { page_location: string }).page_location)).toEqual([
       "https://kaagaz.example/login",
-      "https://kaagaz.example/signup",
+      "https://kaagaz.example/login",
     ]);
     expect(JSON.stringify(calls())).not.toContain("?");
   });
@@ -362,7 +359,7 @@ describe("the content security policy", () => {
   };
 
   it("allows Google's script and its collection hosts on the pages that load it, and nothing else new", () => {
-    for (const path of ["/login", "/signup", "/forgot-password", "/login?next=/documents/abc"]) {
+    for (const path of ["/login", "/login?next=/documents/abc"]) {
       expect(directives(path), path).toEqual({
         ...base,
         "script-src": "'self' 'nonce-…' 'strict-dynamic' 'wasm-unsafe-eval' https://www.googletagmanager.com",

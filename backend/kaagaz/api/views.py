@@ -1271,7 +1271,6 @@ def me_json(
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},
-        "providers": [],  # Google sign-in is gone (21 Nov 2026); the admin screens still read the list
         "keycloak_enabled": keycloak_enabled,
         **({"whatsapp": True} if whatsapp else {}),
     }
@@ -1281,24 +1280,12 @@ def admin_user(
     row: RowMapping,
     *,
     now: datetime,
-    signs_in_with: Sequence[str] | None = None,
-    google_needed: bool | None = None,
-    google_unchecked: bool = False,
 ) -> dict[str, Any]:
     """``AdminUser``. ``locked_until`` is null once the lock has passed, so the
-    screen never shows a lock that no longer holds. ``signs_in_with`` (#457 phase 1:
-    "password" and each approved provider) only where the reply knows it: the list, and the
-    replies that removed connections; the screen keeps what it had otherwise. ``google_needed``
-    (#507: their role uses Google only and they have no connection that passes) likewise, with
-    ``google_unchecked`` (#507 review: their connection's domain is not checked yet)."""
+    screen never shows a lock that no longer holds. ``company_sign_in``: ``connected`` once the
+    person is linked to a company sign-in account, else ``waiting`` (for setup)."""
     locked_until: datetime | None = row["locked_until"]
     return {
-        **({} if signs_in_with is None else {"signs_in_with": list(signs_in_with)}),
-        **(
-            {}
-            if google_needed is None
-            else {"google_needed": google_needed, "google_unchecked": google_unchecked}
-        ),
         "id": str(row["id"]),
         "email": row["email"],
         "display_name": row["display_name"],
@@ -1309,6 +1296,7 @@ def admin_user(
         "totp_enabled": row["totp_enabled_at"] is not None,
         "two_step_turned_off": row["totp_off_at"] is not None and not row["two_step_required"],
         "must_change_password": bool(row["must_change_password"]),
+        "company_sign_in": "connected" if row["auth_authority"] == "keycloak" else "waiting",
         "can_delete_forever": row["delete_forever_allowed_at"] is not None and row["role"] != "admin",
         "management": bool(row["management"]),  # PRD 7 (#601)
     }

@@ -993,7 +993,14 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         # Changed on purpose (#484, 0071): and an organisation's folder upload limits.
         # Changed on purpose (#516, 0061d): and an organisation's storage limit.
         if table not in (
-            FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068 | FROM_0071 | FROM_0061D
+            FROM_0023
+            | FROM_0026
+            | FROM_0039
+            | FROM_0040
+            | FROM_0043
+            | FROM_0068
+            | FROM_0071
+            | FROM_0061D
             | KEYCLOAK_0103  # Changed on purpose (#738, 0103): asserted exactly below
         ):
             assert (select, insert) == (True, True), table

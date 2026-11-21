@@ -232,7 +232,6 @@ def _login(context: AppContext, flow: keycloak.FlowRow, identity: keycloak_oidc.
         or attempt.customer_pending
         or attempt.auth_authority != "keycloak"
         or attempt.session_version != found.session_version
-        or not _broker_policy_allowed(attempt, provider=identity.authentication_provider)
     ):
         return _failure(flow, "refused")
     scope = "admin" if attempt.role == "admin" else "app"
@@ -298,11 +297,10 @@ def _reauth(
         return _failure(flow, "refused")
     with context.db.system() as conn:
         found = keycloak.lookup(conn, identity.issuer, identity.subject)
-    if (
-        found is None
-        or (found.customer_id, found.user_id, found.session_version)
-        != (user.customer_id, user.user_id, flow.session_version)
-        or not _broker_policy_allowed(user, provider=identity.authentication_provider)
+    if found is None or (found.customer_id, found.user_id, found.session_version) != (
+        user.customer_id,
+        user.user_id,
+        flow.session_version,
     ):
         return _failure(flow, "not_yours")
     now = unix(context.clock())
@@ -460,13 +458,6 @@ def _open_verifier(context: AppContext, flow: keycloak.FlowRow, state: str) -> s
         context.settings.keycloak_flow_encryption_key or "",
         hashlib.sha256(state.encode("ascii")).digest(),
     )
-
-
-def _broker_policy_allowed(user: Any, *, provider: str) -> bool:
-    """Only the configured local password-plus-OTP execution is allowed in this build."""
-    if provider == "local":
-        return not (user.google_on and user.google_only)
-    return False
 
 
 def _configured(context: AppContext) -> None:

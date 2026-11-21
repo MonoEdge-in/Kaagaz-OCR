@@ -30,7 +30,6 @@ from tests.test_runs_db import totals
 MONEY = re.compile(r"usd|price|budget|cost|[$₹]", re.IGNORECASE)
 
 # How a person signs in and the Google tag (#457 phase 1, #507): only in replies that know them.
-GOOGLE_TAG = {"signs_in_with", "google_needed", "google_unchecked"}
 ADMIN_USER_FIELDS = {
     "id",
     "email",
@@ -43,6 +42,7 @@ ADMIN_USER_FIELDS = {
     "two_step_turned_off",
     "must_change_password",
     "can_delete_forever",
+    "company_sign_in",  # Changed on purpose (21 Nov 2026): connected, or waiting for setup
     "management",  # Changed on purpose (PRD 7, #601): Management on the person
 }
 WRONG = "wrong password!!"
@@ -306,19 +306,6 @@ def test_a_demoted_and_promoted_again_user_does_not_get_old_sessions_back(db: Da
     same = admin.client.patch(f"/api/admin/users/{admin.user_id}", json={"role": "admin"}, headers=CSRF)
     assert same.status_code == 200  # setting the role it already has
     assert admin.client.get("/api/auth/me").status_code == 200  # ends no session
-
-
-@pytest.mark.db
-def test_an_admin_cannot_reset_their_own_password(db: Database) -> None:
-    api = Api(db)
-    admin = api.new_admin()
-    before = api.user_state(admin.customer_id, admin.user_id)
-    reply = admin.client.post(f"/api/admin/users/{admin.user_id}/reset-password", headers=CSRF)
-    assert reply.status_code == 400
-    assert reply.json()["error"]["code"] == "bad_request"
-    assert api.user_state(admin.customer_id, admin.user_id) == before
-    assert "user.reset_password" not in api.audit_actions(admin.customer_id)
-    assert admin.client.get("/api/auth/me").status_code == 200  # the session did not end
 
 
 @pytest.mark.db
@@ -612,7 +599,7 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
     # Changed on purpose (#507): and whether their role needs a Google account connected, or
     # (#507 review) its domain checked.
     # Changed on purpose (PRD 7, #601): and the departments each is in.
-    assert all(set(item) == ADMIN_USER_FIELDS | GOOGLE_TAG | {"departments"} for item in items.values())
+    assert all(set(item) == ADMIN_USER_FIELDS | {"departments"} for item in items.values())
     # Changed on purpose (A2 review): the account's own lock lasts ACCOUNT_LOCK_MINUTES.
     assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=60)).isoformat()
     assert items[member_id]["totp_enabled"] is False
@@ -654,7 +641,7 @@ def test_an_admin_cannot_reset_their_own_2fa(db: Database) -> None:
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("action", ["unlock", "reset-password", "reset-2fa"])
+@pytest.mark.parametrize("action", ["unlock", "reset-2fa"])
 def test_the_three_buttons_on_an_unknown_user_are_404(db: Database, action: str) -> None:
     admin = Api(db).new_admin()
     reply = admin.client.post(f"/api/admin/users/{ANY_ID}/{action}", headers=CSRF)

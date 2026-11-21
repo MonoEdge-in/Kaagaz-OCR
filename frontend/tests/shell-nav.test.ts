@@ -96,7 +96,6 @@ describe("the session gate", () => {
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
-    providers: [], // #457 review: the sign-in providers switched on
   });
 
   it("reads the scope", () => {
@@ -231,8 +230,8 @@ describe("one nav list for the sidebar and the drawer", () => {
   it("renders the one ShellMenu element in both the sidebar and the drawer", () => {
     expect(shell.match(/<ShellMenu\b/g)).toHaveLength(1);
     // Changed on purpose (#507 review): the sidebar shows it only outside the limited session.
-    expect(shell.match(/\{(chrome && )?menu\}/g)).toHaveLength(2);
-    expect(shell).toMatch(/className=\{styles\.sidebar\}[\s\S]*\{chrome && menu\}[\s\S]*<Drawer[\s\S]*\{menu\}/);
+    expect(shell.match(/\{menu\}/g)).toHaveLength(2);
+    expect(shell).toMatch(/className=\{styles\.sidebar\}[\s\S]*\{menu\}[\s\S]*<Drawer[\s\S]*\{menu\}/);
   });
 
   it("hard-codes no Review or Admin link in any shell component", () => {
@@ -292,7 +291,7 @@ describe("the Review link", () => {
   it("asks the server only for a reviewer or an admin", () => {
     const shell = readFileSync(join(__dirname, "..", "components", "shell", "AppShell.tsx"), "utf8");
     // Changed on purpose (#507 review): never in the limited session, which the server refuses.
-    expect(shell).toContain("const reviewer = chrome && canReview(me.user.role);");
+    expect(shell).toContain("const reviewer = canReview(me.user.role);");
     expect(shell).toMatch(/if \(!reviewer\) return;\s*let cancelled = false;\s*listReview\(\{ limit: 1 \}\)/);
     expect(shell).toContain("const reviewCount = reviewer ? reviewCountText(reviewTotal) : null;");
     expect(menu("member", "23")).not.toContain("review");

@@ -24,7 +24,6 @@ const person = (role: Role, scope: "app" | "admin"): Me => ({
   user: { id: "u1", role } as Me["user"],
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope },
-  providers: [],
   access: { management: role === "member", heads: ["fin"] },
 });
 const nothing = () => undefined;

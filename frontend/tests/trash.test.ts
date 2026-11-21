@@ -8,12 +8,10 @@ import {
   deletedForeverMessage,
   documentsCount,
   foreverNeeds,
-  foreverNeedsPassword,
   foreverQuestion,
   lostTheRight,
   restoredMessage,
   runEach,
-  runForever,
   selectable,
   trashQuestion,
 } from "@/components/documents/trash";
@@ -34,7 +32,6 @@ const me = (role: Role, scope: SessionScope = "app", totp_enabled = true): Me =>
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope },
-  providers: [], // #457 review: the sign-in providers switched on
 });
 const granted = (role: Role, scope: SessionScope = "app"): Me => {
   const base = me(role, scope, false);
@@ -61,24 +58,16 @@ describe("who may delete for good", () => {
     expect(foreverNeeds(granted("member"))).toBeNull();
   });
 
-  it("lets a member or reviewer an admin allowed, with a password; a grant never counts for an admin", () => {
-    expect([canDeleteForever(granted("member")), foreverNeedsPassword(granted("reviewer"))]).toEqual([true, true]);
-    expect([canDeleteForever(granted("admin")), foreverNeedsPassword(me("admin", "admin"))]).toEqual([false, false]);
+  it("lets a member or reviewer an admin allowed, after the company sign-in; a grant never counts for an admin", () => {
+    expect([canDeleteForever(granted("member")), canDeleteForever(granted("reviewer"))]).toEqual([true, true]);
+    expect([canDeleteForever(granted("admin")), canDeleteForever(me("admin", "admin"))]).toEqual([false, true]);
     expect(selectable({ can_delete: false }, true, true)).toBe(true); // ticked in Trash to delete for good
     expect(selectable({ can_delete: false }, false, true)).toBe(false);
   });
 
-  it("checks the password once, then deletes each; a refused password deletes nothing", async () => {
-    const confirm = vi.fn(async () => undefined);
-    const remove = vi.fn(async () => undefined);
-    expect((await runForever(["a", "b"], "secret", { confirm, remove })).kind).toBe("ran");
-    expect([confirm.mock.calls, remove.mock.calls]).toEqual([[["secret"]], [["a"], ["b"]]]);
-    const wrong = new ApiError(400, "bad_request", "Your current password is not right.");
-    confirm.mockRejectedValueOnce(wrong);
-    expect(await runForever(["c"], "nope", { confirm, remove })).toEqual({ kind: "password", error: wrong });
-    await runForever(["d"], null, { confirm, remove }); // an admin types none
-    expect([confirm.mock.calls.length, remove.mock.calls]).toEqual([2, [["a"], ["b"], ["d"]]]);
-    expect([lostTheRight(new ApiError(403, "forbidden", "No.")), lostTheRight(wrong)]).toEqual([true, false]);
+  it("tells a lost right from a sign-in that is still needed", () => {
+    const reauth = new ApiError(403, "keycloak_reauth_required", "Confirm it's you with your company sign-in first.");
+    expect([lostTheRight(new ApiError(403, "forbidden", "No.")), lostTheRight(reauth)]).toEqual([true, false]);
   });
 });
 

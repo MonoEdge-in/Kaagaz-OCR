@@ -163,7 +163,6 @@ export interface DocumentViewProps {
   scannedParam: string | null;
   wordsParam: string | null;
   fromParam: string | null;
-  openErrorParam?: string | null; // PRD 7 (PR 13): a Google confirm that did not open locked files
   tabParam?: string | null; // PRD 9 F-17: ?tab=attention, opened from Review's By document
   nextParam?: string | null; // PRD 9 F-17: the documents after it in that list, for Next document
 }
@@ -195,7 +194,6 @@ export function DocumentView({
   scannedParam,
   wordsParam,
   fromParam,
-  openErrorParam = null,
   tabParam = null,
   nextParam = null,
 }: DocumentViewProps) {
@@ -420,7 +418,6 @@ export function DocumentView({
       <LockedDocument
         detail={detail}
         back={backFrom(fromParam) ?? { href: "/documents", name: "documents" }}
-        openError={openErrorParam}
         onChanged={unlocked}
         headingRef={headingRef}
       >

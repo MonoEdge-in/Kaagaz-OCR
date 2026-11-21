@@ -5,7 +5,7 @@ What is proved here (PRD 1 A2 to A5, plan section 9.5):
 * ``begin_attempt`` counts an attempt *before* the password is checked, in one
   statement, so parallel wrong passwords are all counted; a live lock is never
   extended; an expired lock starts the count again at 1.
-* ``enrol_totp`` and ``accept_totp_step`` are conditional UPDATEs, so of two
+* ``accept_totp_step`` is a conditional UPDATEs, so of two
   racing requests exactly one wins.
 * Every admin-facing statement returns the same columns, and raising
   ``session_version`` happens where the PRD says (A4).
@@ -47,6 +47,7 @@ ADMIN_COLUMNS = {
     "totp_enabled_at",
     "totp_off_at",
     "must_change_password",
+    "auth_authority",  # Changed on purpose (21 Nov 2026): the People list says connected or waiting
     "session_version",
     "delete_forever_allowed_at",
     "two_step_required",  # 0068, #481
@@ -107,8 +108,17 @@ def _attempt(db: Database, customer_id: str, user_id: str, now: datetime = NOW) 
 
 
 def _enrol(db: Database, customer_id: str, user_id: str, *, step: int = 100, ver: int = 1) -> bool:
+    """Two-step on for this user as enrolment left it (the route is gone; a Keycloak admin has none)."""
     with db.customer(customer_id) as conn:
-        return users.enrol_totp(conn, customer_id, user_id, secret_enc=SEALED, step=step, now=NOW, ver=ver)
+        done = conn.execute(
+            text(
+                "UPDATE users SET totp_secret_enc = :enc, totp_enabled_at = :now, totp_last_step = :step,"
+                " totp_off_at = NULL WHERE customer_id = :c AND id = :u AND session_version = :ver"
+                " RETURNING id"
+            ),
+            {"enc": SEALED, "now": NOW, "step": step, "ver": ver, "c": customer_id, "u": user_id},
+        ).first()
+    return done is not None
 
 
 def _race[T](
@@ -292,63 +302,7 @@ def test_many_parallel_attempts_are_counted_exactly(db: Database) -> None:
     assert _state(db, customer_id, user_id)["failed_logins"] == 16
 
 
-# --- enrol_totp and accept_totp_step: conditional, one winner -----------------------------------
-
-
-def test_enrol_totp_sets_the_three_columns_once(db: Database) -> None:
-    customer_id, user_id = _user(db)
-    assert _enrol(db, customer_id, user_id, step=100) is True
-    state = _state(db, customer_id, user_id)
-    assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (SEALED, NOW, 100)
-    assert _enrol(db, customer_id, user_id, step=101) is False  # the enrol token is one-time
-    assert _state(db, customer_id, user_id)["totp_last_step"] == 100
-
-
-def test_enrol_totp_needs_the_same_session_version(db: Database) -> None:
-    customer_id, user_id = _user(db)
-    with db.customer(customer_id) as conn:
-        assert users.bump_session_version(conn, customer_id, user_id) == 2
-    assert _enrol(db, customer_id, user_id, ver=1) is False
-    assert _enrol(db, customer_id, user_id, ver=2) is True
-
-
-@pytest.mark.parametrize(
-    "columns",
-    [
-        {"disabled": True},
-        {"must_change_password": True},
-        {"locked_until": NOW + timedelta(minutes=1)},
-    ],
-)
-def test_enrol_totp_is_refused_for_a_user_who_may_not_enrol(db: Database, columns: dict[str, Any]) -> None:
-    customer_id, user_id = _user(db)
-    _set(db, customer_id, user_id, **columns)
-    assert _enrol(db, customer_id, user_id) is False
-    assert _state(db, customer_id, user_id)["totp_secret_enc"] is None
-
-
-@pytest.mark.parametrize("role", ["member", "reviewer"])
-def test_enrol_totp_works_for_a_member_or_reviewer_too(db: Database, role: str) -> None:
-    """Changed on purpose (#457 phase 3): two-step codes for everyone, not only admins."""
-    customer_id, user_id = _user(db, role)
-    with db.customer(customer_id) as conn:
-        assert users.enrol_still_open(conn, customer_id, user_id, 1) is True
-    assert _enrol(db, customer_id, user_id) is True
-
-
-def test_enrol_totp_is_allowed_once_a_lock_has_passed(db: Database) -> None:
-    customer_id, user_id = _user(db)
-    _set(db, customer_id, user_id, locked_until=NOW)
-    assert _enrol(db, customer_id, user_id) is True
-
-
-def test_two_racing_enrolments_have_one_winner(db: Database) -> None:
-    customer_id, user_id = _user(db)
-
-    def enrol(conn: Connection) -> bool:
-        return users.enrol_totp(conn, customer_id, user_id, secret_enc=SEALED, step=100, now=NOW, ver=1)
-
-    assert _race(db, customer_id, enrol, enrol) == (True, False)
+# --- accept_totp_step: conditional, one winner -----------------------------------
 
 
 def test_accept_totp_step_only_moves_forward(db: Database) -> None:
@@ -378,44 +332,9 @@ def test_accept_totp_step_accepts_any_step_when_none_is_stored(db: Database) -> 
         assert users.accept_totp_step(conn, customer_id, user_id, 1) is True
 
 
-def _turn_off(conn: Connection, customer_id: str, user_id: str) -> int | None:
-    return users.turn_off_totp(conn, customer_id, user_id, now=NOW)
-
-
 def _off_at(db: Database, customer_id: str, user_id: str) -> object:
     with db.customer(customer_id) as conn:
         return conn.execute(text("SELECT totp_off_at FROM users WHERE id = :u"), {"u": user_id}).scalar()
-
-
-def test_turn_off_totp_has_one_winner_and_enrol_clears_it(db: Database) -> None:
-    # Changed on purpose (#457 with #460): the code is checked and used up first
-    # (accept_totp_step, the sign-in's replay check); this only turns it off, once.
-    customer_id, user_id = _user(db)
-    assert _enrol(db, customer_id, user_id, step=100) is True
-
-    def turn_off(conn: Connection) -> int | None:
-        return _turn_off(conn, customer_id, user_id)
-
-    assert _race(db, customer_id, turn_off, turn_off) == (2, None)
-    state = _state(db, customer_id, user_id)
-    assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
-    assert _off_at(db, customer_id, user_id) == NOW
-    assert _enrol(db, customer_id, user_id, step=102, ver=2) is True
-    assert _off_at(db, customer_id, user_id) is None
-
-
-def test_turn_off_totp_marks_turned_off_only_for_an_admin(db: Database) -> None:
-    # Changed on purpose (#457 with #460): every role turns theirs off; only an admin's is
-    # "turned off" (a member made admin later still sets one up).
-    customer_id, user_id = _user(db, "member")
-    with db.customer(customer_id) as conn:
-        conn.execute(
-            text("UPDATE users SET totp_secret_enc = :s, totp_enabled_at = :t WHERE id = :u"),
-            {"s": SEALED, "t": NOW, "u": user_id},
-        )
-        assert _turn_off(conn, customer_id, user_id) == 2
-    assert _state(db, customer_id, user_id)["totp_secret_enc"] is None
-    assert _off_at(db, customer_id, user_id) is None
 
 
 def test_accept_totp_step_is_refused_without_two_step_set_up(db: Database) -> None:
@@ -460,19 +379,6 @@ def test_bump_session_version_returns_the_new_version(db: Database) -> None:
     assert _state(db, customer_id, user_id)["session_version"] == 3
 
 
-@pytest.mark.parametrize("must_change", [True, False])
-def test_set_password_sets_the_flag_and_raises_the_version(db: Database, must_change: bool) -> None:
-    customer_id, user_id = _user(db, must_change_password=not must_change)
-    with db.customer(customer_id) as conn:
-        row = users.set_password(
-            conn, customer_id, user_id, password_hash="scrypt$new", must_change=must_change
-        )
-    assert row is not None
-    assert set(row.keys()) == ADMIN_COLUMNS
-    assert (row["must_change_password"], row["session_version"]) == (must_change, 2)
-    assert _state(db, customer_id, user_id)["password_hash"] == "scrypt$new"
-
-
 def test_unlock_clears_the_count_and_the_lock(db: Database) -> None:
     customer_id, user_id = _user(db)
     for _ in range(MAX):
@@ -501,15 +407,13 @@ def test_reset_totp_clears_the_three_columns_and_raises_the_version(db: Database
     assert _enrol(db, customer_id, user_id, ver=2) is True  # can enrol again
 
 
-@pytest.mark.parametrize("name", ["set_password", "unlock", "reset_totp", "update_user"])
+@pytest.mark.parametrize("name", ["unlock", "reset_totp", "update_user"])
 def test_admin_statements_return_none_for_a_user_that_is_not_there(db: Database, name: str) -> None:
     customer_id, _ = _user(db)
     missing = str(uuid.uuid4())
     with db.customer(customer_id) as conn:
-        if name == "set_password":
-            row = users.set_password(conn, customer_id, missing, password_hash="x", must_change=True)
-        elif name == "update_user":
-            row = users.update_user(conn, customer_id, missing, role=None, disabled=True, password_hash=None)
+        if name == "update_user":
+            row = users.update_user(conn, customer_id, missing, role=None, disabled=True)
         elif name == "unlock":
             row = users.unlock(conn, customer_id, missing)
         else:
@@ -550,29 +454,16 @@ def test_create_user_returns_the_admin_columns(db: Database) -> None:
 def test_update_user_disabling_raises_the_version(db: Database) -> None:
     customer_id, user_id = _user(db, "member")
     with db.customer(customer_id) as conn:
-        row = users.update_user(conn, customer_id, user_id, role=None, disabled=True, password_hash=None)
+        row = users.update_user(conn, customer_id, user_id, role=None, disabled=True)
     assert row is not None
     assert set(row.keys()) == ADMIN_COLUMNS
     assert (row["disabled"], row["session_version"], row["must_change_password"]) == (True, 2, False)
 
 
-def test_update_user_setting_a_password_raises_the_version_and_asks_for_a_new_one(db: Database) -> None:
-    customer_id, user_id = _user(db, "member")
-    with db.customer(customer_id) as conn:
-        row = users.update_user(
-            conn, customer_id, user_id, role=None, disabled=None, password_hash="scrypt$y"
-        )
-    assert row is not None
-    assert (row["session_version"], row["must_change_password"]) == (2, True)
-    assert _state(db, customer_id, user_id)["password_hash"] == "scrypt$y"
-
-
 def test_update_user_changing_the_role_raises_the_version(db: Database) -> None:
     customer_id, user_id = _user(db, "member")
     with db.customer(customer_id) as conn:
-        row = users.update_user(
-            conn, customer_id, user_id, role="reviewer", disabled=None, password_hash=None
-        )
+        row = users.update_user(conn, customer_id, user_id, role="reviewer", disabled=None)
     assert row is not None
     assert (row["role"], row["session_version"], row["must_change_password"]) == ("reviewer", 2, False)
 
@@ -581,7 +472,7 @@ def test_update_user_enabling_or_the_same_role_keeps_the_version(db: Database) -
     customer_id, user_id = _user(db, "member")
     _set(db, customer_id, user_id, disabled=True)
     with db.customer(customer_id) as conn:
-        row = users.update_user(conn, customer_id, user_id, role="member", disabled=False, password_hash=None)
+        row = users.update_user(conn, customer_id, user_id, role="member", disabled=False)
     assert row is not None
     assert (row["role"], row["disabled"], row["session_version"], row["must_change_password"]) == (
         "member",
@@ -650,7 +541,7 @@ def test_a_role_change_clears_the_grant_and_the_same_role_keeps_it(db: Database)
     customer_id, user_id = _user(db, "member")
     _grant(db, customer_id, user_id, True)
     with db.customer(customer_id) as conn:
-        same = users.update_user(conn, customer_id, user_id, role="member", disabled=None, password_hash=None)
+        same = users.update_user(conn, customer_id, user_id, role="member", disabled=None)
         assert same is not None and same["delete_forever_allowed_at"] == NOW
-        moved = users.update_user(conn, customer_id, user_id, role="admin", disabled=None, password_hash=None)
+        moved = users.update_user(conn, customer_id, user_id, role="admin", disabled=None)
     assert moved is not None and moved["delete_forever_allowed_at"] is None

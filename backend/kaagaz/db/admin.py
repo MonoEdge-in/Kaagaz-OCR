@@ -75,14 +75,6 @@ def set_autofile(conn: Connection, customer_id: str, *, on: bool) -> bool:
     )
 
 
-def set_auto_approve(conn: Connection, customer_id: str, *, on: bool) -> None:
-    """Switch "Approve new sign-in connections automatically" on or off (#457 phase 1). O(1)."""
-    conn.execute(
-        text("UPDATE customers SET auto_approve_connections = :on WHERE id = :c"),
-        {"c": customer_id, "on": on},
-    )
-
-
 # PRD 7 (#606): an Admin's numbers are the whole organisation's (decision 20), so each is read by
 # an owner-rights function that checks the caller is an Admin (or the worker role) and holds
 # today's statement (0091): the database rule would leave out the files the Admin can't see. Each

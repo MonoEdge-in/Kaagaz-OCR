@@ -5,7 +5,6 @@ import {
   onSessionEnded,
   query,
   resetUser2fa,
-  resetUserPassword,
   setDeleteForever,
   unlockUser,
 } from "@/lib/api";
@@ -65,6 +64,7 @@ describe("sign-in and admin calls", () => {
     two_step_turned_off: false,
     can_delete_forever: false,
     must_change_password: false,
+    company_sign_in: "connected",
   };
 
   const calls: { url: string; init: RequestInit | undefined }[] = [];
@@ -122,20 +122,12 @@ describe("sign-in and admin calls", () => {
     expect(sent(0).body).toBeUndefined();
   });
 
-  it("unlocks, resets a password and resets 2FA for one user", async () => {
+  it("unlocks and resets the authenticator of one user", async () => {
     reply(200, USER);
     expect(await unlockUser("u2")).toEqual(USER);
     expect(await resetUser2fa("u2")).toEqual(USER);
     expect(sent(0)).toMatchObject({ url: "/api/admin/users/u2/unlock", method: "POST" });
     expect(sent(1)).toMatchObject({ url: "/api/admin/users/u2/reset-2fa", method: "POST" });
-
-    vi.unstubAllGlobals();
-    reply(200, { user: USER, temporary_password: "Temp-Pass-1234" });
-    expect(await resetUserPassword("u2")).toEqual({
-      user: USER,
-      temporary_password: "Temp-Pass-1234",
-    });
-    expect(sent(2)).toMatchObject({ url: "/api/admin/users/u2/reset-password", method: "POST" });
   });
 });
 

@@ -81,17 +81,16 @@ def create_flow(
     local_session_id: str | None = None,
     action: str | None = None,
 ) -> None:
-    """Persist one short flow; link and reauth calls require Database.user for the bound user.
+    """Persist one short flow; reauth calls require Database.user for the bound user.
 
     The caller generates random state/nonce/verifier, encrypts the PKCE verifier with the
-    dedicated flow key and uses only a 32-byte state hash here. For ``link``, require a proven
-    local password and MFA before calling. For ``reauth``, bind one action to the current browser
-    session. Login flows have no customer/user context. The SQL function checks context and
-    expected session version and prevents direct tenant ids from selecting another person.
+    dedicated flow key and uses only a 32-byte state hash here. For ``reauth``, bind one action to
+    the current browser session. Login flows have no customer/user context. The SQL function checks
+    context and expected session version and prevents direct tenant ids from selecting another person.
     """
     if len(state_hash) != 32:
         raise ValueError("invalid Keycloak flow state hash")
-    if purpose not in {"login", "link", "reauth"}:
+    if purpose not in {"login", "reauth"}:
         raise ValueError("invalid Keycloak flow purpose")
     conn.execute(
         text(

@@ -2,9 +2,7 @@
 
 // The admin screen: nine tabs (Users, Settings, Departments, AI settings, Activity, Numbers,
 // Answer quality, Usage, Failed documents), one line that scrolls sideways (Tabs.tsx). The
-// models are the operator's only (UI quality council, 15 Oct 2026). Only the open tab is mounted, so each one loads its data when it is opened. Settings
-// also shows `twoStep`, the signed-in admin's own Two-step sign-in, which the
-// page passes in (app/(app)/admin/TwoStepPanel.tsx).
+// models are the operator's only (UI quality council, 15 Oct 2026). Only the open tab is mounted, so each one loads its data when it is opened.
 //
 // #468: with unsaved Settings or AI settings, another tab opens only once the admin says to leave
 // without saving; their kept draft (lib/drafts.ts) goes then too.
@@ -47,10 +45,10 @@ import { WhatsAppPanel } from "./WhatsAppPanel";
 import styles from "./Admin.module.css";
 
 /** `tab`: the ?tab= the page was opened with (/admin?tab=departments, PRD 7 lead decision 12). */
-export function AdminView({ twoStep, tab, reauth }: { twoStep: ReactNode; tab?: string; reauth?: string }) {
+export function AdminView({ tab, reauth }: { tab?: string; reauth?: string }) {
   return (
     <AdminGate>
-      <AdminTabs twoStep={twoStep} tab={tab} reauth={reauth} />
+      <AdminTabs tab={tab} reauth={reauth} />
     </AdminGate>
   );
 }
@@ -96,7 +94,7 @@ export function AdminGate({ children }: { children: ReactNode }) {
   return children;
 }
 
-function AdminTabs({ twoStep, tab, reauth }: { twoStep: ReactNode; tab?: string; reauth?: string }) {
+function AdminTabs({ tab, reauth }: { tab?: string; reauth?: string }) {
   const { me } = useSession();
   const [active, setActive] = useState<TabId>(() => tabFrom(tab));
   const [unsaved, setUnsaved] = useState(false); // the open Settings or AI settings tab has changes not saved
@@ -131,17 +129,14 @@ function AdminTabs({ twoStep, tab, reauth }: { twoStep: ReactNode; tab?: string;
         {active === "users" && (
           <UsersPanel
             currentUserId={me.user.id}
-            adminTwoStep={me.user.auth_authority === "keycloak" || me.user.totp_enabled}
-            providers={me.providers}
             whatsapp={me.whatsapp === true}
             reauth={reauth}
           />
         )}
         {active === "settings" && (
           <div className={styles.panelStack}>
-            <SettingsPanel providers={me.providers} onUnsaved={setUnsaved} />
+            <SettingsPanel onUnsaved={setUnsaved} />
             {me.whatsapp === true && <WhatsAppPanel organisation={me.customer.name} reauth={reauth} />}
-            {twoStep}
           </div>
         )}
         {active === "departments" && <DepartmentsPanel me={{ id: me.user.id, name: me.user.display_name }} />}

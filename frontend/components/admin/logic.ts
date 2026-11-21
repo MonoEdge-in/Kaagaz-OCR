@@ -4,7 +4,6 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { roleName } from "@/components/shell/nav";
-import { DOMAIN_UNCHECKED, providersText } from "@/components/account/signInWays";
 import type { MineDraft, OrgDraft } from "@/lib/aiSettings";
 import { ApiError } from "@/lib/api";
 import type { Draft } from "@/lib/drafts";
@@ -19,12 +18,10 @@ import type {
   AuditEntry,
   CustomerSettings,
   DocumentStatus,
-  GoogleRules,
   Me,
   MemberNumbers,
   MemberPeriod,
   PageRoute,
-  PendingConnection,
   Role,
   Stats,
   UsageBudget,
@@ -150,24 +147,13 @@ export interface StatusPart {
   tone: StatusTone; // .status-chip data-tone
 }
 
-/**
- * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step: On" or
- * "Two-step: Off" for every user (#457 phase 3: anyone may have codes), then "Temporary
- * password" until the user sets their own.
- */
+/** The status column: Active, "Locked until 14:05" or Disabled, then "Can delete for good". */
 export function userStatus(user: AdminUser, now: number): StatusPart[] {
   const parts: StatusPart[] = [];
   if (user.disabled) parts.push({ text: "Disabled", tone: "danger" });
   else if (user.locked_until !== null && isLocked(user, now)) {
     parts.push({ text: lockedUntilText(user.locked_until), tone: "danger" });
   } else parts.push({ text: "Active", tone: "ready" });
-  if (user.auth_authority === "keycloak") {
-    parts.push({ text: "Company-managed sign-in", tone: "neutral" });
-  } else {
-    // Plain words (25 Oct 2026): "Two-step", as the rest of the product says, not "2FA".
-    parts.push({ text: user.totp_enabled ? "Two-step: On" : "Two-step: Off", tone: "neutral" });
-  }
-  if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
   if (user.can_delete_forever) parts.push({ text: "Can delete for good", tone: "neutral" });
   return parts;
 }
@@ -175,50 +161,35 @@ export function userStatus(user: AdminUser, now: number): StatusPart[] {
 export interface UserActions {
   toggleDisabled: boolean;
   unlock: boolean;
-  resetPassword: boolean;
   reset2fa: boolean;
 }
 
 /**
  * Which buttons a row shows. Nothing on the admin's own row: they cannot
- * disable themselves or reset their own 2FA (the server refuses both), and
- * they change their own password by signing in with it.
+ * disable themselves or reset their own authenticator (the server refuses both).
  */
 export function userActions(
   user: AdminUser,
   { isSelf, now }: { isSelf: boolean; now: number },
 ): UserActions {
   if (isSelf) {
-    return { toggleDisabled: false, unlock: false, resetPassword: false, reset2fa: false };
+    return { toggleDisabled: false, unlock: false, reset2fa: false };
   }
   return {
     toggleDisabled: true,
     unlock: isLocked(user, now),
-    resetPassword: true,
     reset2fa: user.role !== "admin", // an admin's authenticator is the super admin's to reset
   };
 }
 
-/** The row's Delete forever button: none for an admin or yourself; Stop when allowed; else
- * Allow, which needs your own two-step sign-in (the server says 403 two_step_required). */
-export type ForeverControl =
-  | { kind: "none" }
-  | { kind: "stop" }
-  | { kind: "allow"; disabledReason: string | null };
+/** The row's Delete forever button: none for an admin or yourself; Stop when allowed; else Allow. */
+export type ForeverControl = { kind: "none" } | { kind: "stop" } | { kind: "allow" };
 
-export function foreverControl(
-  user: AdminUser,
-  { isSelf, adminTwoStep }: { isSelf: boolean; adminTwoStep: boolean },
-): ForeverControl {
+export function foreverControl(user: AdminUser, { isSelf }: { isSelf: boolean }): ForeverControl {
   if (isSelf || user.role === "admin") return { kind: "none" };
-  if (user.can_delete_forever) return { kind: "stop" };
-  return {
-    kind: "allow",
-    disabledReason: adminTwoStep ? null : "Turn on two-step sign-in in Account to allow this.",
-  };
+  return user.can_delete_forever ? { kind: "stop" } : { kind: "allow" };
 }
 
-/** AD7 (UI audit, 16 Oct 2026), with two-step required for admins (0035): what an admin without it sees. */
 /** The toast after Add user (#737): the server's own result line, a problem when the setup email
  * could not be sent (the person is added; Resend setup email finishes it). */
 export function addedNotice(user: Pick<AddedUser, "setup_email_sent" | "message">): {
@@ -228,14 +199,15 @@ export function addedNotice(user: Pick<AddedUser, "setup_email_sent" | "message"
   return user.setup_email_sent ? { text: user.message } : { problem: true, text: user.message };
 }
 
-export function twoStepNote(): string {
-  return "Admins without two-step sign-in set it up at their next sign-in.";
+/** What the People list says about the company sign-in account: made and linked, or not yet. */
+export function companySignIn(user: Pick<AdminUser, "company_sign_in">): string {
+  return user.company_sign_in === "connected" ? "Connected" : "Waiting for setup";
 }
 
 export function allowForeverQuestion(name: string): string {
   return (
     `Let ${name} delete documents in Trash for good? This covers every document in Trash, ` +
-    "not only theirs, and can't be undone. They will type their password each time."
+    "not only theirs, and can't be undone. They confirm with their company sign-in each time."
   );
 }
 
@@ -264,71 +236,6 @@ export const AUTOFILE_HELP =
   "Files already uploaded stay where they are. Files you put in a folder yourself are never moved. " +
   "If a file lands in the wrong folder, press Undo or move it.";
 export const AUTOFILE_NOT_AVAILABLE = "Auto-filing isn't available for your organisation yet.";
-
-// Connected accounts (#457 phase 1): the People and Settings words, naming only the providers
-// that are on (Me's providers, #457 review).
-export const AUTO_APPROVE_LABEL = "Approve new sign-in connections automatically";
-export const AUTO_APPROVE_SAVED = "Saved.";
-export const AUTO_APPROVE_NOTE = "This setting saves as soon as you change it.";
-export const CONNECTIONS_FAILED = "Couldn't load connections to approve. Try again.";
-export const ALREADY_DECIDED = "Another admin already decided this one.";
-
-export function autoApproveWarning(providers: readonly string[]): string {
-  return `Members' ${providersText(providers)} accounts will work at once, without your review.`;
-}
-
-export function removeConnectionsQuestion(name: string, providers: readonly string[]): string {
-  return `Remove ${name}'s connected accounts? They can't sign in with ${providersText(providers)} any more. Their password still works.`;
-}
-
-const WAY_NAMES: Record<string, string> = { password: "Password", google: "Google" };
-
-/** Approve's and Decline's names for a screen reader: "Approve Ramesh Kumar's Google account". */
-export function decideLabel(row: PendingConnection, approve: boolean): string {
-  return `${approve ? "Approve" : "Decline"} ${row.display_name}'s ${WAY_NAMES[row.provider] ?? row.provider} account`;
-}
-
-/** "Password, Google": how this person signs in (every account keeps its password). */
-export function signsInWith(ways: readonly string[] | undefined): string {
-  return (ways ?? ["password"]).map((way) => WAY_NAMES[way] ?? way).join(", ");
-}
-
-/** #507: the tag beside how they sign in, while their role signs in with Google only and they
- * have no Google account that passes (AdminUser.google_needed). */
-export const GOOGLE_NEEDED = "Needs to connect Google";
-
-/** The tag's words: their connected account's domain is not checked yet (#507 review,
- * AdminUser.google_unchecked: the limited session's words), else "Needs to connect Google";
- * null: no tag. */
-export function googleTag(user: AdminUser): string | null {
-  if (user.google_unchecked === true) return DOMAIN_UNCHECKED;
-  return user.google_needed === true ? GOOGLE_NEEDED : null;
-}
-export const RESET_DISCONNECTS = "This also disconnects their Google account.";
-
-/** #507, Add a user: the hint under the role while Google sign-in is on for it (as the invite
- * email's line: the server's Google sign-in, the super admin's, and the role allowed). */
-export const ADD_USER_GOOGLE_HINT =
-  "Your organisation signs in with Google for this role. After they choose a password, they connect their Google account.";
-
-/** The hint for this role; null while Google is off (``google`` left out: the server's switch). */
-export function addUserGoogleHint(google: GoogleRules | undefined, role: Role): string | null {
-  return google?.available === true && google.allowed_roles.includes(role) ? ADD_USER_GOOGLE_HINT : null;
-}
-
-/** Asked before Reset password; it also removes their connected accounts (#507). */
-export function resetPasswordQuestion(name: string, ways: readonly string[] | undefined): string {
-  const question = `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`;
-  return (ways ?? []).some((way) => way !== "password") ? `${question} ${RESET_DISCONNECTS}` : question;
-}
-
-const askedDay = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
-
-/** A waiting connection in one line: "Ramesh Kumar · Google · ramesh.k@gmail.com · asked 30 Oct". */
-export function pendingLine(row: PendingConnection): string {
-  const parts = [row.display_name, WAY_NAMES[row.provider] ?? row.provider, row.email ?? "no email given"];
-  return `${parts.join(" · ")} · asked ${askedDay.format(new Date(row.linked_at))}`;
-}
 
 /** AD6: the form differs from what is saved (the Save bar shows only then). */
 export function settingsChanged(

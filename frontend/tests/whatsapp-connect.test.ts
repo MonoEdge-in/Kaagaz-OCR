@@ -11,7 +11,6 @@ import {
   maskedNumber,
   normalizeNumber,
   numberProblem,
-  pageNotice,
   stateText,
 } from "@/components/account/whatsapp";
 import {
@@ -62,7 +61,7 @@ describe("the Connect screen", () => {
   });
 
   it("says each state plainly, a connection by its last 4 digits only", () => {
-    const base = { google: false, totp: false };
+    const base = {};
     expect(stateText({ ...base, state: "off" })).toContain("isn't turned on for your organisation");
     expect(stateText({ ...base, state: "not_allowed" })).toContain("for your role");
     expect(stateText({ ...base, state: "none" })).toContain("Files never leave Kaagaz");
@@ -76,14 +75,6 @@ describe("the Connect screen", () => {
     expect(connected).toBe("Connected: ••••3210, since 14 Nov 2026.");
   });
 
-  it("goes on to the number after Google, or says why not", () => {
-    expect(pageNotice({ proved: "google" })).toEqual({ proved: true, error: null });
-    expect(pageNotice({ error: "not_yours" }).error).toBe(
-      "That Google account isn't the one connected to your Kaagaz account.",
-    );
-    expect(pageNotice({ error: "something new" }).error).toBe("Confirming with Google didn't work. Try again.");
-    expect(pageNotice({})).toEqual({ proved: false, error: null });
-  });
 });
 
 const SAVED: WhatsAppAdmin = {

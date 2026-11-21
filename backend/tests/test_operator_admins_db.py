@@ -102,8 +102,16 @@ def test_an_operator_manages_one_admin_with_one_row_per_change(
     assert other not in client.get(base).text  # the reused code made nothing
     keycloak.calls.clear()
     subject = f"subject-{uuid.uuid4().hex}"  # the existing admin joins company sign-in
-    with db.user(a, uid) as conn:
-        keycloak_sql.link_account(conn, ISSUER, subject, now=api.clock())
+    with (
+        db.engine.begin() as conn
+    ):  # linked as the callback leaves it (the sign-in helper made them Keycloak's)
+        conn.execute(
+            text(
+                "INSERT INTO keycloak_identities (customer_id, user_id, issuer, subject, status, linked_at,"
+                " activated_at) VALUES (:c, :u, :i, :s, 'active', :t, :t)"
+            ),
+            {"c": a, "u": uid, "i": ISSUER, "s": subject, "t": api.clock()},
+        )
 
     assert client.post(f"{base}/{uid}/disable", headers=CSRF).json()["admin"]["disabled"] is True
     assert admin.client.get("/api/auth/me").status_code == 401

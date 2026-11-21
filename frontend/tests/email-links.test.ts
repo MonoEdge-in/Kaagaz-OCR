@@ -6,14 +6,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ORG_PENDING, signInErrorMessage } from "@/app/login/signIn";
 import { addedNotice } from "@/components/admin/logic";
 import { EmailBanner } from "@/components/shell/EmailBanner";
 import { orgStatus, waitingOnly } from "@/components/operator/logic";
 import { ApiError } from "@/lib/api";
 import {
   EMAIL_OFF,
-  FORGOT_SENT,
   LINK_GONE,
   LINK_MISSING,
   SEND_FAILED,
@@ -65,7 +63,7 @@ describe("what the email screens say", () => {
     // Changed on purpose (#457 review): a 404 is email switched off, not a gone link.
     expect(EMAIL_OFF).toBe("Email isn't switched on for Kaagaz yet.");
     expect(linkError(new ApiError(404, "not_found", "Not found."))).toBe(EMAIL_OFF);
-    expect(linkError(new ApiError(404, "not_found", "Not found."), "reset")).toBe(EMAIL_OFF);
+    expect(linkError(new ApiError(404, "not_found", "Not found."), "confirm")).toBe(EMAIL_OFF);
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       expect(linkError(new ApiError(500, "internal_error", "boom"))).toBe(

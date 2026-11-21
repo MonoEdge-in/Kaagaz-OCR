@@ -32,7 +32,7 @@ describe("response headers", () => {
   });
 
   it("send no referrer from the emailed links' pages (#457)", async () => {
-    for (const path of ["/reset-password", "/email/confirm"]) {
+    for (const path of ["/email/confirm"]) {
       expect((await headersFor(path))["Referrer-Policy"], path).toBe("no-referrer");
     }
     expect((await headersFor("/documents"))["Referrer-Policy"]).toBe("same-origin");

@@ -302,7 +302,6 @@ A changed `.env` value reaches the containers with `dc up -d --no-deps api worke
 | `TOTP_ENCRYPTION_KEY` | Not the same as `SESSION_SECRET`. Nothing re-encrypts the stored two-step secrets yet, so a new key leaves every one unreadable: after it, run `reset-admin-2fa --email` for each admin and `reset-operator-2fa --email` for each operator (at a terminal), and each enrols again. Until a re-seal command exists (proposed in #481: open each secret with the old key, seal it with the new, one transaction per organisation), rotate this one only on suspicion | Every admin and operator enrols again |
 | `POSTGRES_PASSWORD` and `DATABASE_URL` | Postgres reads `POSTGRES_PASSWORD` only when its volume is new, so set it in the database first, through stdin (never a flag; `read -rs NEW` takes it unseen): `printf "ALTER ROLE kaagaz PASSWORD '%s';\n" "$NEW" \| dc exec -T postgres psql -q -U kaagaz -d kaagaz`, then both lines of `.env`, restart. After #479, the same for each login | Nobody (a few seconds) |
 | `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, and the `STORAGE_ADMIN_` pair | Add a second entry to the identity's `credentials` in `s3.json`, `dc up -d --no-deps --force-recreate seaweedfs`, the new pair into `.env`, restart; then remove the old entry and recreate seaweedfs again | Nobody (seconds of storage restart) |
-| `GOOGLE_CLIENT_SECRET` | Google Cloud console, the OAuth client: add a secret (two may be active), into `.env`, restart, sign in with Google once, then disable the old one | Nobody |
 | SES (`EMAIL_FROM`) | No key: the server's role sends, and AWS rotates its credentials itself. Check its policy allows `ses:SendEmail` from `EMAIL_FROM` only, and that no SMTP user exists | Nobody |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Laptop-only stand-ins for ElasticMQ; never set on the server (its role is used) | Nobody |
 
@@ -779,12 +778,6 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Check (screen): sign in as each role; narrow the window below 1024 px; pick Dark in the Theme menu and reload.
 - Expect: a member sees Documents and Ask; a reviewer adds Review; an admin adds Review and Admin. Below 1024 px a menu drawer opens and closes with Esc or a link. Dark stays after a reload with no flash (cookie `kaagaz_theme=dark`). A member typing /admin sees "Admin is for admins".
 - Tests: `frontend/tests/shell-nav.test.ts`, `ui-drawer.test.ts`, `theme.test.ts`.
-
-**4a. Ways to sign in with Google (#457 phase 1)**
-- Set up: in Google Cloud, a project with the External consent screen (scopes `openid email profile`, test users named while it is in Testing) and an OAuth client of type Web application whose redirect URI is `https://<site>/api/auth/oidc/google/callback` (http only on localhost). Then in `.env`: `GOOGLE_SIGNIN_ENABLED=true`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` (all three required while on; the secret is never logged).
-- Check (screen): Account, Ways to sign in, Connect, type the password (and the code with two-step on), pick an account at Google. Sign out, then Continue with Google on /login. As admin, Admin, Users: Connections to approve, Approve or Decline, and a row's Remove connected accounts; Admin, Settings: the auto-approval switch.
-- Expect: a member's Google with another email says "Sent to your admin for approval." and cannot sign in until approved; the same email (verified by Google) connects at once. An unknown Google account says it isn't connected. Anyone with codes on types the code after Google.
-- Tests (a made-up Google, `backend/tests/oidc_fake.py`, no network): `test_oidc.py`, `test_api_oidc_signin.py`, `test_api_oidc_connect.py`, `test_api_admin_identities.py`, `test_isolation_*identities.py`; `frontend/tests/provider-sign-in.test.ts`, `ways-to-sign-in.test.ts`, `admin-connections.test.ts`.
 
 **4b. Google Analytics (#457 phase 4)**
 - Set up: `NEXT_PUBLIC_GA_ID` (a GA4 `G-` id) in `.env` before the frontend is built. Tracked: /login (not with `?step=code`), /signup and /forgot-password, after Accept analytics.

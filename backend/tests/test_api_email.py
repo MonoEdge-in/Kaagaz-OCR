@@ -6,12 +6,8 @@ are read back from the sent text (``#t=`` in the fragment). The first test needs
 database; the rest (marked ``db``) run against a real PostgreSQL.
 """
 
-import base64
-import logging
 import re
-import uuid
 from collections.abc import Iterator
-from datetime import timedelta
 from typing import Any
 
 import httpx2 as httpx
@@ -20,29 +16,21 @@ from botocore.exceptions import ClientError
 from sqlalchemy import text
 
 from kaagaz.adapters.email import MemoryMailer
-from kaagaz.api import totp
 from kaagaz.api.app import create_app
-from kaagaz.api.emails import token_hash
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers import email as email_router
-from kaagaz.db import email_links as links_sql
-from kaagaz.db import identities
-from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database, make_engine
 from tests.settings_factory import make_settings
 from tests.test_api_support import (
     CSRF,
     EMAIL_ROUTES,
     NOW,
-    PASSWORD,
     Api,
     ApiFakeQueue,
     ApiFakeStorage,
     FakeAnswers,
     TestClient,
-    wrong_code,
 )
-from tests.test_operator_auth_db import _Operator
 
 SITE = "https://kaagaz.example.com"
 SENDER = "no-reply@example.com"
@@ -188,4 +176,3 @@ def test_send_again_is_three_an_hour(db: Database) -> None:
 
 
 # --- an email that breaks never breaks the action -----------------------------------------------
-

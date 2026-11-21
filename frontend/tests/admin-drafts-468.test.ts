@@ -196,7 +196,7 @@ describe("switching admin tabs with unsaved changes asks first", () => {
   it("AdminView asks before leaving Settings or AI settings, and drops their draft on leaving", () => {
     const view = read("components/admin/AdminView.tsx");
     expect(view).toContain("tabChangeAllowed(unsaved, () => window.confirm(LEAVE_UNSAVED))");
-    expect(view).toContain("<SettingsPanel providers={me.providers} onUnsaved={setUnsaved} />");
+    expect(view).toContain("<SettingsPanel onUnsaved={setUnsaved} />");
     expect(view).toContain('<AiSettingsPanel scope="organisation" onUnsaved={setUnsaved} />');
     // Changed on purpose (#468 review, SF3): only the draft of the tab being left.
     expect(view).toContain('if (active === "settings") clearDraft(me.user.id, SETTINGS_DRAFT);');

@@ -355,7 +355,6 @@ describe("PT2 / UX9: errorWords takes any failure; one network wording everywher
 
   it("no screen keeps its own ternary and offline sentence", () => {
     for (const file of [
-      "components/account/signInWays.ts",
       "components/admin/ActivityPanel.tsx",
       "components/admin/AiSettingsPanel.tsx",
       "components/admin/DepartmentsPanel.tsx",

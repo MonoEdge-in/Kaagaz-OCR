@@ -7,6 +7,7 @@ PostgreSQL (tests/test_users_db.py covers the query behind ``load_user``).
 """
 
 import base64
+import dataclasses
 import hashlib
 import hmac
 import json
@@ -541,7 +542,7 @@ def _client(
         if stored is None:
             return None
         fields = {field: getattr(stored, field) for field in CurrentUser.__dataclass_fields__}
-        return CurrentUser(**{**fields, "scope": scope})
+        return CurrentUser(**{**fields, "scope": scope, "auth_authority": "keycloak"})
 
     monkeypatch.setattr(auth, "load_user", load_user)
     settings = make_settings()
@@ -576,7 +577,11 @@ def _client(
 
 
 def _cookie(client: TestClient, claims: SessionClaims) -> None:
-    client.cookies.set(SESSION_COOKIE, sign_session(claims, make_settings().session_secret))
+    """The session cookie of a Keycloak sign-in (the only one: any other source is refused)."""
+    live = dataclasses.replace(
+        claims, auth_source="keycloak", assurance=make_settings().keycloak_required_acr
+    )
+    client.cookies.set(SESSION_COOKIE, sign_session(live, make_settings().session_secret))
 
 
 def test_current_user_passes_a_matching_session_through(monkeypatch: pytest.MonkeyPatch) -> None:

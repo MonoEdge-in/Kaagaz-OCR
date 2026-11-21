@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ApiError, confirmPassword, proveForWhatsApp, saveAdminWhatsApp } from "@/lib/api";
+import { ApiError, saveAdminWhatsApp } from "@/lib/api";
 import {
   beginKeycloakReauth,
   isKeycloakAction,
@@ -101,32 +101,28 @@ describe("company verification messages", () => {
 });
 
 describe("mapped proof requests", () => {
-  it("omits Kaagaz passwords from mapped WhatsApp, delete, and settings proofs", async () => {
+  it("omits Kaagaz passwords from the WhatsApp settings proof", async () => {
     const bodies: unknown[] = [];
     vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(String(init.body)));
       return new Response(null, { status: 204 });
     });
-    await proveForWhatsApp();
-    await confirmPassword();
     await saveAdminWhatsApp(
       { enabled: true, roles: ["member"], management: false, voice: true, uploads: false },
       undefined,
       true,
     );
     expect(bodies).toEqual([
-      {},
-      {},
       { enabled: true, roles: ["member"], management: false, voice: true, uploads: false, rules_confirmed: true },
     ]);
   });
 
   it("wires fresh verification into the mapped account, admin and document flows", () => {
     const whatsapp = source("components/account/WhatsAppConnect.tsx");
-    expect(whatsapp).toContain("if (managed && !reauthAvailable)");
+    expect(whatsapp).toContain("if (!reauthAvailable)");
     expect(whatsapp).toContain('beginKeycloakReauth("whatsapp"');
     expect(whatsapp).toContain("if (reauthAvailable)");
-    expect(whatsapp).toContain("!managed && !me.google");
+    expect(whatsapp).not.toContain("proveForWhatsApp");
     const adminWhatsApp = source("components/admin/WhatsAppPanel.tsx");
     expect(adminWhatsApp).toContain('beginKeycloakReauth("whatsapp"');
     expect(adminWhatsApp).toContain("!managed && tickNeedsPassword");
@@ -134,6 +130,7 @@ describe("mapped proof requests", () => {
     expect(source("components/access/SelfPasswordDialog.tsx")).toContain("if (isKeycloakManaged(me)) return await send();");
     expect(source("components/documents/LockDialog.tsx")).toContain('beginKeycloakReauth("locks"');
     expect(source("components/viewer/LockedOpenPrompt.tsx")).toContain('beginKeycloakReauth("locked_open"');
+    expect(source("components/viewer/LockedOpenPrompt.tsx")).not.toContain("PasswordField");
     expect(source("components/documents/DocumentsTable.tsx")).toContain('beginKeycloakReauth("delete_forever"');
   });
 });

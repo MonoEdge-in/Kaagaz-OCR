@@ -146,13 +146,6 @@ def _app_url(value: str) -> str:
     return _https_url(value, "APP_URL", "")
 
 
-def _redirect_uri(value: str, provider: str) -> str:
-    """{PROVIDER}_REDIRECT_URI (#457): where the provider sends the browser back, exactly as
-    registered with it. https (http only on a loopback host), no user, query or fragment, and
-    the path /api/auth/oidc/<provider>/callback."""
-    return _https_url(value, f"{provider.upper()}_REDIRECT_URI", f"/api/auth/oidc/{provider}/callback")
-
-
 _LOOPBACK_NOTE = " (http only for localhost, 127.0.0.1 or ::1)"
 # Each setting's own words when ``_https_url`` refuses it (a redirect URI's name its path).
 _URL_MESSAGES = {
@@ -492,13 +485,6 @@ class Settings:
     # reading paused (#478) and the server's disk alert (#480, infra/ec2/disk-alert.sh), both
     # with EMAIL_ENABLED on or off (kaagaz/ops_alert.py). Optional: unset, none is sent.
     ops_alert_email: str | None = None
-    # Sign in with Google (#457 phase 1). Off unless GOOGLE_SIGNIN_ENABLED=true; on, the
-    # client id, secret and redirect URI are required. The redirect URI is https (http only
-    # on a loopback host) and ends /api/auth/oidc/google/callback.
-    google_signin_enabled: bool = False
-    google_client_id: str | None = None
-    google_client_secret: str | None = field(default=None, repr=False)
-    google_redirect_uri: str | None = None
     # Keycloak is a configured, trusted OIDC authority; there is no user provisioning by claims.
     keycloak_enabled: bool = False
     keycloak_issuer: str | None = None
@@ -562,7 +548,6 @@ class Settings:
         session_secret = env.secret("SESSION_SECRET")
         # Off unless set to true, as SELF_SIGNUP_ENABLED.
         email_enabled = env.optional("EMAIL_ENABLED") is not None and env.boolean("EMAIL_ENABLED")
-        google_on = env.optional("GOOGLE_SIGNIN_ENABLED") is not None and env.boolean("GOOGLE_SIGNIN_ENABLED")
         keycloak_on = env.optional("KEYCLOAK_ENABLED") is not None and env.boolean("KEYCLOAK_ENABLED")
         totp_encryption_key = env.secret("TOTP_ENCRYPTION_KEY")
         if totp_encryption_key == session_secret:
@@ -887,14 +872,6 @@ class Settings:
             if email_enabled or whatsapp_on
             else env.optional("APP_URL"),
             ops_alert_email=env.optional("OPS_ALERT_EMAIL"),
-            google_signin_enabled=google_on,
-            google_client_id=env.text("GOOGLE_CLIENT_ID") if google_on else env.optional("GOOGLE_CLIENT_ID"),
-            google_client_secret=env.text("GOOGLE_CLIENT_SECRET")
-            if google_on
-            else env.optional("GOOGLE_CLIENT_SECRET"),
-            google_redirect_uri=_redirect_uri(env.text("GOOGLE_REDIRECT_URI"), "google")
-            if google_on
-            else env.optional("GOOGLE_REDIRECT_URI"),
             keycloak_enabled=keycloak_on,
             keycloak_issuer=keycloak_issuer,
             keycloak_client_id=keycloak_client_id,

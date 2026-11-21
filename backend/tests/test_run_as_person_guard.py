@@ -34,12 +34,9 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "emails.py:new_link:customer": (1, "a link for someone not signed in: sign-up, forgot password"),
     "emails.py:notify:customer": (1, "after the reply, the recipient's address; often not the actor"),
     "routers/admin.py:create_user:system": (1, "frees a stale sign-up's e-mail in any organisation (0063)"),
-    "routers/admin.py:tell_admins:customer": (1, "after the reply, the admins' addresses; recipients only"),
-    "routers/admin.py:approve_identity:system": (1, "whether the e-mail signs in a user of any organisation"),
     "routers/email.py:confirm_email:customer": (1, "e-mail link: the link names the user, nobody signed in"),
     "routers/email.py:_send_link:system": (1, "forgot password: finds the account by e-mail, anywhere"),
     "routers/email.py:_send_link:customer": (1, "forgot password: the found user's address, not signed in"),
-    "routers/email.py:_set_password:customer": (1, "reset or invite link: the link's user, nobody signed in"),
     "routers/email.py:_open_link:system": (1, "finds a link by its token, any organisation"),
     # Changed on purpose (21 Nov 2026): Keycloak's callbacks, before or while a session is made; the
     # backchannel logout is Keycloak's own call; no person is signed in to any of them.
@@ -54,6 +51,17 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "routers/keycloak.py:_reauth:system": (
         1,
         "the identity the fresh proof names, checked against the person",
+    ),
+    # Changed on purpose (#737): mirroring company sign-in accounts, for people of one organisation the
+    # super admin or an admin names; the actor is the operator or the signed-in admin, never these people.
+    "keycloak_accounts.py:mirror_enabled:customer": (
+        1,
+        "the people whose company account is switched, listed",
+    ),
+    "keycloak_accounts.py:subject_of:customer": (1, "the company account of one named person"),
+    "routers/operator_orgs.py:_people:customer": (
+        1,
+        "an organisation's people, for the super admin's screen",
     ),
     "routers/operator_models.py:_plan:customer": (1, "the super admin, not a person of the organisation"),
     "routers/operator_orgs.py:create_org:system": (1, "the super admin frees a stale sign-up's e-mail"),
@@ -74,6 +82,7 @@ ALLOWED: dict[str, tuple[int, str]] = {
 USER_EXCEPTIONS: dict[str, tuple[int, str]] = {
     "routers/keycloak.py:_login": (1, "the found person, whose session is being made (Keycloak's callback)"),
     "routers/keycloak.py:_new_flow": (1, "a bound flow's signed-in user (a risky action's fresh proof)"),
+    "keycloak_accounts.py:link_new": (1, "the person whose company account was just made, for the link"),
     "auth.py:current_user": (1, "the user the checked session names, loaded by load_user"),
     "auth.py:feature_on": (1, "user: require_feature's signed-in user (None: sign-up, on system)"),
     "routers/chat.py:_write_memory": (2, "after the reply, the asker: _remember passes user's ids"),

@@ -390,7 +390,6 @@ def test_a_signed_in_person_gets_me(db: Database) -> None:
         },
         "customer": {"id": customer_id, "name": "Sharma Traders"},
         "session": {"scope": "app"},
-        "providers": [],
         "keycloak_enabled": False,
     }  # Changed on purpose (21 Nov 2026): no providers, no recent connections, no Google flags
 

@@ -47,7 +47,6 @@ const me: Me = {
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: "admin" },
-  providers: [], // #457 review: the sign-in providers switched on
 };
 const noop = () => undefined;
 /** The account menu as the server renders it, inside the page's theme and palette (children as the third argument). */

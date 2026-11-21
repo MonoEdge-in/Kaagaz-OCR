@@ -3,14 +3,14 @@
 // A folder in Trash, as one row of the Trash list (#542, Tushar, 7 Nov 2026): its folder icon and
 // name (pressed, or the row clicked, it opens read only), where it was, what it holds, when it was
 // deleted and by whom. At Trash's top level it has Restore (nothing is lost, so no question) and
-// Delete forever (asked first in a dialog, with the password for whoever types one, #538, and
-// again after a 403 password_confirm_required); inside an opened folder its folders only open.
+// Delete forever (asked first in a dialog; a 403 keycloak_reauth_required sends the person to the
+// company sign-in, and they confirm again after returning); inside an opened folder its folders only open.
 // It can be ticked with the documents, for the selection's Restore and Delete forever.
 // Stability pass (Tushar's screenshot, 7 Nov 2026, B16): it is laid out as a document in Trash,
 // cell for cell: where it was and what it holds are the facts under its name, Status is a dash,
 // and Restore and Delete forever sit behind the same ⋯ menu (RowMenu), inside the actions cell.
-// A wrong password keeps the question open with why, focus in the box (B6); once it worked the
-// question closes before the list hears it, so the list's heading can take focus (B11). A big
+// Once it worked the question closes before the list hears it, so the list's heading can take
+// focus (B11). A big
 // folder is deleted a part at a time, "Deleting… 400 left" (B18); one that stops part way says
 // how many are still in Trash.
 
@@ -18,12 +18,11 @@ import { useCallback, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { flushSync } from "react-dom";
 import { Icon as KitIcon } from "@/components/ui/Icon/Icon";
-import { PasswordField } from "@/components/ui/PasswordField";
-import { ApiError, confirmPassword, deleteTrashedFolderForever, restoreTrashedFolder } from "@/lib/api";
+import { ApiError, deleteTrashedFolderForever, restoreTrashedFolder } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
 import { formatDateTime } from "@/lib/format";
 import { useSession } from "@/lib/session";
-import { beginKeycloakReauth, isKeycloakManaged, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
+import { beginKeycloakReauth, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import type { TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
@@ -37,7 +36,6 @@ import {
   foreverStoppedText,
   heldText,
   lostTheRight,
-  passwordAgain,
   wasInText,
 } from "./trash";
 import styles from "./Documents.module.css";
@@ -50,7 +48,6 @@ export interface TrashFolderRowProps {
   /** Restore and Delete forever (Trash's top level); left out, the row only opens. */
   onDone?: (message: string) => void;
   canForever: boolean;
-  askPassword: boolean;
   /** It gets a checkbox for the selection. */
   tickable: boolean;
   selected: boolean;
@@ -64,22 +61,16 @@ export function TrashFolderRow({
   whenSpoken,
   onDone,
   canForever,
-  askPassword,
   tickable,
   selected,
   onToggle,
   onOpen,
 }: TrashFolderRowProps) {
-  const { me, refresh } = useSession();
-  const managed = isKeycloakManaged(me);
+  const { refresh } = useSession();
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState<"restore" | "forever" | null>(null);
   const [left, setLeft] = useState<number | null>(null); // B18: files still to delete, once the server says
   const [error, setError] = useState<string | null>(null);
-  const [password, setPassword] = useState("");
-  const [passwordAsked, setPasswordAsked] = useState(false);
-  const needsPassword = !managed && (askPassword || passwordAsked);
-  const passwordId = `forever-folder-password-${folder.id}`;
   const menuButton = useRef<HTMLButtonElement | null>(null);
   const refocusMenu = useRef(false); // a Restore that failed: focus goes back to the menu once it shows again
   const holdMenu = useCallback((element: HTMLButtonElement | null) => {
@@ -116,7 +107,7 @@ export function TrashFolderRow({
         finish("This folder is no longer in Trash."); // restored or deleted elsewhere: the list is asked for again
         return;
       }
-      if (kind === "forever" && managed && isKeycloakReauthRequired(caught)) {
+      if (kind === "forever" && isKeycloakReauthRequired(caught)) {
         setBusy(null);
         try {
           await beginKeycloakReauth("delete_forever", window.location.pathname);
@@ -127,22 +118,14 @@ export function TrashFolderRow({
         }
       }
       const lost = lostTheRight(caught);
-      if (lost) {
-        refresh();
-        setPasswordAsked(false);
-      }
+      if (lost) refresh();
       const why = errorWords(caught);
       setError(step.left === null ? why : `${foreverStoppedText(step.left)} ${why}`);
       setBusy(null);
-      // The question stays open, with why: a refused or out-of-date password (asked again, focus
-      // in its box), or a delete that stopped part way (Delete forever goes on from there).
-      const again = passwordAgain(caught);
-      if (again || (step.checking && !lost) || step.left !== null) {
-        flushSync(() => {
-          if (again) setPasswordAsked(true);
-        });
-        // Focus waits in the password box, or on Delete forever to go on from where it stopped.
-        (window.document.getElementById(passwordId) ?? foreverButton.current)?.focus();
+      // The question stays open, with why, when a delete stopped part way (Delete forever goes on
+      // from there).
+      if (step.left !== null) {
+        foreverButton.current?.focus();
         return;
       }
       refocusMenu.current = kind === "restore";
@@ -157,14 +140,7 @@ export function TrashFolderRow({
   }
 
   function deleteForever() {
-    const typed = needsPassword ? password : null;
-    setPassword("");
     void act("forever", async (step) => {
-      if (typed !== null || managed) {
-        step.checking = true;
-        await confirmPassword(typed ?? undefined);
-        step.checking = false;
-      }
       await deleteTrashedFolderForever(folder.id, (remaining) => {
         step.left = remaining;
         setLeft(remaining);
@@ -302,16 +278,7 @@ export function TrashFolderRow({
           >
             <div className={library.dialogForm}>
               <p>{folderForeverQuestion(folder)}</p>
-              {managed && <p className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; find this folder again and confirm after returning.</p>}
-              {needsPassword && (
-                <PasswordField
-                  id={passwordId}
-                  label="Your password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={setPassword}
-                />
-              )}
+              <p className="hint">Company sign-in may ask you to verify first. Nothing is deleted during verification; find this folder again and confirm after returning.</p>
               {error && (
                 <p className="error-text" role="alert">
                   {error}
@@ -326,7 +293,7 @@ export function TrashFolderRow({
                   type="button"
                   className={`btn btn-danger ${library.apart}`}
                   onClick={deleteForever}
-                  disabled={busy !== null || (needsPassword && password === "")}
+                  disabled={busy !== null}
                 >
                   <BusyLabel busy={busy === "forever"} idle="Delete forever" working={deleting} />
                 </button>

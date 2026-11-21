@@ -83,7 +83,6 @@ const admin = (totp_enabled: boolean): Me => ({
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: "admin" },
-  providers: [],
 });
 
 let doc: FakeDocument;
@@ -137,16 +136,11 @@ async function show(me: Me, folders: TrashedFolder[], items: DocumentSummary[] =
 
 const all = () => doc.body.all();
 const byLabel = (label: string) => all().find((element) => element.getAttribute("aria-label") === label) ?? null;
-const byId = (id: string) => all().find((element) => element.getAttribute("id") === id) ?? null;
 const rowOf = (id: string) => all().find((element) => element.getAttribute("data-id") === id)!;
 const cells = (row: FakeElement) => row.childNodes.filter((node): node is FakeElement => node instanceof FakeElement);
 const classOf = (element: FakeElement) => element.getAttribute("class") ?? "";
 const dialog = () => all().find((element) => element.tagName === "DIALOG") ?? null;
 const press = (element: FakeElement | null) => act(async () => void fire(element!, "click", { button: 0 }));
-async function type(box: FakeElement | null, text: string) {
-  box!.value = text;
-  await act(async () => void fire(box!, "input"));
-}
 const foreverButton = () =>
   dialog()?.all().find((element) => element.tagName === "BUTTON" && element.textContent.startsWith("Delete forever")) ?? null;
 async function askForever(name: string) {
@@ -241,30 +235,7 @@ describe("B16: a folder in Trash is laid out as a document in Trash", () => {
 });
 
 describe("B6, B11, B12: one item's Delete forever", () => {
-  const wrong = [400, { error: { code: "bad_request", message: "Your current password is not right." } }] as Reply;
 
-  it("keeps a folder's question open after a wrong password, says why there, and focuses the box", async () => {
-    serve({ "POST /api/auth/confirm-password": [wrong] });
-    await show(admin(false), [round2]);
-    await askForever("folder Round 2");
-    await type(byId("forever-folder-password-f1"), "nope");
-    await press(foreverButton());
-    expect(dialog()).not.toBeNull();
-    expect(dialog()!.textContent).toContain("Your current password is not right.");
-    expect(doc.activeElement).toBe(byId("forever-folder-password-f1"));
-    expect(calls).toEqual(["POST /api/auth/confirm-password"]);
-  });
-
-  it("keeps a document's question open after a wrong password, says why there, and focuses the box", async () => {
-    serve({ "POST /api/auth/confirm-password": [wrong] });
-    await show(admin(false), [], [binned]);
-    await askForever("Bill.pdf");
-    await type(byId("forever-password-d1"), "nope");
-    await press(foreverButton());
-    expect(dialog()).not.toBeNull();
-    expect(dialog()!.textContent).toContain("Your current password is not right.");
-    expect(doc.activeElement).toBe(byId("forever-password-d1"));
-  });
 
   it("closes the folder's question once it worked, and the list hears it", async () => {
     serve({ "DELETE /api/documents/trash/folders/f1/permanent": [[204]] });

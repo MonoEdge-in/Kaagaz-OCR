@@ -113,19 +113,7 @@ def test_memory_mailer_keeps_what_was_sent() -> None:
 
 TEMPLATES = (
     emails.confirm_email,
-    emails.reset_password,
-    emails.password_changed,
-    emails.password_was_reset,
-    emails.two_step_on,
-    emails.two_step_off,
     emails.two_step_reset,
-    # Changed on purpose (#457 phase 1): a connected Google account's notices, and the admins'.
-    emails.google_connected,
-    emails.google_waiting,
-    emails.google_approved,
-    emails.google_declined,
-    emails.google_disconnected,
-    emails.connection_waiting,
     # Changed on purpose (#603): WhatsApp connected, and turned on for the organisation.
     emails.whatsapp_connected,
     emails.whatsapp_turned_on,
@@ -162,16 +150,7 @@ def test_no_email_can_be_given_a_document_and_none_holds_an_id(
 
 def test_a_security_notice_has_no_link() -> None:
     for notice in (
-        emails.password_changed,
-        emails.password_was_reset,
-        emails.two_step_on,
-        emails.two_step_off,
         emails.two_step_reset,
-        emails.google_connected,
-        emails.google_waiting,
-        emails.google_approved,
-        emails.google_declined,
-        emails.google_disconnected,
         emails.whatsapp_connected,  # Changed on purpose (#603)
     ):
         _, text = notice(name="Ramesh")
@@ -179,12 +158,9 @@ def test_a_security_notice_has_no_link() -> None:
 
 
 def test_an_email_to_an_address_not_yet_proven_is_never_given_a_name() -> None:
-    """Confirm and reset go to an address nobody has proven yet, so a name someone
+    """Confirm goes to an address nobody has proven yet, so a name someone
     typed (at sign-up, say, with another person's address) never rides on them (#457 review)."""
-    templates: tuple[Callable[..., tuple[str, str]], ...] = (
-        emails.confirm_email,
-        emails.reset_password,
-    )
+    templates: tuple[Callable[..., tuple[str, str]], ...] = (emails.confirm_email,)
     for template in templates:
         assert "name" not in inspect.signature(template).parameters, template.__name__
         _, text = template(link="https://kaagaz.example.com/x#t=abc")

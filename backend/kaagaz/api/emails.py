@@ -141,55 +141,6 @@ def confirm_email(link: str) -> Message:
     )
 
 
-def reset_password(link: str) -> Message:
-    return (
-        "Reset your Kaagaz password",
-        f"Hello,\n\nSomeone asked to reset the password of your Kaagaz account. To choose a"
-        f" new one, open this link:\n\n{link}\n\nThe link works once, for 30 minutes, and signs"
-        " you out on every browser. If you did not ask for this, you can ignore this email: your"
-        " password stays as it is." + _SIGN_OFF,
-    )
-
-
-def password_changed(name: str) -> Message:
-    return (
-        "Your Kaagaz password was changed",
-        f"Hello {name},\n\nThe password of your Kaagaz account was just changed. If this was you,"
-        " there is nothing to do.\n\nIf you didn't do this, or don't recognise a connected account,"
-        " open Ways to sign in. If you can't sign in, ask your organisation's admin to reset your"
-        " password now." + _SIGN_OFF,
-    )
-
-
-def password_was_reset(name: str) -> Message:
-    return (
-        "Your Kaagaz password was reset",
-        f"Hello {name},\n\nThe password of your Kaagaz account was just reset with a link sent to"
-        " this email address, and every browser was signed out. Connected sign-ins, such as a"
-        " Google account, were removed too. If this was you, there is nothing to do; you can"
-        " connect them again under Ways to sign in.\n\nIf it was not you, ask your organisation's"
-        " admin to reset your password now." + _SIGN_OFF,
-    )
-
-
-def two_step_on(name: str) -> Message:
-    return (
-        "Two-step sign-in is on",
-        f"Hello {name},\n\nTwo-step sign-in was just turned on for your Kaagaz account. From now"
-        " on, signing in asks for the 6-digit code from your authenticator app.\n\nIf this was not"
-        " you, tell your organisation's admin now." + _SIGN_OFF,
-    )
-
-
-def two_step_off(name: str) -> Message:
-    return (
-        "Two-step sign-in is off",
-        f"Hello {name},\n\nTwo-step sign-in was just turned off for your Kaagaz account, and every"
-        " other browser was signed out. From now on, your password alone signs you in.\n\nIf this"
-        " was not you, tell your organisation's admin now." + _SIGN_OFF,
-    )
-
-
 def two_step_reset(name: str) -> Message:
     return (
         "Your Kaagaz two-step sign-in was reset",
@@ -200,61 +151,6 @@ def two_step_reset(name: str) -> Message:
 
 
 # --- Ways to sign in (#457 phase 1): a connected Google account ------------------------------
-
-
-def google_connected(name: str) -> Message:
-    return (
-        "A Google account was connected",
-        f"Hello {name},\n\nA Google account was just connected to your Kaagaz account. You can now"
-        " sign in with it as well as with your password.\n\nIf this was not you, disconnect it"
-        " under Account, Ways to sign in, change your password and tell your organisation's admin"
-        " now." + _SIGN_OFF,
-    )
-
-
-def google_waiting(name: str) -> Message:
-    return (
-        "A Google account is waiting for approval",
-        f"Hello {name},\n\nA Google account was just connected to your Kaagaz account. It can sign"
-        " in once your admin approves it.\n\nIf this was not you, cancel it under Account, Ways to"
-        " sign in, change your password and tell your organisation's admin now." + _SIGN_OFF,
-    )
-
-
-def google_approved(name: str) -> Message:
-    return (
-        "Your Google account was approved",
-        f"Hello {name},\n\nYour admin approved the Google account connected to your Kaagaz account."
-        " You can now sign in with it as well as with your password.\n\nIf you did not ask for"
-        " this, tell your organisation's admin now." + _SIGN_OFF,
-    )
-
-
-def google_declined(name: str) -> Message:
-    return (
-        "Your Google account was declined",
-        f"Hello {name},\n\nYour admin declined the Google account you asked to connect to your"
-        " Kaagaz account, so it cannot sign in. Your password works as before." + _SIGN_OFF,
-    )
-
-
-def google_disconnected(name: str) -> Message:
-    return (
-        "A Google account was disconnected",
-        f"Hello {name},\n\nThe Google account connected to your Kaagaz account was disconnected, so"
-        " it can no longer sign in. Your password works as before.\n\nIf you did not expect this,"
-        " tell your organisation's admin." + _SIGN_OFF,
-    )
-
-
-def connection_waiting(name: str, organisation: str, link: str) -> Message:
-    """To each admin: someone asked to sign in with a Google account; who is not said here."""
-    return (
-        "Waiting for your approval",
-        f"Hello {name},\n\nSomeone in {organisation} asked to sign in to Kaagaz with a Google"
-        " account. It works only once an admin approves it. Open the approval list:\n\n"
-        f"{link}\n\nIf you do not recognise the request, decline it." + _SIGN_OFF,
-    )
 
 
 def whatsapp_connected(name: str) -> Message:

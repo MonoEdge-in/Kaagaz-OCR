@@ -9,12 +9,6 @@ export function sessionScope(me: Me): SessionScope {
   return me.session.scope === "admin" ? "admin" : "app";
 }
 
-/** The app's links, search and Upload show: not in the limited session (#507 review), where the
- * server refuses them all and only Ways to sign in and the account menu remain. */
-export function appChrome(me: Me): boolean {
-  return me.user.google_link_required !== true && me.user.auth_source !== "legacy_limited";
-}
-
 /**
  * Where to sign in when there is no session, or it has just ended: /login, the one
  * sign-in (16 Oct 2026). From the admin screens (/admin and below) it comes back to /admin.

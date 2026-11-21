@@ -40,7 +40,6 @@ vi.mock("@/lib/session", () => ({
       },
       customer: { id: "c1", name: "Sharma Traders" },
       session: { scope: "admin" },
-      providers: [],
     },
     refresh: () => undefined,
   }),
@@ -455,7 +454,6 @@ describe("a hidden move from the list's Move dialog", () => {
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope: "admin" },
-    providers: [],
   };
   const ROW = {
     id: "d1",

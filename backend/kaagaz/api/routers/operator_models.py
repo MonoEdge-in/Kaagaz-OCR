@@ -163,7 +163,6 @@ from kaagaz.api.routers.operator_orgs import StepUp, StepUpBody, _check, _step_u
 from kaagaz.api.views import iso
 from kaagaz.db import models
 from kaagaz.db import operator_models as models_sql
-from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.folder_uploads import (
     DEFAULT_MAX_FILES,
@@ -1108,35 +1107,6 @@ def set_org_session_timeout(
         )
     _refuse(db, operator, outcome, step_up)
     return get_org_session_timeout(customer_id, operator, db, context)
-
-
-class PlatformGoogleBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    on: bool
-    code: str = Field(min_length=1, max_length=MAX_CODE)
-
-
-@router.get("/google-signin")
-def get_google_signin(operator: OperatorSession, db: OperatorDb) -> dict[str, bool]:
-    """The platform's Google sign-in default (0074)."""
-    with db.operator() as conn:
-        row = orgs_sql.google_signin(conn, operator.operator_id, None)
-    if row is None:  # the operator was disabled meanwhile
-        raise ApiError(401, "not_signed_in")
-    return {"on": bool(row["platform_on"])}
-
-
-@router.put("/google-signin")
-def set_google_signin(
-    body: PlatformGoogleBody, operator: OperatorSession, db: OperatorDb, context: Context
-) -> dict[str, bool]:
-    """Set it (a fresh code first); every organisation that follows it follows at its next request."""
-    step_up = _step_up(db, context, operator, body.code)
-    with db.operator() as conn:
-        outcome = orgs_sql.set_google_signin(conn, operator.operator_id, None, on=body.on, step=step_up.step)
-    _check(db, operator, outcome, step_up)
-    return get_google_signin(operator, db)
 
 
 _FOLDER_DEFAULTS = {

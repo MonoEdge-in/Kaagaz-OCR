@@ -71,7 +71,6 @@ import type {
   FolderSummary,
   TrashedFolder,
   TrashedFolderContents,
-  GoogleRulesChange,
   FolderUploadItem,
   FolderUploadPlan,
   FolderUploadPlanBody,
@@ -105,8 +104,6 @@ import type {
   PageTurnSaved,
   PageSummary,
   DocumentWords,
-  PasswordReset,
-  PendingConnection,
   PlatformEvent,
   PlatformFolderLimits,
   PlatformHealth,
@@ -172,18 +169,9 @@ export function onSessionEnded(listener: (() => void) | null): void {
   sessionEnded = listener;
 }
 
-let googleLinkRequired: (() => void) | null = null;
-
-/** Who to tell when a reply says this session may only connect Google first (#507: 403
- * google_link_required); null stops telling. */
-export function onGoogleLinkRequired(listener: (() => void) | null): void {
-  googleLinkRequired = listener;
-}
-
 function noticeSessionEnd(error: ApiError): ApiError {
   const ended = error.status === 401 && error.code === "not_signed_in";
   if (ended || (error.status === 403 && error.code === "mfa_enrol_required")) sessionEnded?.();
-  if (error.status === 403 && error.code === "google_link_required") googleLinkRequired?.();
   return error;
 }
 
@@ -329,17 +317,9 @@ export const startKeycloakReauth = (
   action: "locked_open" | "delete_forever" | "whatsapp" | "access" | "locks",
   next: string,
 ) => request<{ url: string }>("POST", `/auth/keycloak/reauth/${action}/start`, { next });
-// Kaagaz on WhatsApp (#603): Account, WhatsApp. The proof (password and code, or Google) is kept
-// 10 minutes in a cookie only /api/whatsapp reads.
+// Kaagaz on WhatsApp (#603): Account, WhatsApp. The proof (a fresh company sign-in for "whatsapp")
+// is kept 10 minutes in a cookie only /api/whatsapp reads.
 export const whatsappMe = () => request<WhatsAppMe>("GET", "/whatsapp/me");
-export const proveForWhatsApp = (password?: string, code?: string) =>
-  request<{ proved: true }>("POST", "/whatsapp/prove", {
-    ...(password === undefined ? {} : { password }),
-    ...(code === undefined ? {} : { code }),
-  });
-/** For one who signs in with Google only: the code first (two-step on), then Google's address to open. */
-export const proveWithGoogle = (code?: string) =>
-  request<{ url: string }>("POST", "/whatsapp/prove/google", code === undefined ? {} : { code });
 export const askWhatsAppCode = (number: string, way: "sent" | "phone") =>
   request<WhatsAppCode>("POST", "/whatsapp/codes", { number, agreed: true, way });
 export const verifyWhatsAppCode = (code: string) => request<WhatsAppMe>("POST", "/whatsapp/codes/verify", { code });
@@ -359,12 +339,7 @@ export const sendConfirmEmail = () => request<{ ok: true; sent: boolean }>("POST
 /** "Send the link again" with no session (a waiting sign-up's admin): always the same reply. */
 export const resendConfirmEmail = (email: string) =>
   request<{ message: string }>("POST", "/auth/email/resend-confirm", { email });
-export const resetPassword = (token: string, newPassword: string) =>
-  request<{ ok: boolean }>("POST", "/auth/reset", { token, new_password: newPassword });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
-/** A granted member or reviewer types their password before Delete forever (a 5-minute cookie). */
-export const confirmPassword = (password?: string) =>
-  request<void>("POST", "/auth/confirm-password", password === undefined ? {} : { password });
 
 // --- documents -----------------------------------------------------------------
 
@@ -1380,34 +1355,19 @@ export const createUser = (user: { email: string; display_name: string; role: Ro
   request<AddedUser>("POST", "/admin/users", user);
 export const updateUser = (
   id: string,
-  changes: { role?: Role; disabled?: boolean; password?: string },
+  changes: { role?: Role; disabled?: boolean },
 ) => request<AdminUser>("PATCH", `/admin/users/${id}`, changes);
 export const unlockUser = (id: string) => request<AdminUser>("POST", `/admin/users/${id}/unlock`);
-export const resetUserPassword = (id: string) =>
-  request<PasswordReset>("POST", `/admin/users/${id}/reset-password`);
 export const resetUser2fa = (id: string) =>
   request<AdminUser & ResultLine>("POST", `/admin/users/${id}/reset-2fa`);
 /** Email the person a new link to set their password and authenticator (#737). */
 export const resendSetup = (id: string) => request<ResultLine>("POST", `/admin/users/${id}/resend-setup`);
-/** Allow or stop a member's or reviewer's Delete forever; allowing needs your two-step sign-in. */
+/** Allow or stop a member's or reviewer's Delete forever. */
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
 /** What this organisation has stored, Trash included, and its storage limit (#516). */
 export const getAdminStorage = () => request<AdminStorage>("GET", "/admin/storage");
-/** "Approve new sign-in connections automatically" (#457 phase 1); nothing else changes. */
-export const setAutoApprove = (on: boolean) =>
-  request<CustomerSettings>("PATCH", "/admin/settings", { auto_approve_connections: on });
-/** Connections to approve (#457 phase 1); each reply is the list left. */
-export const pendingConnections = () =>
-  request<{ items: PendingConnection[] }>("GET", "/admin/identities?status=pending");
-export const approveConnection = (id: string) =>
-  request<{ items: PendingConnection[] }>("POST", `/admin/identities/${encodeURIComponent(id)}/approve`);
-export const declineConnection = (id: string) =>
-  request<{ items: PendingConnection[] }>("POST", `/admin/identities/${encodeURIComponent(id)}/decline`);
-/** Every connected account of this person goes, and they are signed out; the password stays. */
-export const removeConnections = (id: string) =>
-  request<AdminUser>("POST", `/admin/users/${encodeURIComponent(id)}/remove-connections`);
 // Kaagaz on WhatsApp (#603): the Admin's switches and who is connected. Turning it on needs the password.
 export const adminWhatsApp = () => request<WhatsAppAdmin>("GET", "/admin/whatsapp");
 export const saveAdminWhatsApp = (
@@ -1505,13 +1465,11 @@ export const documentMovePreview = (documentId: string, into: string | null) =>
   request<MovePreview>("GET", `/documents/${segment(documentId)}/move-preview${query({ folder_id: into ?? undefined })}`);
 export const folderMovePreview = (folderId: string, into: string | null) =>
   request<MovePreview>("GET", `/folders/${segment(folderId)}/move-preview${query({ parent_id: into ?? undefined })}`);
-/** ``autofileOn`` left out: the switch is left as it is (feature 28). ``google`` (#507), when
- * given, replaces the three Google sign-in rules; left out, they stay. */
-export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean, google?: GoogleRulesChange) =>
+/** ``autofileOn`` left out: the switch is left as it is (feature 28). */
+export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean) =>
   request<CustomerSettings>("PATCH", "/admin/settings", {
     max_upload_mb: maxUploadMb,
     ...(autofileOn === undefined ? {} : { autofile_on: autofileOn }),
-    ...(google === undefined ? {} : { google }),
   });
 /** A5: the admin log, filtered (stage 3); `cursor` is the reply's `next`. The older reply pages by offset. */
 export type AuditParams = {
@@ -1731,9 +1689,6 @@ export const moveEveryone = (orgId: string) =>
   request<MoveResult>("POST", `/operator/orgs/${encodeURIComponent(orgId)}/move-everyone`);
 export const resendOrgSetup = (orgId: string, userId: string) =>
   request<ResultLine>("POST", `/operator/orgs/${encodeURIComponent(orgId)}/people/${encodeURIComponent(userId)}/resend-setup`);
-export const getGoogleSignIn = () => request<{ on: boolean }>("GET", "/operator/google-signin");
-export const setGoogleSignIn = (on: boolean, code: string) =>
-  request<{ on: boolean }>("PUT", "/operator/google-signin", { on, code });
 /** Operator: the folder upload limits (#484), the platform's or one organisation's; saving needs a fresh code. */
 const folderLimitsPath = (orgId?: string) =>
   orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/folder-upload-limits` : "/operator/folder-upload-limits";
@@ -1773,14 +1728,9 @@ export const lockedPageUrl = (documentId: string, pageNo: number) =>
   `/api/documents/${encodeURIComponent(documentId)}/locked-pages/${pageNo}`;
 /** Whether this browser's 10-minute check is live, and how this person confirms. */
 export const getLockedOpen = () => request<LockedOpen>("GET", "/documents/locked-open");
-/** The person's own Kaagaz password, never a two-step code (decision 5): opens every locked file
- * they may open for 10 minutes in this browser. */
-export const openLocked = (password?: string) =>
-  request<LockedOpen>("POST", "/documents/locked-open", password === undefined ? {} : { password });
-/** A person who signs in with Google only confirms with a fresh Google sign-in; Google comes back
- * to `next`. */
-export const confirmWithGoogle = (next: string) =>
-  request<{ url: string }>("POST", "/auth/oidc/google/confirm", { next });
+/** After a fresh company sign-in for locked_open (else 403 keycloak_reauth_required): opens every
+ * locked file they may open for 10 minutes in this browser. */
+export const openLocked = () => request<LockedOpen>("POST", "/documents/locked-open");
 /** The lock dialog's people: everyone who can see the file today, and the Admin (you). */
 export const lockPreview = (id: string) =>
   request<{ people: LockPerson[] }>("GET", `/documents/${encodeURIComponent(id)}/lock-preview`);

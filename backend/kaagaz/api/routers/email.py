@@ -121,7 +121,7 @@ def _link_later(
     site_limits: RateLimiter,
     email_limits: RateLimiter,
 ) -> None:
-    """"Send the link again"'s core: the visitor's and the site-wide limits (429), then the lookup and
+    """ "Send the link again"'s core: the visitor's and the site-wide limits (429), then the lookup and
     the email after the reply (``_send_link``), so every e-mail takes the same path and time."""
     if not link_address_limits.allow(address) or not site_limits.allow(SITE):
         raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})

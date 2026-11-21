@@ -3,31 +3,19 @@
 // Users of this customer: the list (one User column, the name with the e-mail
 // under it, so neither is squeezed) with each account's status, changing a
 // role, and each row's other actions in one menu (UI audit AD2, 16 Oct 2026):
-// disabling or enabling an account, unlocking it, resetting its password or its
-// two-step sign-in, each that takes something away asked first in a dialog. Each menu item
+// disabling or enabling an account, unlocking it, resetting its authenticator, resending the setup
+// email, each that takes something away asked first in a dialog. Each menu item
 // has one plain line under it saying what it does (USER_MENU_HELP). "Add user" opens
-// the form in a side panel (AD3), with a password field across it and Generate.
+// the form in a side panel (AD3): an email, a name and a role; the person's company sign-in
+// account is made and Keycloak emails them a link to set a password and an authenticator (#737).
+// A "Company sign-in" column says Connected or Waiting for setup.
 // What happened shows in a toast in the corner. An admin cannot disable themselves, drop
-// their own admin role or reset their own two-step sign-in; the controls for that are not
+// their own admin role or reset their own authenticator; the controls for that are not
 // shown, and the server refuses it anyway. An admin may allow a member or
-// reviewer to delete forever (asked first; needs the admin's own two-step
-// sign-in), and stop it again.
-//
-// Connected accounts (#457 phase 1): "Connections to approve" above the list while any wait
-// (Approve, Decline; focus then moves to the next row's Approve, else the Users heading), a
-// "Signs in with" column, and "Remove connected accounts" in a row's menu, asked first. The
-// section hides only on the server's 404 (no provider on); any other failure says so, with Try
-// again. Approving one another admin already decided (404) reloads the list.
-// #507: "Needs to connect Google" beside how someone signs in, while their role uses Google only
-// and they have no Google account that passes (googleTag: or that its domain is not checked yet); Reset password says it disconnects Google too.
-// Add a user says, under the role, that the person connects Google after choosing a password,
-// while Google sign-in is on for that role (the rules from Settings, read when the form opens).
+// reviewer to delete forever (asked first), and stop it again.
 //
 // #603: while the server has WhatsApp on, a WhatsApp column (the last 4 digits and since when) and
 // "Disconnect WhatsApp" in a connected person's menu, asked first; the bot tells them once.
-//
-// A reset password comes back once, in the reply. It is shown in a card above
-// the list, with Copy, until Done or until the tab is left; it is never stored.
 //
 // PRD 7 (#604): an Access column (Management, then the person's departments), read only; the
 // menu's Access opens their Access page, where it is changed; Make or Stop Management asks first
@@ -35,7 +23,6 @@
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import type { FormEvent } from "react";
 import { asksFirst } from "@/components/access/passwordStep";
 import { usePasswordStep } from "@/components/access/SelfPasswordDialog";
@@ -62,16 +49,10 @@ import {
   ApiError,
   adminDisconnectWhatsApp,
   adminWhatsApp,
-  approveConnection,
   createUser,
-  declineConnection,
-  getSettings,
   listUsers,
-  pendingConnections,
-  removeConnections,
   resendSetup,
   resetUser2fa,
-  resetUserPassword,
   setDeleteForever,
   setManagement,
   unlockUser,
@@ -80,9 +61,8 @@ import {
 import { DRAFT_KEPT, clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
-import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role, WhatsAppAdmin } from "@/lib/types";
+import type { AddedUser, AdminUser, Role, WhatsAppAdmin } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
-import { CopyButton } from "./CopyButton";
 import { MoreRows, useRowCap } from "./RowCap";
 import { RowMenu } from "./RowMenu";
 import type { RowMenuItem } from "./RowMenu";
@@ -90,24 +70,15 @@ import { Toast } from "./Toast";
 import type { Notice } from "./Toast";
 import {
   ADD_USER_DRAFT,
-  ALREADY_DECIDED,
-  CONNECTIONS_FAILED,
   NEW_USER_FIELD_IDS,
   addedNotice,
-  addUserGoogleHint,
   ROLES,
   allowForeverQuestion,
-  decideLabel,
   firstInvalidField,
-  googleTag,
+  companySignIn,
   foreverControl,
   newUserDraft,
   newUserFromDraft,
-  pendingLine,
-  removeConnectionsQuestion,
-  resetPasswordQuestion,
-  signsInWith,
-  twoStepNote,
   userActions,
   userStatus,
   validateNewUser,
@@ -119,33 +90,20 @@ import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2];
 const USERS_HEADING_ID = "users-heading";
-const approveId = (connectionId: string) => `approve-${connectionId}`;
 
-/** A temporary password just made for one user: shown once, then gone. */
-interface Revealed {
-  name: string;
-  password: string;
-}
-
-/** providers: the sign-in providers switched on (Me's), named in Remove connected accounts.
- * whatsapp: the server has WhatsApp on (Me's), so the WhatsApp column shows. */
+/** whatsapp: the server has WhatsApp on (Me's), so the WhatsApp column shows. */
 export function UsersPanel({
   currentUserId,
-  adminTwoStep,
-  providers,
   whatsapp = false,
   reauth,
 }: {
   currentUserId: string;
-  adminTwoStep: boolean;
-  providers: readonly string[];
   whatsapp?: boolean;
   reauth?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
-  const [revealed, setRevealed] = useState<Revealed | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [adding, setAdding] = useState(false);
   const closeNotice = useCallback(() => setNotice(null), []);
@@ -190,7 +148,6 @@ export function UsersPanel({
   const failed = error !== null && error.attempt === attempt ? error.message : null;
 
   function replace(user: AdminUser) {
-    // A reply without signs_in_with (#457) changed no connection: the row keeps what it had.
     setUsers((current) =>
       current ? current.map((existing) => (existing.id === user.id ? { ...existing, ...user } : existing)) : current,
     );
@@ -198,7 +155,6 @@ export function UsersPanel({
 
   return (
     <div className={styles.panelStack}>
-      <ConnectionsToApprove onApproved={() => setAttempt((n) => n + 1)} onNotice={setNotice} />
       <section className={styles.section} aria-labelledby={USERS_HEADING_ID}>
         <div className={styles.sectionHead}>
           <h2 id={USERS_HEADING_ID} tabIndex={-1} className={styles.sectionHeading}>
@@ -215,7 +171,6 @@ export function UsersPanel({
             Add user
           </button>
         </div>
-        {revealed && <TemporaryPassword revealed={revealed} onDone={() => setRevealed(null)} />}
         {failed && !users && (
           <div className={styles.errorBanner} role="alert">
             <Icon name="alert" className={styles.errorIcon} />
@@ -260,7 +215,7 @@ export function UsersPanel({
                     Status
                   </th>
                   <th scope="col" role="columnheader">
-                    Signs in with
+                    Company sign-in
                   </th>
                   {whatsapp && (
                     <th scope="col" role="columnheader">
@@ -283,8 +238,6 @@ export function UsersPanel({
                     reauth={reauth}
                     isSelf={user.id === currentUserId}
                     myId={currentUserId}
-                    adminTwoStep={adminTwoStep}
-                    providers={providers}
                     whatsapp={whatsapp ? whatsappCellState(connected, user.id) : null}
                     onWhatsApp={(reply) => setConnected(reply.people)}
                     onWhatsAppRetry={() => {
@@ -293,7 +246,6 @@ export function UsersPanel({
                     }}
                     now={now}
                     onChanged={replace}
-                    onPasswordReset={setRevealed}
                     onNotice={setNotice}
                   />
                 ))}
@@ -302,21 +254,15 @@ export function UsersPanel({
           </div>
         )}
         {users && <MoreRows shown={Math.min(cap.limit, users.length)} total={users.length} what="users" onMore={cap.showMore} />}
-        {/* AD7: two-step is required for admins (0035); one without it sets it up at the next sign-in,
-            except an admin who turned their own off (30 Oct 2026). */}
-        {users?.some((user) => user.auth_authority !== "keycloak" && user.role === "admin" && !user.totp_enabled && !user.two_step_turned_off) && (
-          <p className="hint">{twoStepNote()}</p>
-        )}
       </section>
       {adding && (
         <AddUserPanel
           userId={currentUserId}
-          google={providers.includes("google")}
           onClose={() => setAdding(false)}
           onAdded={(user) => {
             setUsers((current) => (current ? [...current, user] : [user]));
             setAdding(false);
-            // #457: with email on, whether the invite went; else the temporary password, as before.
+            // The server's own result line: the setup email went, or Resend setup email finishes it.
             setNotice(addedNotice(user));
           }}
         />
@@ -328,12 +274,10 @@ export function UsersPanel({
 
 /** Disabling and the two resets ask first (each signs the user out on every device), and
  * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
-type Confirming = "disable" | "password" | "2fa" | "forever" | "connections" | "whatsapp" | "makeManagement" | "stopManagement";
+type Confirming = "disable" | "2fa" | "forever" | "whatsapp" | "makeManagement" | "stopManagement";
 
-const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[], ways?: readonly string[]) => string> = {
-  connections: (name, providers) => removeConnectionsQuestion(name, providers),
+const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
   disable: (name) => `Disable ${name}'s account? They are signed out and can't sign in until it is enabled again.`,
-  password: (name, _providers, ways) => resetPasswordQuestion(name, ways),
   "2fa": (name) =>
     `Reset ${name}'s authenticator? They set up a new one at their next sign-in.`,
   forever: allowForeverQuestion,
@@ -346,10 +290,8 @@ const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string
 // toast says it was done ("Disable", then "disabled.").
 const CONFIRM_BUTTON: Record<Confirming, string> = {
   disable: "Disable",
-  password: "Reset password",
   "2fa": "Reset authenticator",
   forever: "Allow Delete forever",
-  connections: "Remove connected accounts",
   whatsapp: "Disconnect WhatsApp",
   makeManagement: "Make Management",
   stopManagement: "Stop Management",
@@ -364,11 +306,9 @@ export const USER_MENU_HELP = {
   enable: "Lets them sign in again.",
   stopForever: "Takes back their right to delete documents in Trash permanently.",
   allowForever: "Lets them delete any document in Trash permanently. Deleted documents can't be recovered.",
-  password: "Makes a one-time password for you to give them. They are signed out, then choose their own when they sign in.",
   twoStep: "For a lost phone: removes their authenticator, so they set up a new one at their next sign-in.",
   resendSetup: "Emails them a new link to set their password and authenticator. It works for 12 hours.",
   disable: "Signs them out and stops them signing in until you enable them again.",
-  connections: "Stops them signing in with Google. Their password still works.",
   whatsapp: "Their WhatsApp chat can no longer reach their files. They can connect it again.",
   // PRD 7 (#604)
   access: "See and change which departments, private folders and files they can see.",
@@ -402,29 +342,23 @@ function UserRow({
   reauth,
   isSelf,
   myId,
-  adminTwoStep,
-  providers,
   whatsapp,
   onWhatsApp,
   onWhatsAppRetry,
   now,
   onChanged,
-  onPasswordReset,
   onNotice,
 }: {
   user: AdminUser;
   reauth?: string;
   isSelf: boolean;
   myId: string;
-  adminTwoStep: boolean;
-  providers: readonly string[];
   /** Their WhatsApp cell (loading, failed, none, connected); null while the server has WhatsApp off. */
   whatsapp: WhatsAppCellState | null;
   onWhatsApp(reply: WhatsAppAdmin): void;
   onWhatsAppRetry(): void;
   now: number;
   onChanged: (user: AdminUser) => void;
-  onPasswordReset: (revealed: Revealed) => void;
   onNotice: (notice: Notice) => void;
 }) {
   const sessionMe = useOptionalSession()?.me ?? null;
@@ -488,13 +422,7 @@ function UserRow({
     if (kind === "disable") return change({ disabled: true }, "disabled.");
     if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
     if (kind === "2fa") return act(() => resetUser2fa(user.id), "authenticator reset. They set up a new one at their next sign-in.");
-    if (kind === "connections") return act(() => removeConnections(user.id), "connected accounts removed.");
-    if (kind === "whatsapp") return disconnectWhatsApp();
-    return act(async () => {
-      const reset = await resetUserPassword(user.id);
-      onPasswordReset({ name: user.display_name, password: reset.temporary_password });
-      return reset.user;
-    }, "password reset.");
+    return disconnectWhatsApp();
   };
 
   async function disconnectWhatsApp() {
@@ -532,9 +460,7 @@ function UserRow({
   }
 
   const can = userActions(user, { isSelf, now });
-  const managed = user.auth_authority === "keycloak";
-  const forever = foreverControl(user, { isSelf, adminTwoStep });
-  const reason = forever.kind === "allow" ? forever.disabledReason : null;
+  const forever = foreverControl(user, { isSelf });
   const selectId = `role-${user.id}`;
   const managing = managementItem(user);
   // AD2: one menu per row. Safe actions first; the one that takes something away last, apart.
@@ -562,17 +488,13 @@ function UserRow({
         ]
       : []),
     ...(forever.kind === "allow"
-      ? [{ label: "Allow Delete forever", description: USER_MENU_HELP.allowForever, onSelect: () => setConfirming("forever"), disabledReason: reason }]
-      : []),
-    ...(can.resetPassword && !managed
-      ? [{ label: "Reset password", description: USER_MENU_HELP.password, onSelect: () => setConfirming("password") }]
+      ? [{ label: "Allow Delete forever", description: USER_MENU_HELP.allowForever, onSelect: () => setConfirming("forever") }]
       : []),
     ...(can.reset2fa
       ? [{ label: "Reset authenticator", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
       : []),
-...(managed      ? [{ label: "Resend setup email", description: USER_MENU_HELP.resendSetup, onSelect: () => void resend() }]      : []),
-    ...((user.signs_in_with ?? []).some((way) => way !== "password")
-      ? [{ label: "Remove connected accounts", description: USER_MENU_HELP.connections, onSelect: () => setConfirming("connections") }]
+    ...(user.company_sign_in === "connected"
+      ? [{ label: "Resend setup email", description: USER_MENU_HELP.resendSetup, onSelect: () => void resend() }]
       : []),
     ...(whatsapp?.kind === "connected"
       ? [{ label: "Disconnect WhatsApp", description: USER_MENU_HELP.whatsapp, onSelect: () => setConfirming("whatsapp") }]
@@ -581,7 +503,6 @@ function UserRow({
       ? [{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }]
       : []),
   ];
-  const tag = googleTag(user);
   return (
     <tr role="row">
       <td role="cell" className={styles.userCell}>
@@ -628,14 +549,9 @@ function UserRow({
           ))}
         </span>
       </td>
-      <td role="cell" data-label="Signs in with">
-        <span className={styles.statusList}>
-          {signsInWith(user.signs_in_with)}
-          {tag && (
-            <span className="status-chip" data-tone="info">
-              {tag}
-            </span>
-          )}
+      <td role="cell" data-label="Company sign-in">
+        <span className="status-chip" data-tone={user.company_sign_in === "connected" ? "ready" : "neutral"}>
+          {companySignIn(user)}
         </span>
       </td>
       {whatsapp !== null && (
@@ -663,7 +579,7 @@ function UserRow({
         </span>
         {confirming && (
           <ActionDialog title={user.display_name} onClose={() => setConfirming(null)} canClose={() => !busy}>
-            <p>{CONFIRM_TEXT[confirming](user.display_name, providers, user.signs_in_with)}</p>
+            <p>{CONFIRM_TEXT[confirming](user.display_name)}</p>
             {/* [Cancel] [Yes, ...]: the action last; Cancel has focus, so Enter never acts by accident. */}
             <div className="actions">
               <button type="button" className="btn" data-autofocus disabled={busy} onClick={() => setConfirming(null)}>
@@ -708,155 +624,6 @@ function UserRow({
   );
 }
 
-/** Connections to approve (#457 phase 1): each waiting Google account, its person, email and
- * day, with Approve and Decline; shown while any wait, or when the list could not be loaded
- * (never on the 404 while no provider is on). */
-function ConnectionsToApprove({ onApproved, onNotice }: { onApproved(): void; onNotice(notice: Notice): void }) {
-  const [attempt, setAttempt] = useState(0);
-  const [pending, setPending] = useState<PendingConnection[]>([]);
-  const [failed, setFailed] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    pendingConnections().then(
-      (reply) => {
-        if (!live) return;
-        setPending(reply.items);
-        setFailed(false);
-      },
-      (caught: unknown) => {
-        // 404: no provider is on, so there is nothing to approve. Anything else is said.
-        if (live) setFailed(!(caught instanceof ApiError && caught.status === 404));
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [attempt]);
-
-  async function decide(row: PendingConnection, approve: boolean, at: number) {
-    setBusy(row.id);
-    try {
-      const reply = await (approve ? approveConnection(row.id) : declineConnection(row.id));
-      flushSync(() => {
-        setPending(reply.items);
-        setBusy(null);
-      });
-      // The row is gone: on to the next row's Approve, else the Users heading.
-      const next = reply.items[at];
-      document.getElementById(next ? approveId(next.id) : USERS_HEADING_ID)?.focus();
-      onNotice({ text: `${row.display_name}: Google ${approve ? "approved" : "declined"}.` });
-      if (approve) onApproved();
-    } catch (caught) {
-      setBusy(null);
-      if (caught instanceof ApiError && caught.status === 404) {
-        onNotice({ text: ALREADY_DECIDED });
-        setAttempt((n) => n + 1); // the list as it is now
-        return;
-      }
-      onNotice({
-        problem: true,
-        text: errorWords(caught),
-      });
-    }
-  }
-
-  if (failed) {
-    return (
-      <section className={styles.section} aria-labelledby="connections-heading">
-        <h2 id="connections-heading" className={styles.sectionHeading}>
-          Connections to approve
-        </h2>
-        <div className={styles.errorBanner} role="alert">
-          <Icon name="alert" className={styles.errorIcon} />
-          <div className={styles.errorBody}>
-            <p className={styles.errorTitle}>{CONNECTIONS_FAILED}</p>
-          </div>
-          <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
-            <Icon name="refresh" />
-            Try again
-          </button>
-        </div>
-      </section>
-    );
-  }
-  if (pending.length === 0) return null;
-  return (
-    <section className={styles.section} aria-labelledby="connections-heading">
-      <h2 id="connections-heading" className={styles.sectionHeading}>
-        Connections to approve
-      </h2>
-      <ul className={styles.connections}>
-        {pending.map((row, at) => (
-          <li key={row.id} className={styles.connection}>
-            <span className={styles.connectionText}>{pendingLine(row)}</span>
-            <span className={styles.rowActions}>
-              <button
-                type="button"
-                id={approveId(row.id)}
-                className="btn"
-                aria-label={decideLabel(row, true)}
-                disabled={busy !== null}
-                onClick={() => void decide(row, true, at)}
-              >
-                Approve
-              </button>
-              <button
-                type="button"
-                className="btn"
-                aria-label={decideLabel(row, false)}
-                disabled={busy !== null}
-                onClick={() => void decide(row, false, at)}
-              >
-                Decline
-              </button>
-              {busy === row.id && <span className="spinner" aria-hidden="true" />}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-/**
- * The temporary password, shown once. Focus moves to its heading so a screen
- * reader hears it at once; Done (or leaving the tab) drops it from memory.
- */
-function TemporaryPassword({ revealed, onDone }: { revealed: Revealed; onDone: () => void }) {
-  const focusOnMount = useCallback((element: HTMLHeadingElement | null) => {
-    element?.focus();
-  }, []);
-  return (
-    <section className={`card stack ${styles.reveal}`} aria-labelledby="temporary-password-heading">
-      <h3
-        id="temporary-password-heading"
-        ref={focusOnMount}
-        tabIndex={-1}
-        className={`${styles.sectionHeading} ${styles.revealHeading}`}
-      >
-        Temporary password for {revealed.name}
-      </h3>
-      <p>
-        It is shown only this once. Give it to {revealed.name} yourself. They choose their own
-        password when they sign in with it.
-      </p>
-      <div className={styles.secretRow}>
-        <code className={styles.secret} translate="no">
-          {revealed.password}
-        </code>
-        <CopyButton text={revealed.password} what="Password" buttonText="Copy password" />
-      </div>
-      <div>
-        <button type="button" className="btn" onClick={onDone}>
-          Done
-        </button>
-      </div>
-    </section>
-  );
-}
-
 const ADD_USER_TITLE_ID = "add-user-heading";
 const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost.";
 
@@ -867,12 +634,10 @@ const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost
  */
 function AddUserPanel({
   userId,
-  google,
   onClose,
   onAdded,
 }: {
   userId: string; // #468: the draft (email, name, role) is this admin's only
-  google: boolean; // Google sign-in is switched on (Me's providers): its rules are read
   onClose: () => void;
   onAdded: (user: AddedUser) => void;
 }) {
@@ -890,10 +655,6 @@ function AddUserPanel({
   const [errors, setErrors] = useState<NewUserErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // #507: the organisation's Google rules, for the hint under the role; none until read (or if
-  // reading fails: the hint is only a hint).
-  const [googleRules, setGoogleRules] = useState<GoogleRules | undefined>(undefined);
-  const googleHint = addUserGoogleHint(googleRules, input.role);
   const unsaved = input.email !== "" || input.display_name !== "";
   const askClose = () => {
     if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) {
@@ -905,20 +666,6 @@ function AddUserPanel({
   useEffect(() => {
     saveDraftSoon(userId, ADD_USER_DRAFT, newUserDraft(input));
   }, [userId, input]);
-
-  useEffect(() => {
-    if (!google) return;
-    let live = true;
-    getSettings().then(
-      (settings) => {
-        if (live) setGoogleRules(settings.google);
-      },
-      () => undefined,
-    );
-    return () => {
-      live = false;
-    };
-  }, [google]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -1011,7 +758,6 @@ function AddUserPanel({
             <select
               id="new-user-role"
               className="input"
-              aria-describedby={googleHint ? "new-user-google-hint" : undefined}
               value={input.role}
               onChange={(event) => {
                 const role = ROLES.find((option) => option === event.target.value);
@@ -1024,11 +770,6 @@ function AddUserPanel({
                 </option>
               ))}
             </select>
-            {googleHint && (
-              <span id="new-user-google-hint" className="hint">
-                {googleHint}
-              </span>
-            )}
           </div>
           <p className="hint">They get an email with a link to set their password and authenticator.</p>
           {serverError && (
