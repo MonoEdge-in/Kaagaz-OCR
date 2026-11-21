@@ -64,10 +64,9 @@ describe("company verification messages", () => {
   });
 
   it("tells the person to repeat and confirm each action after verification", () => {
-    for (const action of ["locked_open", "delete_forever", "whatsapp", "access", "locks"] as const) {
+    for (const action of ["locked_open", "whatsapp", "access", "locks"] as const) {
       expect(keycloakReauthNotice(action)).toMatch(/No |nothing|Nothing|Return|Reopen|Review/);
     }
-    expect(keycloakReauthNotice("delete_forever")).toContain("confirm Delete forever again");
     expect(keycloakReauthNotice("locks")).toContain("reselect files");
   });
 
@@ -90,11 +89,11 @@ describe("company verification messages", () => {
         headers: { "Content-Type": "application/json" },
       });
     });
-    await beginKeycloakReauth("delete_forever", "/trash?folder=private");
+    await beginKeycloakReauth("locks", "/trash?folder=private");
     expect(calls).toEqual([
       {
-        url: "/api/auth/keycloak/reauth/delete_forever/start",
-        body: { next: "/trash?folder=private&reauth=delete_forever" },
+        url: "/api/auth/keycloak/reauth/locks/start",
+        body: { next: "/trash?folder=private&reauth=locks" },
       },
     ]);
     expect(assign).toHaveBeenCalledWith("https://idp.example/authorize");
@@ -143,7 +142,10 @@ describe("mapped proof requests", () => {
     expect(source("components/documents/LockDialog.tsx")).toContain('beginKeycloakReauth("locks"');
     expect(source("components/viewer/LockedOpenPrompt.tsx")).toContain('beginKeycloakReauth("locked_open"');
     expect(source("components/viewer/LockedOpenPrompt.tsx")).not.toContain("PasswordField");
-    expect(source("components/documents/DocumentsTable.tsx")).toContain('beginKeycloakReauth("delete_forever"');
+    // Changed on purpose (#744, 22 Nov 2026): Delete forever asks for no fresh sign-in.
+    for (const file of ["components/documents/DocumentsTable.tsx", "components/documents/TrashFolderRow.tsx"]) {
+      expect(source(file)).not.toContain("beginKeycloakReauth");
+    }
   });
 });
 

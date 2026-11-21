@@ -24,7 +24,6 @@ from kaagaz.api import auth
 from kaagaz.api.auth import (
     OPERATOR_COOKIE,
     SESSION_COOKIE,
-    CurrentUser,
     OperatorClaims,
     SessionClaims,
 )
@@ -99,19 +98,6 @@ def _set_cookies(response: Response) -> list[str]:
 def test_every_cookie_the_api_sets_or_clears_is_httponly_samesite_and_secure_when_asked() -> None:
     now = 1_800_000_000
     later = now + 600
-    user = CurrentUser(
-        user_id="u",
-        customer_id="c",
-        email="e@example.test",
-        display_name="E",
-        role="member",
-        customer_name="C",
-        scope="app",
-        session_version=1,
-        must_change_password=False,
-        totp_enabled=False,
-        delete_forever_allowed=False,
-    )
     session = SessionClaims(
         user_id="u", customer_id="c", role="member", scope="app", session_version=1, expires_at=later
     )
@@ -119,7 +105,6 @@ def test_every_cookie_the_api_sets_or_clears_is_httponly_samesite_and_secure_whe
         settings = make_settings(cookie_secure=secure)
         response = Response()
         auth.set_session_cookie(response, session, settings, now=now)
-        auth.set_confirm_cookie(response, user, settings, now=now, session_id="s")
         auth.set_operator_cookie(
             response, OperatorClaims(operator_id="o", session_version=1, expires_at=later), settings, now=now
         )
@@ -129,7 +114,8 @@ def test_every_cookie_the_api_sets_or_clears_is_httponly_samesite_and_secure_whe
         ):
             clear(response, settings)
         cookies = _set_cookies(response)
-        assert len(cookies) == 5
+        # Changed on purpose (#744, 22 Nov 2026): the confirm cookie is gone, so one fewer.
+        assert len(cookies) == 4
         for cookie in cookies:
             flags = {part.strip().split("=")[0].lower(): part for part in cookie.split(";")[1:]}
             assert "httponly" in flags, cookie

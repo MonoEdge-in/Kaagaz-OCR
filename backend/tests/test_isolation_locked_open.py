@@ -17,7 +17,6 @@ import pytest
 from kaagaz.api.auth import LOCKED_OPEN_COOKIE, LOCKED_OPEN_SECONDS
 from kaagaz.api.routers.locked_open import OPENS_PER_HOUR
 from kaagaz.db.engine import Database
-from tests.test_api_delete_forever_grant import _confirm, _grant
 from tests.test_api_support import CSRF, PASSWORD, Api, Signed, TestClient
 from tests.test_operator_auth_db import _owner
 
@@ -260,28 +259,6 @@ def test_another_browser_and_signing_out_everywhere_end_it(db: Database) -> None
     out = org.given.client.post("/api/auth/logout-everywhere", headers=CSRF)
     assert out.status_code == 204
     assert _code(_page(org.given, org.locked)) == (401, "not_signed_in")  # the version went up
-
-
-def test_the_delete_forever_confirm_never_opens_a_locked_file_nor_the_other_way(db: Database) -> None:
-    api = Api(db)
-    org = _org(api)
-    assert _grant(org.admin, org.given.user_id) == (200, True)
-    assert _confirm(org.given) == 204
-    assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")
-    confirm = org.given.client.cookies.get("kaagaz_confirm", path="/api/documents")
-    assert confirm
-    org.given.client.cookies.set(LOCKED_OPEN_COOKIE, confirm, path="/api/documents")
-    assert _code(_page(org.given, org.locked)) == (403, "locked_open_required")
-
-    reader = api.sign_in(org.c, "member")
-    assert _grant(org.admin, reader.user_id) == (200, True)
-    trashed = api.add_document(org.c, deleted_at=api.clock())
-    assert _open(reader).status_code == 200
-    check = reader.client.cookies.get(LOCKED_OPEN_COOKIE, path="/api/documents")
-    assert check
-    reader.client.cookies.set("kaagaz_confirm", check, path="/api/documents")
-    forever = reader.client.delete(f"/api/documents/{trashed}/permanent", headers=CSRF)
-    assert _code(forever) == (403, "keycloak_reauth_required")
 
 
 # --- the company sign-in, the only way to open --------------------------------------------------

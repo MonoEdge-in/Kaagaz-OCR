@@ -170,7 +170,6 @@ def test_a_family_with_versions_from_two_users_goes_to_trash_only_by_an_admin(db
 def test_an_unknown_document_is_404_on_every_trash_route(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
-    api.prove(admin, "delete_forever")
     unknown = "7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e"
     replies = [
         admin.client.delete(f"/api/documents/{unknown}", headers=CSRF),
@@ -215,7 +214,6 @@ def test_restore_of_a_document_not_in_trash_changes_nothing(db: Database) -> Non
 def test_an_admin_deletes_a_family_in_trash_forever_and_everything_goes(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
-    api.prove(admin, "delete_forever")
     first, second = _family(api, admin)
     kept = api.add_document(admin.customer_id)
     assert _trash(admin, second) == 204
@@ -240,7 +238,6 @@ def test_an_admin_deletes_a_family_in_trash_forever_and_everything_goes(db: Data
 def test_a_document_not_in_trash_cannot_be_deleted_forever(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
-    api.prove(admin, "delete_forever")
     first, second = _family(api, admin)
 
     reply = admin.client.delete(f"/api/documents/{second}/permanent", headers=CSRF)
@@ -263,14 +260,12 @@ def test_only_an_admin_session_deletes_forever(db: Database) -> None:
     assert (refused.status_code, refused.json()["error"]["code"]) == (403, "forbidden")
     assert _counts(db, uploader.customer_id) == (2, 2, 2)
     admin = api.admin_sign_in(uploader.customer_id)
-    api.prove(admin, "delete_forever")
     assert admin.client.delete(f"/api/documents/{first}/permanent", headers=CSRF).status_code == 204
 
 
 def test_delete_forever_keeps_every_row_when_storage_is_down(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
-    api.prove(admin, "delete_forever")
     first, second = _family(api, admin)
     assert _trash(admin, first) == 204
     api.storage.fail_delete = True
@@ -323,13 +318,10 @@ def test_a_family_in_trash_cannot_be_renamed_moved_tagged_or_given_a_version(db:
 
 
 def test_an_admin_session_deletes_forever(db: Database) -> None:
-    """The only sign-in is Keycloak's: an admin session with a fresh company sign-in deletes forever,
-    and one without it is asked for that first."""
+    # Changed on purpose (#744, 22 Nov 2026): no fresh company sign-in is asked for Delete forever
+    # any more; the confirm dialog is the check. An admin session deletes at once.
     api = Api(db)
     customer_id, _ = api.customer()
     document = api.add_document(customer_id, deleted_at=api.clock())
     admin = api.new_admin_of(customer_id)
-    asked = admin.client.delete(f"/api/documents/{document}/permanent", headers=CSRF)
-    assert (asked.status_code, asked.json()["error"]["code"]) == (403, "keycloak_reauth_required")
-    api.prove(admin, "delete_forever")
     assert admin.client.delete(f"/api/documents/{document}/permanent", headers=CSRF).status_code == 204

@@ -3,8 +3,7 @@
 // A folder in Trash, as one row of the Trash list (#542, Tushar, 7 Nov 2026): its folder icon and
 // name (pressed, or the row clicked, it opens read only), where it was, what it holds, when it was
 // deleted and by whom. At Trash's top level it has Restore (nothing is lost, so no question) and
-// Delete forever (asked first in a dialog; a 403 keycloak_reauth_required sends the person to the
-// company sign-in, and they confirm again after returning); inside an opened folder its folders only open.
+// Delete forever (asked first in a dialog; no company sign-in, #744); inside an opened folder its folders only open.
 // It can be ticked with the documents, for the selection's Restore and Delete forever.
 // Stability pass (Tushar's screenshot, 7 Nov 2026, B16): it is laid out as a document in Trash,
 // cell for cell: where it was and what it holds are the facts under its name, Status is a dash,
@@ -22,7 +21,6 @@ import { ApiError, deleteTrashedFolderForever, restoreTrashedFolder } from "@/li
 import { errorWords } from "@/lib/errorWords";
 import { formatDateTime } from "@/lib/format";
 import { useSession } from "@/lib/session";
-import { beginKeycloakReauth, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import type { TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
@@ -106,16 +104,6 @@ export function TrashFolderRow({
       if (caught instanceof ApiError && caught.status === 404) {
         finish("This folder is no longer in Trash."); // restored or deleted elsewhere: the list is asked for again
         return;
-      }
-      if (kind === "forever" && isKeycloakReauthRequired(caught)) {
-        setBusy(null);
-        try {
-          await beginKeycloakReauth("delete_forever", window.location.pathname);
-          return;
-        } catch (failed) {
-          setError(keycloakStartFailure(failed));
-          return;
-        }
       }
       const lost = lostTheRight(caught);
       if (lost) refresh();

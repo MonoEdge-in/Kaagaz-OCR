@@ -2,7 +2,7 @@ import { ApiError, startKeycloakReauth } from "@/lib/api";
 import { safeNextPath } from "@/components/shell/gate";
 import type { Me } from "@/lib/types";
 
-export const KEYCLOAK_PROOF_ACTIONS = ["locked_open", "delete_forever", "whatsapp", "access", "locks"] as const;
+export const KEYCLOAK_PROOF_ACTIONS = ["locked_open", "whatsapp", "access", "locks"] as const;
 export type KeycloakProofAction = (typeof KEYCLOAK_PROOF_ACTIONS)[number];
 
 const ACTION_SET = new Set<string>(KEYCLOAK_PROOF_ACTIONS);
@@ -60,8 +60,6 @@ export function keycloakReauthNotice(action: KeycloakProofAction): string {
   switch (action) {
     case "locked_open":
       return "Company sign-in verified. No file was opened yet. Return to the locked file and choose Open again.";
-    case "delete_forever":
-      return "Company sign-in verified. Nothing was deleted. Review the item and confirm Delete forever again.";
     case "whatsapp":
       return "Company sign-in verified. No WhatsApp setting changed. Repeat the action and confirm again.";
     case "access":

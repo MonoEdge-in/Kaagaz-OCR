@@ -42,9 +42,8 @@ def test_b_gets_404_on_every_trash_route_with_a_s_ids_and_a_is_unchanged(db: Dat
     live = api.add_document(a.customer_id, uploaded_by=a.user_id)
     before = _state(db, a.customer_id)
 
-    # Changed on purpose (#737, 21 Nov 2026): delete forever needs a fresh sign-in proof first; B has
-    # it, so B still reaches the lookup and gets 404.
-    api.prove(b, "delete_forever")
+    # Changed on purpose (#744, 22 Nov 2026): delete forever needs no fresh sign-in, so B (an admin)
+    # reaches the lookup at once; its 404 still comes from the customer boundary.
     replies = [
         b.client.delete(f"/api/documents/{live}", headers=CSRF),
         b.client.post(f"/api/documents/{binned}/restore", headers=CSRF),
@@ -59,8 +58,7 @@ def test_b_gets_404_on_every_trash_route_with_a_s_ids_and_a_is_unchanged(db: Dat
 
     assert a.client.post(f"/api/documents/{binned}/restore", headers=CSRF).status_code == 200
     assert a.client.delete(f"/api/documents/{live}", headers=CSRF).status_code == 204
-    # Changed on purpose (#737, 21 Nov 2026): the control also needs the proof.
-    api.prove(a, "delete_forever")
+    # Changed on purpose (#744, 22 Nov 2026): the control needs no proof either.
     assert a.client.delete(f"/api/documents/{live}/permanent", headers=CSRF).status_code == 204
     assert _state(db, a.customer_id) == {binned: None, older: None}
     assert not api.storage.has(a.customer_id, live)

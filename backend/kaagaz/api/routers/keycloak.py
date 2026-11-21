@@ -20,7 +20,6 @@ from kaagaz.api.auth import (
     User,
     new_session,
     session_claims,
-    set_confirm_cookie,
     set_keycloak_proof_cookie,
     set_session_cookie,
     set_whatsapp_proof_cookie,
@@ -339,9 +338,7 @@ def _reauth(
     )
     # No locked-open cookie here: the proof only lets POST /documents/locked-open set it, which
     # audits ``lock.open`` and counts against OPENS_PER_HOUR.
-    if flow.action == "delete_forever":
-        set_confirm_cookie(response, user, context.settings, now=now, session_id=claims.session_id)
-    elif flow.action == "whatsapp":
+    if flow.action == "whatsapp":
         set_whatsapp_proof_cookie(response, user, context.settings, now=now)
     return response
 

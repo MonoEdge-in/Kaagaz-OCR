@@ -316,7 +316,7 @@ export const currentSession = () =>
 
 /** Start action-bound Keycloak verification. The backend owns the provider URL and callback. */
 export const startKeycloakReauth = (
-  action: "locked_open" | "delete_forever" | "whatsapp" | "access" | "locks",
+  action: "locked_open" | "whatsapp" | "access" | "locks",
   next: string,
 ) => request<{ url: string }>("POST", `/auth/keycloak/reauth/${action}/start`, { next });
 // Kaagaz on WhatsApp (#603): Account, WhatsApp. The proof (a fresh company sign-in for "whatsapp")
@@ -376,7 +376,7 @@ export const reprocessDocument = (id: string, reading?: UploadReading) =>
  * not_stoppable, in_trash or locked otherwise). The reply: failed with ``stopped``; Read again starts it again. */
 export const stopDocument = (id: string) => request<DocumentSummary>("POST", `/documents/${id}/stop`);
 /**
- * Delete forever: needs a company sign-in proven just now (403 keycloak_reauth_required), and only from Trash (409 not_in_trash
+ * Delete forever: needs no fresh sign-in (#744), and only from Trash (409 not_in_trash
  * otherwise). Every version goes.
  */
 export const deleteDocumentForever = (id: string) =>

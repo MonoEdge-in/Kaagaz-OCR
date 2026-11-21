@@ -28,7 +28,7 @@ from kaagaz.db import trashed_folders as trashed_folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.jobs.purge import _purge_trash_of
-from tests.test_api_delete_forever_grant import _confirm, _grant
+from tests.test_api_delete_forever_grant import _grant
 from tests.test_api_support import CSRF, Api, Signed
 
 pytestmark = pytest.mark.db
@@ -48,11 +48,8 @@ def _restore(signed: Signed, folder_id: str) -> httpx.Response:
     return reply
 
 
-def _forever(signed: Signed, folder_id: str, *, proved: bool | None = None) -> httpx.Response:
-    """Delete a trashed folder forever. An admin does the company sign-in first (``proved``: left out,
-    they do; False: they do not); anyone else sends it as it is."""
-    if proved is True or (proved is None and signed.scope == "admin"):
-        Api.of(signed).prove(signed, "delete_forever")
+def _forever(signed: Signed, folder_id: str) -> httpx.Response:
+    """Delete a trashed folder forever, as it is: no company sign-in step (#744, 22 Nov 2026)."""
     reply: httpx.Response = signed.client.delete(
         f"/api/documents/trash/folders/{folder_id}/permanent", headers=CSRF
     )
@@ -387,7 +384,6 @@ def test_restoring_one_file_from_inside_brings_back_only_its_chain_of_folders(db
         t["bank"]: (t["year"], "Bank", trash_id, "False"),
     }
     # An emptied trashed folder is still listed and restorable.
-    Api.of(admin).prove(admin, "delete_forever")
     assert admin.client.delete(f"/api/documents/{t['statement']}/permanent", headers=CSRF).status_code == 204
     assert {item["id"]: item["files"] for item in _listed(admin)}[t["bank"]] == 0
     assert _restore(admin, t["bank"]).json()["location"] == ["Accounts", "2025"]
@@ -531,12 +527,10 @@ def test_delete_forever_follows_the_rules_of_a_document_s_delete_forever(db: Dat
     refused = _forever(member, folders[0])
     assert (refused.status_code, refused.json()["error"]["code"]) == (403, "forbidden")
     assert _grant(admin, member.user_id) == (200, True)
-    assert _forever(member, folders[0]).json()["error"]["code"] == "keycloak_reauth_required"
-    assert _confirm(member) == 204
+    # Changed on purpose (#744, 22 Nov 2026): the grant is enough; no company sign-in is asked for.
     assert _forever(member, folders[0]).status_code == 204
-    other = api.add_folder(c, admin.user_id, "D")  # an admin too needs the company sign-in
+    other = api.add_folder(c, admin.user_id, "D")
     _trash(admin, other)
-    assert _forever(admin, other, proved=False).json()["error"]["code"] == "keycloak_reauth_required"
     assert _forever(admin, other).status_code == 204
     audit = [row[3] for row in api.audit_rows(c) if row[0] == "folder.delete_forever"]
     assert audit[0]["by_grant"] is True

@@ -16,10 +16,6 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   or sign-in. Unused for longer ends the session (401 ``not_signed_in``); a use writes
   ``last_seen_at`` at most once a minute. ``exp`` stays the outer cap: 24 hours for a sign-in
   while hours are set (member and admin alike), else SESSION_HOURS or ADMIN_SESSION_MINUTES.
-* **The confirm token** (council 4 Oct 2026, PROVISIONAL): a granted member or
-  reviewer's fresh Keycloak proof for Delete forever. ``{"uid","cid","ver","exp","sid"}``,
-  MAC over ``b"confirm\x00" + body``, 5 minutes, an HttpOnly SameSite=Strict
-  cookie for /api/documents only.
 * **Strict claims**: a token with a missing, extra or wrongly typed field is
   refused, so a Sprint 1 cookie (no scope, no ver) is refused and its user
   signs in once more.
@@ -65,9 +61,6 @@ CSRF_VALUE = "kaagaz"
 ROLES = ("member", "reviewer", "admin")
 ENROL_SECONDS = 10 * 60  # the operator's two-step move token (routers/operator.py)
 SCOPES = ("app", "admin")
-CONFIRM_COOKIE = "kaagaz_confirm"
-CONFIRM_SECONDS = 5 * 60  # PROVISIONAL (council 4 Oct 2026)
-CONFIRM_PATH = "/api/documents"  # the browser calls the API on its own origin, under /api
 OPERATOR_COOKIE = "kaagaz_operator"
 OPERATOR_PATH = "/api/operator"
 OPERATOR_SESSION_SECONDS = 30 * 60  # absolute, PROVISIONAL (change plan question 4)
@@ -155,19 +148,8 @@ class SessionClaims:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ConfirmClaims:
-    user_id: str
-    customer_id: str
-    session_version: int
-    expires_at: int  # seconds since the epoch
-    session_id: str  # the browser session that typed the password (A4, 7 Nov 2026)
-
-
 _SESSION_PURPOSE = b"session"
-_CONFIRM_PURPOSE = b"confirm"
 _SESSION_FIELDS = frozenset({"uid", "cid", "role", "scope", "ver", "exp", "sid", "src", "acr"})
-_CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp", "sid"})
 _OPERATOR_PURPOSE = b"operator"
 _OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
 _MOVE_PURPOSE = b"operator_move"
@@ -176,7 +158,7 @@ _WHATSAPP_PROOF_PURPOSE = b"whatsapp_proof"
 _WHATSAPP_PROOF_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
 _KEYCLOAK_PROOF_PURPOSE = b"keycloak_action_proof"
 _KEYCLOAK_PROOF_FIELDS = frozenset({"uid", "cid", "ver", "sid", "action", "at", "acr", "exp"})
-KEYCLOAK_PROOF_ACTIONS = frozenset({"locked_open", "delete_forever", "whatsapp", "access", "locks"})
+KEYCLOAK_PROOF_ACTIONS = frozenset({"locked_open", "whatsapp", "access", "locks"})
 
 
 def session_seconds(scope: str, settings: Settings, idle_hours: int | None = None) -> int:
@@ -242,34 +224,6 @@ def sign_session(claims: SessionClaims, secret: str) -> str:
 def read_session(token: str, secret: str, now: int) -> SessionClaims | None:
     """The claims of a genuine, unexpired session token, else None. Constant-time check."""
     return _claims(_verified(token, _SESSION_PURPOSE, secret), now)
-
-
-def sign_confirm(claims: ConfirmClaims, secret: str) -> str:
-    return _sign(
-        {
-            "uid": claims.user_id,
-            "cid": claims.customer_id,
-            "ver": claims.session_version,
-            "exp": claims.expires_at,
-            "sid": claims.session_id,
-        },
-        _CONFIRM_PURPOSE,
-        secret,
-    )
-
-
-def read_confirm(token: str, secret: str, now: int) -> ConfirmClaims | None:
-    """The claims of a genuine, unexpired confirm token, else None. Strict: exactly
-    the five fields, each of its type. Constant-time check."""
-    data = _verified(token, _CONFIRM_PURPOSE, secret)
-    if not isinstance(data, dict) or set(data) != _CONFIRM_FIELDS:
-        return None
-    uid, cid, ver, exp, sid = data["uid"], data["cid"], data["ver"], data["exp"], data["sid"]
-    if not all(isinstance(value, str) and _is_uuid(value) for value in (uid, cid, sid)):
-        return None
-    if not (_is_version(ver) and _is_int(exp)) or exp <= now:
-        return None
-    return ConfirmClaims(user_id=uid, customer_id=cid, session_version=ver, expires_at=exp, session_id=sid)
 
 
 # --- the platform operator's tokens (super admin PR 2, PROVISIONAL): other purposes and
@@ -384,8 +338,7 @@ def clear_whatsapp_proof_cookie(response: Response, settings: Settings) -> None:
 #
 # Why a cookie of its own: one check opens every locked file the person may open, for 10 minutes in
 # that browser, and never anything else. So it is its own signed token, ``{uid, cid, ver, sid, exp}``
-# with MAC purpose ``locked_open``: the Delete forever confirm (``kaagaz_confirm``, purpose
-# ``confirm``) can never open a locked file, nor this one confirm a delete (``p2:70``).
+# with MAC purpose ``locked_open``.
 #
 # * LOCKED_OPEN_SECONDS, absolute: it is set once, at the check, and never extended by use.
 # * HttpOnly, Secure (as the session), SameSite=Strict, sent to /api/documents only, where the
@@ -757,28 +710,6 @@ def touch_due(seen_at: datetime | None, now: datetime) -> bool:
     return seen_at is not None and now - seen_at >= TOUCH_EVERY
 
 
-def set_confirm_cookie(
-    response: Response, user: CurrentUser, settings: Settings, *, now: int, session_id: str
-) -> None:
-    """A confirm token for this user, session version and browser session, CONFIRM_SECONDS long."""
-    claims = ConfirmClaims(
-        user_id=user.user_id,
-        customer_id=user.customer_id,
-        session_version=user.session_version,
-        expires_at=now + CONFIRM_SECONDS,
-        session_id=session_id,
-    )
-    response.set_cookie(
-        CONFIRM_COOKIE,
-        sign_confirm(claims, settings.session_secret),
-        max_age=CONFIRM_SECONDS,
-        httponly=True,
-        samesite="strict",
-        secure=settings.cookie_secure,
-        path=CONFIRM_PATH,
-    )
-
-
 def current_user(request: Request) -> CurrentUser:
     """The signed-in user, re-checked in the database on every request: 401 ``not_signed_in``
     unless the session is genuine and still matches the user (enabled, same role, same session
@@ -886,35 +817,15 @@ def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
 AdminWithTwoStep = Annotated[CurrentUser, Depends(require_admin_with_two_step)]
 
 
-def require_delete_forever(request: Request, user: User) -> CurrentUser:
-    """For deleting a document forever (council 4 Oct 2026; 21 Nov 2026). An admin needs an admin
-    session (403 ``admin_session_required``); anyone else needs an admin's grant (403
-    ``forbidden``), read again on every request, so stopping it works at once. Then everyone needs
-    the confirm token, which only a fresh Keycloak sign-in for ``delete_forever`` sets
-    (``routers/keycloak.py`` ``_reauth``), in the last CONFIRM_SECONDS, for this user, session version
-    and browser session (its ``sid``, A4: never another browser's, nor one from before signing out
-    and in again; 403 ``keycloak_reauth_required``)."""
+def require_delete_forever(user: User) -> CurrentUser:
+    """For deleting a document or a folder forever. An admin needs an admin session (403
+    ``admin_session_required``); anyone else needs an admin's grant (403 ``forbidden``), read
+    again on every request, so stopping it works at once. No fresh sign-in (#744, 22 Nov 2026):
+    the confirm dialog's named button is the check; the other proof actions keep theirs."""
     if user.role == "admin":
         require_admin_session(user)
     elif not user.delete_forever_allowed:
         raise ApiError(403, "forbidden")
-    context = get_context(request)
-    now = int(context.clock().timestamp())
-    token = request.cookies.get(CONFIRM_COOKIE) or ""
-    claims = read_confirm(token, context.settings.session_secret, now)
-    session = session_claims(request, context.settings, now)
-    signed = (
-        None
-        if claims is None
-        else (claims.user_id, claims.customer_id, claims.session_version, claims.session_id)
-    )
-    if session is None or signed != (
-        user.user_id,
-        user.customer_id,
-        user.session_version,
-        session.session_id,
-    ):
-        raise ApiError(403, "keycloak_reauth_required")
     return user
 
 

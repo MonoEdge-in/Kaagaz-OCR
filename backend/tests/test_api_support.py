@@ -46,7 +46,6 @@ from kaagaz.api.auth import (
     hash_password,
     load_user,
     new_session,
-    set_confirm_cookie,
     set_keycloak_proof_cookie,
     set_whatsapp_proof_cookie,
     sign_session,
@@ -383,8 +382,8 @@ class Api:
 
     def prove(self, signed: Signed, action: str) -> None:
         """A fresh Keycloak proof for ``action`` on this person's client, as ``routers/keycloak.py``
-        ``_reauth`` sets it: the proof cookie, and for the two that have one (delete forever, WhatsApp)
-        theirs too. Locked-open has none: the page POSTs /documents/locked-open after the proof."""
+        ``_reauth`` sets it: the proof cookie, and for the one that has one (WhatsApp) its own too.
+        Locked-open has none: the page POSTs /documents/locked-open after the proof."""
         user = load_user(self.db, signed.customer_id, signed.user_id, scope=signed.scope)
         assert user is not None
         session_id = self.session_ids[(signed.client, signed.user_id)]
@@ -395,9 +394,7 @@ class Api:
             response, user, session_id=session_id, action=action, auth_time=now, assurance=acr,
             settings=self.settings, now=now,
         )  # fmt: skip
-        if action == "delete_forever":
-            set_confirm_cookie(response, user, self.settings, now=now, session_id=session_id)
-        elif action == "whatsapp":
+        if action == "whatsapp":
             set_whatsapp_proof_cookie(response, user, self.settings, now=now)
         host = signed.client.base_url.host
         domain = host if "." in host else host + ".local"  # as http.cookiejar names a bare host

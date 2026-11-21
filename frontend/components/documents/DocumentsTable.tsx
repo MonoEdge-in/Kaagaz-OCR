@@ -12,8 +12,7 @@
 // own columns and the next row); focus goes to Cancel, and back to the menu button. Restore
 // needs no question: nothing is lost. Ticked rows can be moved to Trash
 // together; in Trash they can be restored together, or deleted forever together
-// by whoever may (canDeleteForever, asked first; a 403 keycloak_reauth_required sends the person to
-// the company sign-in, and they confirm again after returning). In Trash the list shows when each
+// by whoever may (canDeleteForever, asked first; no company sign-in, #744). In Trash the list shows when each
 // document was trashed. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
@@ -69,7 +68,6 @@ import { useSession } from "@/lib/session";
 import { docTypeLabel, fileTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative } from "@/lib/format";
 import type { DocumentSummary, FilePlaced, FolderBack, FolderRestored, Me, Tag, TrashedFolder } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
-import { beginKeycloakReauth, isKeycloakReauthRequired, keycloakStartFailure } from "@/lib/keycloak";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { LockDialog } from "./LockDialog";
 import { DOCUMENT_DRAG } from "./FolderNav";
@@ -391,16 +389,6 @@ export function DocumentsTable({
     setBusy(false);
     setBusyAction(null);
     setDeleteProgress(null);
-    // Delete forever needs a fresh company sign-in: nothing was deleted, so start it and come back.
-    if (action === "forever" && result.done.length === 0 && isKeycloakReauthRequired(result.firstError)) {
-      try {
-        await beginKeycloakReauth("delete_forever", window.location.pathname);
-        return;
-      } catch (failed) {
-        setError(keycloakStartFailure(failed));
-        return;
-      }
-    }
     if (lostTheRight(result.firstError)) refresh();
     setSelectedIds(new Set(result.failed));
     setConfirming(null);
@@ -952,16 +940,6 @@ const DocumentRow = memo(function DocumentRow({
         typeof undo === "function" ? undo() : undo,
       );
     } catch (caught) {
-      if (confirming === "forever" && isKeycloakReauthRequired(caught)) {
-        try {
-          await beginKeycloakReauth("delete_forever", window.location.pathname);
-          return;
-        } catch (failed) {
-          setError(keycloakStartFailure(failed));
-          setBusy(false);
-          return;
-        }
-      }
       if (lostTheRight(caught)) refresh();
       setError(
         caught instanceof ApiError ? caught.message : `${failed} Check your connection, then try again.`,

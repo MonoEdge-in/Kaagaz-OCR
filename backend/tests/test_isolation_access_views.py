@@ -24,7 +24,7 @@ from kaagaz.db.engine import Database
 from kaagaz.search import hybrid
 from kaagaz.search.scope import EVERYTHING
 from tests.db_support import APP_ROLE, insert_folder
-from tests.test_api_delete_forever_grant import _confirm, _grant
+from tests.test_api_delete_forever_grant import _grant
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
 from tests.test_isolation_logins import WORKER
 from tests.test_operator_auth_db import _owner
@@ -834,7 +834,6 @@ def test_deleting_a_hidden_file_forever_is_not_found_and_deletes_nothing(db: Dat
     org = _walled(Api(db))
     plain = org.people["plain"]
     assert _grant(org.people["admin"], plain.user_id) == (200, True)
-    assert _confirm(plain) == 204
     hidden = org.files["trashed"]  # in Trash, in Salaries
     missing = plain.client.delete(f"/api/documents/{uuid.uuid4()}/permanent", headers=CSRF)
     reply = plain.client.delete(f"/api/documents/{hidden}/permanent", headers=CSRF)

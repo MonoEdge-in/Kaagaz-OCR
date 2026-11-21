@@ -342,8 +342,7 @@ def delete_folder(
 
 # --- a folder in Trash (#542) -------------------------------------------------------------------
 NAMES_TAKEN = "Too many folders there already have this name. Rename one first."
-# Under /documents/trash, beside a document's Trash routes, so the typed password's cookie
-# (auth.CONFIRM_PATH, /api/documents) reaches delete forever as it does a document's.
+# Under /documents/trash, beside a document's Trash routes.
 
 
 @router.get("/documents/trash/folders")
@@ -430,8 +429,8 @@ def delete_trashed_folder_forever(folder_id: uuid.UUID, user: CanDeleteForever, 
     files is left. At most FOREVER_FAMILIES files a request (A12): while more are left the reply
     is 202 ``{remaining}`` and the client asks again; the last part is 204. Two at once are safe:
     a family deleted by the other is skipped, and the folders go once, under the tree lock.
-    Delete forever's own rule (``require_delete_forever``), and its audit marks (``by_grant``,
-    ``by_password``); each request writes one row with the files it deleted: ``finished: false``
+    Delete forever's own rule (``require_delete_forever``), and its audit mark (``by_grant``);
+    each request writes one row with the files it deleted: ``finished: false``
     while files are left (or it stopped part way), the folders too on the last. Another
     customer's is 404. PRD 7 (#599): one the person can't see is 404 too, and one holding a folder
     or a file they can't see is deleted forever by an Admin only (403)."""

@@ -58,7 +58,7 @@ describe("who may delete for good", () => {
     expect(foreverNeeds(granted("member"))).toBeNull();
   });
 
-  it("lets a member or reviewer an admin allowed, after the company sign-in; a grant never counts for an admin", () => {
+  it("lets a member or reviewer an admin allowed, with no fresh sign-in; a grant never counts for an admin", () => {
     expect([canDeleteForever(granted("member")), canDeleteForever(granted("reviewer"))]).toEqual([true, true]);
     expect([canDeleteForever(granted("admin")), canDeleteForever(me("admin", "admin"))]).toEqual([false, true]);
     expect(selectable({ can_delete: false }, true, true)).toBe(true); // ticked in Trash to delete for good

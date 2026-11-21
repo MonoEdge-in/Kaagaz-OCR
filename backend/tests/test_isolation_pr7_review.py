@@ -17,7 +17,7 @@ from kaagaz.api.routers.folders import HIDDEN_INSIDE
 from kaagaz.db.engine import Database
 from kaagaz.search.scope import EVERYTHING, FileFilters, narrow
 from tests.db_support import insert_folder
-from tests.test_api_delete_forever_grant import _confirm, _grant
+from tests.test_api_delete_forever_grant import _grant
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
 from tests.test_api_folder_uploads import TREE, item, plan, register
 from tests.test_api_support import CSRF, PDF_BYTES, Api
@@ -273,7 +273,6 @@ def test_a_member_cannot_delete_forever_a_trashed_folder_holding_only_a_hidden_f
     org = _walled(Api(db))
     member = org.people["member"]
     assert _grant(org.people["admin"], member.user_id) == (200, True)
-    assert _confirm(member) == 204
     _trash(org, org.folders["sales"])
     shown = member.client.get("/api/documents/trash/folders").json()["items"]
     assert [(i["id"], i["files"]) for i in shown] == [(org.folders["sales"], 1)], shown
@@ -293,7 +292,6 @@ def test_a_member_cannot_delete_forever_a_trashed_folder_holding_only_a_hidden_f
         vault = insert_folder(conn, org.c, member.user_id, "Vault", org.folders["loose"])
     _private(db, org, vault)
     assert _grant(org.people["admin"], member.user_id) == (200, True)
-    assert _confirm(member) == 204
     _trash(org, org.folders["loose"])
     refused = member.client.delete(
         f"/api/documents/trash/folders/{org.folders['loose']}/permanent", headers=CSRF

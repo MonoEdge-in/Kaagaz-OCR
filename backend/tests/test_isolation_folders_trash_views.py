@@ -20,7 +20,7 @@ from kaagaz.api.routers.folders import HIDDEN_INSIDE
 from kaagaz.db.engine import Database
 from kaagaz.search.scope import ScopeBody, resolve
 from tests.db_support import insert_folder
-from tests.test_api_delete_forever_grant import _confirm, _grant
+from tests.test_api_delete_forever_grant import _grant
 from tests.test_api_folder_upload_files import ResumableStorage, _fingerprint
 from tests.test_api_folder_uploads import item, plan, register
 from tests.test_api_support import CSRF, PDF_BYTES, Api, Signed
@@ -136,7 +136,6 @@ def test_every_trashed_folder_route_answers_a_hidden_one_as_one_that_never_was(
     org = _walled(Api(db))
     plain = org.people["plain"]
     assert _grant(org.people["admin"], plain.user_id) == (200, True)
-    assert _confirm(plain) == 204
     _trash(org, org.folders["finance"])
     before = (_owner(db, _TRASHED_ROWS, {"c": org.c}), _owner(db, _FOLDER_ROWS, {"c": org.c}))
     for hidden in (org.folders["finance"], org.folders["salaries"]):
@@ -259,7 +258,6 @@ def test_only_an_admin_deletes_forever_a_trashed_folder_holding_what_they_cant_s
     admin = org.people["admin"]
     for name in ("member", "head"):
         assert _grant(admin, org.people[name].user_id) == (200, True)
-        assert _confirm(org.people[name]) == 204
     _trash(org, org.folders["finance"])
     finance = org.folders["finance"]
     before = _owner(db, "SELECT count(*) FROM documents WHERE customer_id = :c", {"c": org.c})
@@ -281,7 +279,6 @@ def test_an_admin_deletes_forever_a_trashed_folder_holding_files_they_cant_open(
     admin = org.people["admin"]
     _trash(org, org.folders["finance"])
     # Changed on purpose (PR 9b, #606): an Admin deletes forever files they can't see, with the rule on.
-    Api.of(admin).prove(admin, "delete_forever")  # 21 Nov 2026: after the company sign-in
     reply = admin.client.delete(
         f"/api/documents/trash/folders/{org.folders['finance']}/permanent", headers=CSRF
     )
