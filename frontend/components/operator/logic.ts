@@ -9,12 +9,10 @@ import { ApiError } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate, formatNumber, formatRelative } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
-import type { OrgAdmin, OrgStatus, Organisation } from "@/lib/types";
+import type { OrgAdmin, OrgStatus, Organisation, SignInSummary } from "@/lib/types";
 
 export const KEY_HELP = "Your two-step key is given to you on the server when your account is made.";
 export const DISABLE_EFFECT = "Its users are signed out now and its jobs stop.";
-export const TEMPORARY_PASSWORD_NOTE =
-  "Give this to the admin privately. They must change it at first sign-in.";
 
 // --- Sign-in -----------------------------------------------------------------
 
@@ -90,10 +88,10 @@ export async function signOut(logout: () => Promise<unknown>): Promise<{ leave: 
 
 // --- Dialogs ---------------------------------------------------------------------
 
-/** Never while busy (the reply, a temporary password, would be lost); a shown password only by a button. */
-export function canCloseDialog(state: { busy: boolean; secretShown?: boolean }, way: CloseWay): boolean {
-  if (state.busy) return false;
-  return !state.secretShown || way === "button";
+/** Never while busy: the reply would be lost. Otherwise every way closes (no password is shown any more). */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- the way no longer matters
+export function canCloseDialog(state: { busy: boolean }, _way: CloseWay): boolean {
+  return !state.busy;
 }
 
 /** A change's reply clears the open dialog only if it is still that change's. */
@@ -299,13 +297,11 @@ export function firstInvalidOrgField(errors: NewOrgErrors): keyof NewOrgInput | 
 
 // --- One organisation's admins ---------------------------------------------------
 
-/** The short facts beside an admin's name: two-step, locked, disabled, first sign-in. */
-export function adminFacts(admin: Pick<OrgAdmin, "two_step" | "locked" | "disabled" | "must_change_password">): string[] {
+/** The short facts beside an admin's name: locked, disabled. Keycloak always asks for the code. */
+export function adminFacts(admin: Pick<OrgAdmin, "locked" | "disabled">): string[] {
   return [
-    admin.two_step ? "Two-step on" : "Two-step off",
     ...(admin.locked ? ["Locked"] : []),
     ...(admin.disabled ? ["Disabled"] : []),
-    ...(admin.must_change_password ? ["Has a temporary password"] : []),
   ];
 }
 
@@ -315,11 +311,26 @@ export function lastSignInText(iso: string | null, now: number): string {
 }
 
 /** Which changes fit an admin as they are now (none while the organisation is being deleted). */
-export function adminActions(admin: Pick<OrgAdmin, "two_step" | "locked" | "disabled">, orgStatus: OrgStatus) {
+export function adminActions(admin: Pick<OrgAdmin, "locked" | "disabled">, orgStatus: OrgStatus) {
   if (orgStatus === "deleting") return [];
   return [
     admin.disabled ? ("enable" as const) : ("disable" as const),
     ...(admin.locked ? (["unlock"] as const) : []),
-    ...(admin.two_step ? (["reset-2fa"] as const) : []),
+    "resend-setup" as const,
+    "reset-2fa" as const,
   ];
+}
+
+// --- Company sign-in (#737) ------------------------------------------------------
+
+/** "12 people are on company sign-in. 5 still sign in the old way." */
+export function moveSummaryText(summary: Pick<SignInSummary, "connected" | "to_move">): string {
+  const people = (n: number) => `${formatNumber(n)} ${n === 1 ? "person is" : "people are"}`;
+  const still = summary.to_move === 1 ? "1 person still signs in the old way." : `${formatNumber(summary.to_move)} still sign in the old way.`;
+  return `${people(summary.connected)} on company sign-in. ${still}`;
+}
+
+/** The named confirm button: how many people it moves. */
+export function moveButtonText(count: number): string {
+  return `Move ${formatNumber(count)} ${count === 1 ? "person" : "people"}`;
 }

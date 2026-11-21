@@ -32,6 +32,7 @@ services:
     volumes:
       # Imported only when the realm is not there yet.
       - ./keycloak/kaagaz-local-realm.json:/opt/keycloak/data/import/kaagaz-local-realm.json:ro
+      - ./keycloak/themes/kaagaz:/opt/keycloak/themes/kaagaz:ro
     # edge: Caddy and the API. data: Postgres.
     networks: [edge, data]
     mem_limit: 1g

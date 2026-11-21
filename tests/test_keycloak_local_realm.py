@@ -30,6 +30,8 @@ class KeycloakLocalRealmTests(unittest.TestCase):
         self.assertEqual(
             {
                 "KEYCLOAK_CLIENT_SECRET": "",
+                "KEYCLOAK_ADMIN_CLIENT_ID": "kaagaz-provisioner",
+                "KEYCLOAK_ADMIN_CLIENT_SECRET": "",
                 "KEYCLOAK_FLOW_ENCRYPTION_KEY": "",
                 "KEYCLOAK_ENABLED": "false",
             },
@@ -44,15 +46,33 @@ class KeycloakLocalRealmTests(unittest.TestCase):
             values(admin_template),
         )
 
-    def test_realm_has_no_users_or_unconfigured_brokers(self) -> None:
-        self.assertEqual([], REALM["users"])
+    def test_provisioner_is_a_server_only_client_with_only_user_management(self) -> None:
+        client = next(c for c in REALM["clients"] if c["clientId"] == "kaagaz-provisioner")
+        self.assertFalse(client["publicClient"])
+        self.assertTrue(client["serviceAccountsEnabled"])
+        self.assertFalse(client["standardFlowEnabled"])
+        self.assertFalse(client["implicitFlowEnabled"])
+        self.assertFalse(client["directAccessGrantsEnabled"])
+        self.assertEqual([], client["redirectUris"])
+        self.assertNotIn("secret", client)
+        [account] = REALM["users"]  # the only user: no people are imported
+        self.assertEqual("kaagaz-provisioner", account["serviceAccountClientId"])
+        self.assertEqual({"realm-management": ["manage-users", "view-users"]}, account["clientRoles"])
+        self.assertNotIn("realmRoles", account)
+        self.assertNotIn("credentials", account)
+
+    def test_realm_has_no_people_or_unconfigured_brokers(self) -> None:
+        self.assertEqual(
+            ["service-account-kaagaz-provisioner"], [user["username"] for user in REALM["users"]]
+        )
         self.assertEqual([], REALM["identityProviders"])
         self.assertEqual([], REALM["identityProviderMappers"])
         self.assertFalse(REALM["registrationAllowed"])
         self.assertTrue(REALM["bruteForceProtected"])
-        self.assertIn("length(14)", REALM["passwordPolicy"])
-        self.assertIn("notUsername", REALM["passwordPolicy"])
+        self.assertEqual("length(10) and notUsername", REALM["passwordPolicy"])  # owner: 10+, no symbol rules
         self.assertEqual("external", REALM["sslRequired"])
+        self.assertEqual(("Kaagaz", "kaagaz", "kaagaz"), (REALM["displayName"], REALM["loginTheme"], REALM["emailTheme"]))
+        self.assertTrue(REALM["resetPasswordAllowed"])
         self.assertEqual("totp", REALM["otpPolicyType"])
         self.assertEqual(6, REALM["otpPolicyDigits"])
 
@@ -65,7 +85,10 @@ class KeycloakLocalRealmTests(unittest.TestCase):
         self.assertFalse(self.client["serviceAccountsEnabled"])
         self.assertFalse(self.client["authorizationServicesEnabled"])
         self.assertEqual(
-            ["http://localhost:3000/api/auth/keycloak/callback"],
+            [
+                "http://localhost:3000/api/auth/keycloak/callback",
+                "http://localhost:3000/login",  # where a setup email's "back to application" lands (#737)
+            ],
             self.client["redirectUris"],
         )
         self.assertNotIn("secret", self.client)
@@ -95,6 +118,24 @@ class KeycloakLocalRealmTests(unittest.TestCase):
             for step in flow["authenticationExecutions"]:
                 self.assertNotEqual("auth-cookie", step.get("authenticator"))
                 self.assertNotEqual("conditional-user-configured", step.get("authenticator"))
+
+    def test_forgot_password_keeps_the_authenticator_and_never_deletes_it(self) -> None:
+        """The built-in reset flow's reset-otp step deletes the user's OTP: a mailbox alone
+        would then be enough to take an account over (#737)."""
+        self.assertEqual("kaagaz-reset", REALM["resetCredentialsFlow"])
+        steps = self.flows["kaagaz-reset"]["authenticationExecutions"]
+        self.assertEqual(
+            [
+                ("reset-credentials-choose-user", "REQUIRED"),
+                ("reset-credential-email", "REQUIRED"),
+                ("auth-otp-form", "REQUIRED"),
+                ("reset-password", "REQUIRED"),
+            ],
+            [(step["authenticator"], step["requirement"]) for step in steps],
+        )
+        for flow in REALM["authenticationFlows"]:
+            for step in flow["authenticationExecutions"]:
+                self.assertNotEqual("reset-otp", step.get("authenticator"))
 
     def test_amr_comes_from_executed_authenticators_with_finite_max_age(self) -> None:
         mappers = {mapper["protocolMapper"]: mapper for mapper in self.client["protocolMappers"]}

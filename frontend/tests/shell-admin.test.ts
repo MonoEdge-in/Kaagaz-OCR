@@ -7,7 +7,6 @@ import {
   adminGate,
   allowForeverQuestion,
   breakdowns,
-  generatePassword,
   kpiTiles,
   settingsChanged,
   twoStepNote,
@@ -117,7 +116,7 @@ describe("userActions", () => {
       toggleDisabled: true,
       unlock: false,
       resetPassword: true,
-      reset2fa: false,
+      reset2fa: true,
     });
   });
 
@@ -126,8 +125,9 @@ describe("userActions", () => {
     expect(actions(user({ locked_until: "2026-09-29T08:00:00Z" })).unlock).toBe(false);
   });
 
-  it("offers Reset 2FA only when 2FA is on", () => {
-    expect(actions(user({ role: "admin", totp_enabled: true })).reset2fa).toBe(true);
+  it("offers Reset authenticator to members and reviewers, not to an admin (#737)", () => {
+    expect(actions(user({ role: "member" })).reset2fa).toBe(true);
+    expect(actions(user({ role: "reviewer", totp_enabled: true })).reset2fa).toBe(true);
     expect(actions(user({ role: "admin" })).reset2fa).toBe(false);
   });
 
@@ -224,32 +224,24 @@ describe("validateNewUser", () => {
     email: "ravi@sharma.in",
     display_name: "Ravi",
     role: "member" as const,
-    password: "twelve chars",
   };
 
-  it("accepts a complete user", () => {
+  it("accepts a complete user: there is no password to type (#737)", () => {
     expect(validateNewUser(good)).toEqual({});
   });
 
   it("names each problem against its field", () => {
-    expect(validateNewUser({ ...good, email: "ravi", display_name: "  ", password: "short" })).toEqual({
+    expect(validateNewUser({ ...good, email: "ravi", display_name: "  " })).toEqual({
       email: "Enter a valid e-mail address.",
       display_name: "Enter a name.",
-      password: "Use at least 12 characters.",
     });
-  });
-
-  it("needs a password of at least 12 characters", () => {
-    expect(validateNewUser({ ...good, password: "elevenchars" }).password).toBeDefined();
-    expect(validateNewUser({ ...good, password: "twelvechars!" }).password).toBeUndefined();
   });
 });
 
 describe("firstInvalidField", () => {
   it("picks the first problem in screen order, for focus", () => {
-    expect(firstInvalidField({ password: "x", email: "y" })).toBe("email");
-    expect(firstInvalidField({ password: "x", display_name: "y" })).toBe("display_name");
-    expect(firstInvalidField({ password: "x" })).toBe("password");
+    expect(firstInvalidField({ display_name: "x", email: "y" })).toBe("email");
+    expect(firstInvalidField({ display_name: "y" })).toBe("display_name");
     expect(firstInvalidField({})).toBeNull();
   });
 });
@@ -332,22 +324,6 @@ describe("kpiTiles and breakdowns", () => {
   });
 });
 
-describe("generatePassword (AD3)", () => {
-  it("makes 16 characters with no look-alike letters or digits", () => {
-    const password = generatePassword();
-    expect(password).toHaveLength(16);
-    expect(password).toMatch(/^[A-HJ-NP-Za-km-z2-9]+$/);
-    expect(generatePassword()).not.toBe(password);
-  });
-
-  it("drops the bytes that would favour some characters", () => {
-    // 55 characters: 255 is over 256 - 256 % 55 = 220, so it is skipped; 0 is "A", 56 is "B".
-    let call = 0;
-    const random = (bytes: Uint8Array) => bytes.fill(call++ === 0 ? 255 : 56);
-    expect(generatePassword(4, random)).toBe("BBBB");
-    expect(generatePassword(2, (bytes) => bytes.fill(0))).toBe("AA");
-  });
-});
 
 describe("settingsChanged (AD6) and twoStepNote (AD7)", () => {
   const saved = { max_upload_mb: 25, autofile: { granted: true, on: false } };

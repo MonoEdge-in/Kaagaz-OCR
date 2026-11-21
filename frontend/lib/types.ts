@@ -1574,9 +1574,15 @@ export interface NamedList {
   can_edit: boolean;
 }
 
-/** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
+/** POST /admin/users (#737): the new user, and the result line (whether the setup email went). */
 export interface AddedUser extends AdminUser {
-  invited?: boolean;
+  setup_email_sent: boolean;
+  message: string;
+}
+
+/** POST /admin/users/{id}/reset-2fa and the setup email resend: the result line to show. */
+export interface ResultLine {
+  message: string;
 }
 
 /** POST /auth/signup with email on (#457): no set-up yet, the email is confirmed first. */
@@ -1615,14 +1621,6 @@ export interface GoogleRules {
 /** PATCH /admin/settings' google: it replaces all three. */
 export type GoogleRulesChange = Pick<GoogleRules, "allowed_roles" | "only_roles" | "domains">;
 
-/** Operator: one organisation's Google sign-in (#507). on: null follows the platform. */
-export interface OrgGoogleSignIn {
-  on: boolean | null;
-  platform_on: boolean;
-  effective: boolean;
-  google_only_roles: Role[];
-  domains: string[];
-}
 
 export interface AuditEntry {
   id: number;
@@ -1742,10 +1740,11 @@ export interface OrgModelRates {
   users: ModelRateUser[];
 }
 
-/** POST /operator/orgs: the temporary password is in this one reply only. */
+/** POST /operator/orgs (#737): no password; the result line says whether the setup email went. */
 export interface OrganisationCreated {
   organisation: { id: string; name: string; admin: { email: string; name: string } };
-  temporary_password: string;
+  setup_email_sent: boolean;
+  message: string;
 }
 
 /** One admin of one organisation (GET /operator/orgs/{id}/admins). Never members or reviewers. */
@@ -1763,10 +1762,28 @@ export interface OrgAdmin {
 
 export type AdminChange = "disable" | "enable" | "unlock" | "reset-2fa";
 
-/** POST /operator/orgs/{id}/admins: the temporary password is in this one reply only. */
+/** POST /operator/orgs/{id}/admins (#737): no password; the result line says whether the setup email went. */
 export interface AdminCreated {
   admin: { id: string; email: string; name: string };
-  temporary_password: string;
+  setup_email_sent: boolean;
+  message: string;
+}
+
+/** GET /operator/orgs/{id}/sign-in: how many active people are on company sign-in, and how many are still to move. */
+export interface SignInSummary {
+  status: OrgStatus;
+  available: boolean;
+  connected: number;
+  to_move: number;
+}
+
+/** POST /operator/orgs/{id}/move-everyone: the counts, and the emails that need attention. */
+export interface MoveResult {
+  moved: number;
+  connected: number;
+  attention: { email: string; reason: string }[];
+  email_not_sent: { user_id: string; email: string }[];
+  message: string;
 }
 
 /** One row of GET /operator/activity: no details, target id, person or document. */

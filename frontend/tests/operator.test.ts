@@ -21,7 +21,6 @@ import {
   REFUSALS,
   SIGN_OUT_FAILED,
   STEP_UP_FAILED,
-  TEMPORARY_PASSWORD_NOTE,
   adminActions,
   adminFacts,
   afterDone,
@@ -210,11 +209,10 @@ describe("the operator session", () => {
 });
 
 describe("closing the operator dialogs", () => {
-  it("never closes while busy (the temporary password would be lost); a shown password only by a button", () => {
+  it("never closes while busy (the reply would be lost), and otherwise closes any way", () => {
     const ways = ["button", "escape", "backdrop"] as const;
-    const can = (state: { busy: boolean; secretShown?: boolean }) => ways.map((way) => canCloseDialog(state, way));
-    expect([can({ busy: true }), can({ busy: true, secretShown: true })]).toEqual([[false, false, false], [false, false, false]]);
-    expect([can({ busy: false }), can({ busy: false, secretShown: true })]).toEqual([[true, true, true], [true, false, false]]);
+    const can = (state: { busy: boolean }) => ways.map((way) => canCloseDialog(state, way));
+    expect([can({ busy: true }), can({ busy: false })]).toEqual([[false, false, false], [true, true, true]]);
   });
 
   it("lets a late reply clear only its own dialog", () => {
@@ -228,7 +226,7 @@ describe("closing the operator dialogs", () => {
       expect(dialog, part).toContain(part);
     }
     expect(read("components/operator/ConfirmDialog.tsx")).toContain("canCloseDialog({ busy }, way)");
-    expect(read("components/operator/CreateDialog.tsx")).toContain("canCloseDialog({ busy, secretShown: created !== null }, way)");
+    expect(read("components/operator/CreateDialog.tsx")).toContain("canCloseDialog({ busy }, way)");
     expect(read("components/operator/OrganisationsView.tsx")).toMatch(/afterDone\(open, changing\)[\s\S]*id=\{orgFocusId\(org\.id\)\} tabIndex=\{-1\}/);
   });
 });
@@ -295,29 +293,30 @@ describe("one organisation's admins", () => {
     created_at: "2026-10-01T00:00:00Z",
   };
 
-  it("says two-step, locked, disabled and the last sign-in in words", () => {
-    expect(adminFacts(admin)).toEqual(["Two-step on", "Locked", "Has a temporary password"]);
-    const plain = { two_step: false, locked: false, disabled: true, must_change_password: false };
-    expect(adminFacts(plain)).toEqual(["Two-step off", "Disabled"]);
+  it("says locked, disabled and the last sign-in in words (Keycloak always asks for the code)", () => {
+    expect(adminFacts(admin)).toEqual(["Locked"]);
+    const plain = { locked: false, disabled: true };
+    expect(adminFacts(plain)).toEqual(["Disabled"]);
     expect(lastSignInText(admin.last_sign_in_at, NOW)).toBe("Last sign-in 1 hour ago");
     expect(lastSignInText(null, NOW)).toBe("Never signed in");
   });
 
   it("offers only the changes that fit, and none while the organisation is being deleted", () => {
-    expect(adminActions(admin, "active")).toEqual(["disable", "unlock", "reset-2fa"]);
-    expect(adminActions({ two_step: false, locked: false, disabled: true }, "disabled")).toEqual(["enable"]);
+    expect(adminActions(admin, "active")).toEqual(["disable", "unlock", "resend-setup", "reset-2fa"]);
+    expect(adminActions({ locked: false, disabled: true }, "disabled")).toEqual(["enable", "resend-setup", "reset-2fa"]);
     expect(adminActions(admin, "deleting")).toEqual([]);
   });
 
-  it("asks a fresh code where the server does: reset two-step, not disable, enable or unlock", () => {
-    const stepUp = (["disable", "enable", "unlock", "reset-2fa"] as const).map((c) => adminConfirm("o-1", admin, c).stepUp);
-    expect(stepUp).toEqual([false, false, false, true]);
-    expect(adminConfirm("o-1", admin, "reset-2fa").title).toBe("Reset two-step for Asha Rao?");
-    // QA U4 (4 Nov 2026): the reset clears the code and the admin sets up a new one at sign-in.
+  it("asks a fresh code where the server does: reset authenticator, not disable, enable, unlock or resend", () => {
+    const stepUp = (["disable", "enable", "unlock", "reset-2fa", "resend-setup"] as const).map((c) => adminConfirm("o-1", admin, c).stepUp);
+    expect(stepUp).toEqual([false, false, false, true, false]);
+    expect(adminConfirm("o-1", admin, "reset-2fa").title).toBe("Reset the authenticator for Asha Rao?");
+    // #737: the authenticator is removed in company sign-in; the admin sets up a new one at sign-in.
     expect(adminConfirm("o-1", admin, "reset-2fa")).toMatchObject({
-      effect: "Their two-step code is cleared and they are signed out. They set up a new code the next time they sign in.",
-      done: "Two-step reset for Asha Rao.",
+      action: "Reset authenticator",
+      done: "Asha Rao will set up their authenticator again at their next sign-in.",
     });
+    expect(adminConfirm("o-1", admin, "resend-setup")).toMatchObject({ action: "Resend setup email", danger: false });
     expect(adminConfirm("o-1", admin, "unlock").focusId).toBe("admin-name-u-1"); // the focus after a change
   });
 
@@ -327,7 +326,7 @@ describe("one organisation's admins", () => {
     expect(admins).toContain("id={adminFocusId(admin.id)} tabIndex={-1}");
     const create = read("components/operator/CreateDialog.tsx");
     expect(create).toMatch(/finally \{\s*setInput\(\(was\) => \(\{ \.\.\.was, code: "" \}\)\)/);
-    expect(create).toContain("canCloseDialog({ busy, secretShown: created !== null }, way)");
+    expect(create).toContain("canCloseDialog({ busy }, way)");
   });
 
   it("deletes an organisation only with its name typed and a fresh code", () => {
@@ -346,10 +345,9 @@ describe("operator source guards", () => {
     expect(read("app/operator/login/OperatorSignInForm.tsx")).toContain("KEY_HELP");
     expect(DISABLE_EFFECT).toBe("Its users are signed out now and its jobs stop.");
     expect(read("components/operator/confirms.ts")).toContain("DISABLE_EFFECT");
-    expect(TEMPORARY_PASSWORD_NOTE).toBe("Give this to the admin privately. They must change it at first sign-in.");
     const create = read("components/operator/CreateDialog.tsx");
-    expect(create).toContain("TEMPORARY_PASSWORD_NOTE");
-    expect(create).toContain("<CopyButton");
+    expect(create).not.toContain("<CopyButton"); // no password is shown any more (#737)
+    expect(create).toContain("created.message");
     const list = read("components/operator/OrganisationsView.tsx");
     const confirm = read("components/operator/ConfirmDialog.tsx");
     for (const label of ["Type the organisation name", "<ActionDialog", "A new 6-digit code from your app", 'role="alert"']) {
@@ -361,7 +359,7 @@ describe("operator source guards", () => {
     }
     expect(read("components/operator/OrganisationsView.tsx")).toContain("deleteCountdown(");
     const admins = read("components/operator/AdminsDialog.tsx");
-    for (const label of ["Create admin", "Reset two-step", "Unlock", "lastSignInText(", 'role="status"', "<ActionDialog"]) {
+    for (const label of ["Create admin", "Reset authenticator", "Resend setup email", "Unlock", "lastSignInText(", 'role="status"', "<ActionDialog"]) {
       expect(admins, label).toContain(label);
     }
     // No delete for an admin in v1: no such call or button.
@@ -372,13 +370,13 @@ describe("operator source guards", () => {
     }
   });
 
-  it("never stores or logs anything, the temporary password included", () => {
+  it("never stores or logs anything, and shows no password (#737)", () => {
     const offenders = OPERATOR_FILES.filter((file) =>
       /localStorage|sessionStorage|indexedDB|document\.cookie|console\.|caches\./.test(read(file)),
     );
     expect(offenders).toEqual([]);
     const holders = OPERATOR_FILES.filter((file) => read(file).includes("temporary_password"));
-    expect(holders).toEqual(["components/operator/CreateDialog.tsx"]);
+    expect(holders).toEqual([]);
   });
 
   it("tells other operator tabs on its own channel, never the customer one", () => {

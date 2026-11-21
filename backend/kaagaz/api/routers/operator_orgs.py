@@ -4,10 +4,17 @@ council 6 Oct 2026, PROVISIONAL. Every route needs the operator cookie
 one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
 
 * ``GET /operator/orgs``: every organisation with counts only (never a document's or a
-  user's name). ``POST /operator/orgs`` {name, admin_email, admin_name}: the
-  organisation and its first admin; the temporary password is in this reply ONCE
-  (stored only as its hash, never logged) and must be changed at the first sign-in.
-  A name too short or an obvious test word ("asd") is a 400 (``names.org_name_ok``).
+  user's name). ``POST /operator/orgs`` {name, admin_email, admin_name} (#737): the
+  organisation and its first admin, then the admin's company sign-in account (Keycloak) and the
+  setup email. There is no temporary password. An email that already has a Keycloak account is
+  refused (409) before anything is made. A name too short or an obvious test word ("asd") is a
+  400 (``names.org_name_ok``).
+* ``GET /operator/orgs/{id}/sign-in`` {to_move, connected} and ``POST .../move-everyone``
+  (#737, named confirm "Move n people"): each active person not yet on company sign-in gets an
+  account, a link and the setup email; an email already in Keycloak is NOT linked and is listed
+  as needing attention. ``POST .../people/{uid}/resend-setup`` sends one person the setup email
+  again. Disable, enable, unlock and reset-2fa below also act on the person's linked Keycloak
+  account; so do disabling and enabling an organisation (its linked people).
 * ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``. Enable refuses a
   pending organisation (409): only Approve makes it active.
 * ``POST /operator/orgs/{id}/approve`` (#457 phase 0): a password sign-up waiting as
@@ -18,23 +25,14 @@ one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
 * ``PUT /operator/orgs/{id}/autofile`` {granted} (feature 28): allow or stop auto-filing;
   its admin then switches it on in Settings. Stopping it switches it off too. No step-up,
   as an organisation's models. The list says ``autofile_granted`` and ``autofile_on``.
-* ``GET`` and ``PUT /operator/orgs/{id}/admin-two-step`` {required, code} (#481, Tushar, 3 Nov
-  2026; 0068, step-up): ``{required}``, whether the organisation's admins must have two-step
-  sign-in. Off by default; while on, an admin who turned it off sets it up at sign-in and none
-  may turn it off. Audited ``org.admin_two_step_on`` or ``_off`` in both logs.
-* ``GET`` and ``PUT /operator/orgs/{id}/google-signin`` {on: true, false or null, code} (#507,
-  0074, step-up): ``{on, platform_on, effective, google_only_roles, domains}``: the organisation's
-  own value (null: follow the platform), the platform's, the one in force (with the server's
-  GOOGLE_SIGNIN_ENABLED), and its admin's "Google only" roles and domains, read-only. A change of
-  the value in force signs out its people with an approved connection (the connections are
-  kept); off, every password signs in. Audited ``org.google_signin_set`` in both logs.
 * ``POST /operator/orgs/{id}/schedule-delete`` {name, code} (PR 4, step-up): a DISABLED
   organisation whose name is typed exactly is removed for good after a grace period
   (7 days, PROVISIONAL), by the worker; ``/cancel-delete`` {code} (step-up) during it
   makes it disabled again. There is no "delete now" here (the CLI's break-glass only).
 * ``GET /operator/orgs/{id}/admins`` (admins only), ``POST`` one more {email, name,
-  code} (a temporary password, as above; step-up), and ``POST .../admins/{uid}/disable``,
-  ``/enable``, ``/unlock`` and ``/reset-2fa`` {code} (step-up).
+  code} (a company sign-in account, as above; step-up), and ``POST .../admins/{uid}/disable``,
+  ``/enable``, ``/unlock`` and ``/reset-2fa`` {code} (step-up; removes the authenticator in
+  Keycloak: they set one up again at their next sign-in).
 
 An unknown organisation, and an id that is not an admin of THIS organisation (another
 organisation's admin, a member), get the same 404, and nothing changes.
@@ -50,6 +48,7 @@ row. A taken e-mail gets 409 and one ``*.create_refused`` row (no e-mail stored)
 probing for e-mails leaves a trace.
 """
 
+import logging
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -59,9 +58,12 @@ from typing import Annotated, Any
 from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import RowMapping
+from sqlalchemy import RowMapping, text
+from sqlalchemy.exc import SQLAlchemyError
 
-from kaagaz.api import emails, oidc, totp
+from kaagaz.api import emails, totp
+from kaagaz.api import keycloak_accounts as accounts
+from kaagaz.api import keycloak_admin as kc_admin
 from kaagaz.api.auth import CurrentOperator, OperatorSession, current_operator, hash_password
 from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
@@ -71,10 +73,13 @@ from kaagaz.api.routers.auth import MAX_CODE
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import box, digits, unix
 from kaagaz.api.views import iso
+from kaagaz.db import keycloak as keycloak_sql
 from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Change, Outcome
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/operator/orgs", dependencies=[Depends(current_operator)])
 
@@ -133,20 +138,6 @@ class AutofileBody(BaseModel):
     granted: bool
 
 
-class AdminTwoStepBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    required: bool
-    code: str = Field(min_length=1, max_length=MAX_CODE)
-
-
-class GoogleSigninBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    on: bool | None  # required; null: follow the platform
-    code: str = Field(min_length=1, max_length=MAX_CODE)
-
-
 class StepUpBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -165,7 +156,7 @@ def create_org(body: NewOrgBody, operator: OperatorSession, db: OperatorDb, cont
     name, email, admin_name = _name(body.name), valid_email(body.admin_email), _name(body.admin_name)
     if not org_name_ok(name):
         raise ApiError(400, "bad_request", ORG_NAME_PROBLEM)
-    temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
+    _email_free(context, email)  # before anything is made
     with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
         users_sql.release_stale_signup(conn, email)
     with db.operator() as conn:
@@ -175,11 +166,17 @@ def create_org(body: NewOrgBody, operator: OperatorSession, db: OperatorDb, cont
             name=name,
             admin_email=email,
             admin_name=admin_name,
-            password_hash=hash_password(temporary),
+            password_hash=_unusable_password(),
         )
     _check(db, operator, outcome)
-    reply = {"id": outcome.result_id, "name": name, "admin": {"email": email, "name": admin_name}}
-    return JSONResponse({"organisation": reply, "temporary_password": temporary}, status_code=201)
+    customer_id = str(outcome.result_id)
+    with db.operator() as conn:
+        admin_id = str(orgs_sql.list_admins(conn, operator.operator_id, customer_id)[0]["user_id"])
+    sent, message = _first_account(context, customer_id, admin_id, email, admin_name, "Created")
+    reply = {"id": customer_id, "name": name, "admin": {"email": email, "name": admin_name}}
+    return JSONResponse(
+        {"organisation": reply, "setup_email_sent": sent, "message": message}, status_code=201
+    )
 
 
 @router.post("/{customer_id}/disable")
@@ -217,69 +214,6 @@ def set_org_autofile(
     _check(db, operator, outcome)
     changed = outcome.code == "done"
     return {"organisation": {"id": str(customer_id), "autofile_granted": body.granted, "changed": changed}}
-
-
-@router.get("/{customer_id}/admin-two-step")
-def get_admin_two_step(customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb) -> dict[str, bool]:
-    with db.operator() as conn:
-        required = orgs_sql.admin_two_step(conn, operator.operator_id, str(customer_id))
-    if required is None:  # an unknown organisation, or the operator was disabled meanwhile
-        raise ApiError(404, "not_found")
-    return {"required": required}
-
-
-@router.put("/{customer_id}/admin-two-step")
-def set_admin_two_step(
-    customer_id: uuid.UUID,
-    body: AdminTwoStepBody,
-    operator: OperatorSession,
-    db: OperatorDb,
-    context: Context,
-) -> dict[str, bool]:
-    """A fresh code first; the organisation's admins are held to it from their next request."""
-    step_up = _step_up(db, context, operator, body.code)
-    with db.operator() as conn:
-        outcome = orgs_sql.set_admin_two_step(
-            conn, operator.operator_id, str(customer_id), required=body.required, step=step_up.step
-        )
-    _check(db, operator, outcome, step_up)
-    return {"required": body.required}
-
-
-@router.get("/{customer_id}/google-signin")
-def get_google_signin(
-    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
-) -> dict[str, Any]:
-    with db.operator() as conn:
-        row = orgs_sql.google_signin(conn, operator.operator_id, str(customer_id))
-    if row is None:  # an unknown organisation, or the operator was disabled meanwhile
-        raise ApiError(404, "not_found")
-    on, platform_on = row["org_on"], bool(row["platform_on"])
-    return {
-        "on": on,
-        "platform_on": platform_on,
-        "effective": oidc.enabled(context.settings, "google") and (platform_on if on is None else bool(on)),
-        "google_only_roles": list(row["only_roles"]),
-        "domains": list(row["domains"]),
-    }
-
-
-@router.put("/{customer_id}/google-signin")
-def set_google_signin(
-    customer_id: uuid.UUID,
-    body: GoogleSigninBody,
-    operator: OperatorSession,
-    db: OperatorDb,
-    context: Context,
-) -> dict[str, Any]:
-    """A fresh code first; the organisation's people follow it from their next request."""
-    step_up = _step_up(db, context, operator, body.code)
-    with db.operator() as conn:
-        outcome = orgs_sql.set_google_signin(
-            conn, operator.operator_id, str(customer_id), on=body.on, step=step_up.step
-        )
-    _check(db, operator, outcome, step_up)
-    return get_google_signin(customer_id, operator, db, context)
 
 
 @router.post("/{customer_id}/schedule-delete")
@@ -328,8 +262,8 @@ def create_admin(
     customer_id: uuid.UUID, body: NewAdminBody, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> JSONResponse:
     email, name = valid_email(body.email), _name(body.name)
+    _email_free(context, email)  # before the code is used or anything is made
     step_up = _step_up(db, context, operator, body.code)
-    temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
     with db.operator() as conn:
         outcome = orgs_sql.create_admin(
             conn,
@@ -337,12 +271,88 @@ def create_admin(
             str(customer_id),
             email=email,
             name=name,
-            password_hash=hash_password(temporary),
+            password_hash=_unusable_password(),
             step=step_up.step,
         )
     _check(db, operator, outcome, step_up)
+    sent, message = _first_account(context, str(customer_id), str(outcome.result_id), email, name, "Added")
     admin = {"id": outcome.result_id, "email": email, "name": name}
-    return JSONResponse({"admin": admin, "temporary_password": temporary}, status_code=201)
+    return JSONResponse({"admin": admin, "setup_email_sent": sent, "message": message}, status_code=201)
+
+
+@router.get("/{customer_id}/sign-in")
+def sign_in_summary(customer_id: uuid.UUID, operator: OperatorSession, context: Context) -> dict[str, Any]:
+    """How many active people are on company sign-in and how many are still to move."""
+    status, people = _people(context, str(customer_id))
+    active = [p for p in people if not p.disabled]
+    return {
+        "status": status,
+        "available": accounts.enabled(context),
+        "connected": sum(p.linked for p in active),
+        "to_move": sum(not p.linked for p in active),
+    }
+
+
+@router.post("/{customer_id}/move-everyone")
+def move_everyone(customer_id: uuid.UUID, operator: OperatorSession, context: Context) -> dict[str, Any]:
+    """Give each active person not yet on company sign-in an account, a link and the setup email.
+    An email Keycloak already has is never linked: it is listed for attention. Safe to run again:
+    people already linked are skipped, and a failure leaves no half-made person."""
+    accounts.require(context)
+    status, people = _people(context, str(customer_id))
+    if status != "active":
+        raise ApiError(409, "conflict", "Enable the organisation first.")
+    active = [p for p in people if not p.disabled]
+    moved, connected = 0, sum(p.linked for p in active)
+    attention: list[dict[str, str]] = []
+    unsent: list[dict[str, str]] = []
+    todo = [p for p in active if not p.linked]
+    for index, person in enumerate(todo):
+        try:
+            result = accounts.link_new(
+                context, str(customer_id), person.user_id, email=person.email, name=person.name
+            )
+        except accounts.AccountExists:
+            attention.append(
+                {"email": person.email, "reason": "This email already has a company sign-in account."}
+            )
+        except ApiError as error:
+            attention.append({"email": person.email, "reason": error.message or "Could not be moved."})
+            if error.status == 502:  # Keycloak is down: do not try everyone
+                attention += [{"email": rest.email, "reason": "Not tried."} for rest in todo[index + 1 :]]
+                break
+        except (keycloak_sql.IdentityTaken, SQLAlchemyError):
+            attention.append({"email": person.email, "reason": "Could not be linked."})
+        else:
+            moved += 1
+            if result == "email_failed":
+                unsent.append({"user_id": person.user_id, "email": person.email})
+    logger.info("move everyone: %d moved, %d connected, %d need attention", moved, connected, len(attention))
+    message = f"{moved} moved, {connected} already connected, {len(attention)} need attention."
+    if unsent:
+        message += f" {len(unsent)} setup email(s) were not sent: use Resend setup email."
+    return {
+        "moved": moved,
+        "connected": connected,
+        "attention": attention,
+        "email_not_sent": unsent,
+        "message": message,
+    }
+
+
+@router.post("/{customer_id}/people/{user_id}/resend-setup")
+def resend_setup(
+    customer_id: uuid.UUID, user_id: uuid.UUID, operator: OperatorSession, context: Context
+) -> dict[str, Any]:
+    """Email one linked person a fresh link to set a password and an authenticator."""
+    subject = (
+        accounts.subject_of(context, str(customer_id), str(user_id)) if accounts.enabled(context) else None
+    )
+    if subject is None:
+        raise ApiError(409, "conflict", accounts.NOT_LINKED)
+    if not accounts.send_setup(context, subject):
+        raise ApiError(502, "keycloak_unavailable", "We could not send the email. Try again in a minute.")
+    return {"message": "Done. We emailed a new setup link. It works for 12 hours."}
 
 
 @router.post("/{customer_id}/admins/{user_id}/disable")
@@ -377,13 +387,15 @@ def reset_admin_two_step(
     background: BackgroundTasks,
     context: Context,
 ) -> dict[str, Any]:
-    """Two-step off (the password alone signs in again), every session ends; a security
+    """Their authenticator is removed in company sign-in (they set one up again at the next
+    sign-in), every session ends; a security
     notice is emailed to the admin while email is on (#457)."""
     step_up = _step_up(db, context, operator, body.code)
     reply = _change(db, context, operator, customer_id, user_id, "reset_totp", step_up)
     admin = reply["admin"]
     notice = emails.two_step_reset(admin["name"])
     emails.after(background, "two_step_reset", emails.send, context, admin["email"], "two_step_reset", notice)
+    reply["message"] = f"Done. {admin['name']} will set up their authenticator again at their next sign-in."
     return reply
 
 
@@ -401,6 +413,7 @@ def _set_status(
             conn, operator.operator_id, customer_id, status, now=context.clock(), step=step
         )
     _check(db, operator, outcome, step_up)
+    accounts.mirror_enabled(context, customer_id, enabled_now=status == "active")  # #737: linked people
     return {"organisation": {"id": customer_id, "status": status, "changed": outcome.code == "done"}}
 
 
@@ -425,6 +438,13 @@ def _change(
         )
         rows = orgs_sql.list_admins(conn, operator.operator_id, str(customer_id))
     _check(db, operator, outcome, step_up)  # before the admin is looked for: 404 when it is not one
+    uid, cid = str(user_id), str(customer_id)
+    if change in ("disable", "enable"):  # #737: the linked company sign-in account follows
+        accounts.mirror_enabled(context, cid, enabled_now=change == "enable", only=[uid])
+    elif change == "unlock":
+        accounts.act(context, cid, uid, kc_admin.clear_lock, needs_link=False)
+    elif change == "reset_totp":
+        accounts.act(context, cid, uid, kc_admin.remove_otp)
     now = context.clock()
     return {"admin": next(_admin(row, now) for row in rows if str(row["user_id"]) == str(user_id))}
 
@@ -469,6 +489,45 @@ def _check(
     if outcome.code in _REFUSALS:
         status, code, message = _REFUSALS[outcome.code]
         raise ApiError(status, code, message)
+
+
+def _unusable_password() -> str:
+    """The Kaagaz user's password hash: a random password nobody sees. Sign-in is company sign-in."""
+    return hash_password(secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES * 2))
+
+
+def _email_free(context: AppContext, email: str) -> None:
+    try:
+        accounts.ensure_free(context, email)
+    except accounts.AccountExists:
+        raise ApiError(
+            409, "conflict", "This email already has a company sign-in account. Use a different email."
+        ) from None
+
+
+def _first_account(
+    context: AppContext, customer_id: str, user_id: str, email: str, name: str, verb: str
+) -> tuple[bool, str]:
+    """The new admin's company sign-in account, link and setup email: (email sent, result line).
+    A failure leaves the admin made but not linked; Move everyone finishes it."""
+    try:
+        result = accounts.link_new(context, customer_id, user_id, email=email, name=name)
+    except (accounts.AccountExists, ApiError, keycloak_sql.IdentityTaken, SQLAlchemyError):
+        return False, f"{verb}, but the sign-in account could not be made. Use Move everyone to try again."
+    if result == "email_failed":
+        return False, f"{verb}, but the setup email could not be sent. Use Resend setup email."
+    return True, accounts.sent_line(email, verb)
+
+
+def _people(context: AppContext, customer_id: str) -> tuple[str, list[keycloak_sql.Person]]:
+    """The organisation's status and each person with whether they are on company sign-in; 404 for
+    an unknown organisation."""
+    with context.db.customer(customer_id) as conn:
+        status = conn.execute(text("SELECT status FROM customers WHERE id = :c"), {"c": customer_id}).scalar()
+        people = keycloak_sql.people(conn, customer_id, context.settings.keycloak_issuer or "")
+    if status is None:
+        raise ApiError(404, "not_found")
+    return str(status), people
 
 
 def _name(value: str) -> str:

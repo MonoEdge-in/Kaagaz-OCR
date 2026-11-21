@@ -666,7 +666,6 @@ EMAIL_ROUTES = (
     ("POST", "/api/auth/email/confirm"),
     ("POST", "/api/auth/email/send-confirm"),
     ("POST", "/api/auth/email/resend-confirm"),
-    ("POST", "/api/auth/invite/accept"),
 )
 
 

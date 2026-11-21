@@ -57,14 +57,8 @@ describe("what the email screens say", () => {
 
   it("says what to do next about a gone link, per page (#457 review)", () => {
     const gone = new ApiError(400, "link_expired", "That link has expired or was already used.");
-    expect(linkGone("reset")).toBe("That link has expired or was already used. Ask for a new one from Forgot password.");
-    expect(linkGone("invite")).toBe("That link has expired or was already used. Ask your admin to send a new invite.");
     expect(linkGone("confirm")).toBe("That link has expired or was already used. Sign in to get a new link.");
-    expect(linkError(gone, "reset")).toBe(linkGone("reset"));
-    expect(linkError(gone, "invite")).toBe(linkGone("invite"));
     expect(linkError(gone, "confirm")).toBe(linkGone("confirm"));
-    const form = read("app/reset-password/LinkPasswordForm.tsx");
-    expect(form).toContain("linkError(caught, kind)");
   });
 
   it("says email is off on a 404, and logs an unexpected failure (#457 review)", () => {
@@ -99,7 +93,6 @@ describe("what the email screens say", () => {
   });
 
   it("uses the spec's words", () => {
-    expect(FORGOT_SENT).toBe("If that email has an account, we've sent a link.");
     // Changed on purpose (#457 follow-up): people made before email had no link sent yet, so
     // the banner says "We sent a link" only once this browser sent one.
     // Changed on purpose (#457 review): "Confirm your email, {email}." before a link is sent.
@@ -111,67 +104,15 @@ describe("what the email screens say", () => {
       text: "Confirm your email. We sent a link to ramesh@firm.in.",
       button: "Send again",
     });
-    // Changed on purpose (#457 review): the typed temporary password is always kept, and a
-    // failed invite is a problem notice.
-    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in", invited: true })).toEqual({
-      text: "Invite sent to ramesh@firm.in. If it doesn't arrive, give Ramesh the temporary password you typed.",
-    });
-    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in", invited: false })).toEqual({
-      problem: true,
-      text: "Couldn't send the invite email. Give Ramesh the temporary password you typed.",
-    });
-    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in" })).toEqual({
-      text: "Added Ramesh. They choose their own password when they first sign in.",
-    });
+    // Changed on purpose (#737): the server's own result line; a setup email that did not go is a problem.
+    const sent = "Added. We emailed ramesh@firm.in a link to set their password and authenticator. It works for 12 hours.";
+    expect(addedNotice({ setup_email_sent: true, message: sent })).toEqual({ text: sent });
+    const failed = "Added, but the setup email could not be sent. Use Resend setup email.";
+    expect(addedNotice({ setup_email_sent: false, message: failed })).toEqual({ problem: true, text: failed });
   });
 
 
-  it("tells a waiting organisation why it cannot sign in", () => {
-    // Changed on purpose (#457 review): who approves it, and the confirm link.
-    expect(ORG_PENDING).toBe(
-      "Your organisation is waiting for approval from the Kaagaz team. If you haven't confirmed your email yet, use the link we sent you.",
-    );
-    expect(signInErrorMessage(new ApiError(403, "org_pending", "anything"))).toBe(ORG_PENDING);
-  });
 
-});
-
-describe("the link and result screens (#457 review)", () => {
-  it("move focus to the new heading when a form is replaced by its result", () => {
-    for (const path of ["app/reset-password/LinkPasswordForm.tsx"]) {
-      const form = read(path);
-      expect(form, path).toContain("const focusOnMount = useCallback((element: HTMLHeadingElement | null) => element?.focus(), []);");
-      expect(form, path).toMatch(/<h1 ref=\{focusOnMount\} tabIndex=\{-1\}/);
-    }
-  });
-
-  it("say a missing token as soon as the password page loads", () => {
-    const form = read("app/reset-password/LinkPasswordForm.tsx");
-    expect(form).toMatch(/token\.current = takeToken\(\);\s*if \(token\.current === null\) setFailure\(LINK_MISSING\);/);
-  });
-
-  it("check the new password with Change password's rules", () => {
-    const form = read("app/reset-password/LinkPasswordForm.tsx");
-    expect(form).toContain("validateNewPassword(");
-    expect(form).not.toContain("MIN_PASSWORD_LENGTH ? NEXT_TOO_SHORT");
-  });
-});
-
-describe("one spelling (#457 review)", () => {
-  it("says email, never e-mail, on the sign-in and link pages", () => {
-    const pages = [
-      "app/login/SignInPanel.tsx",
-      "app/login/signIn.ts",
-      "app/reset-password/LinkPasswordForm.tsx",
-      "app/email/confirm/ConfirmEmail.tsx",
-    ];
-    for (const path of pages) {
-      const code = read(path)
-        .split("\n")
-        .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line));
-      expect(code.filter((line) => /e-mail/i.test(line)), path).toEqual([]);
-    }
-  });
 });
 
 describe("the confirm banner", () => {

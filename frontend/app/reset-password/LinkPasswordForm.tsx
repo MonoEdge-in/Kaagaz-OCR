@@ -1,7 +1,7 @@
 "use client";
 
 // Choosing a password from an emailed link (#457 phase 0): "reset" (/reset-password, a
-// forgotten one) or "invite" (/invite, a new person). The token is read from the address's
+// forgotten one). The token is read from the address's
 // fragment once, on the first load, and cleared from the address bar (takeToken). The new
 // password twice; saved, every browser of the account is signed out, the email counts as
 // confirmed, and the page sends them to sign in (an admin still types their code there).
@@ -17,7 +17,7 @@ import { validateNewPassword } from "@/components/shell/setPassword";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
-import { acceptInvite, resetPassword } from "@/lib/api";
+import { resetPassword } from "@/lib/api";
 import { LINK_GONE, LINK_MISSING, linkError, linkGone, takeToken } from "@/lib/emailLinks";
 import login from "../login/login.module.css";
 
@@ -27,12 +27,6 @@ const WORDS = {
     lead: "Every browser signed in to your account is signed out when you save it.",
     done: "Your password is changed. Sign in with your new password.",
     send: resetPassword,
-  },
-  invite: {
-    title: "Choose your password",
-    lead: "Welcome to Kaagaz. Choose the password you will sign in with.",
-    done: "Your password is set. Sign in with your email and your new password.",
-    send: acceptInvite,
   },
 } as const;
 

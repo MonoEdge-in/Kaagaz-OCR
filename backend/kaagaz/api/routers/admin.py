@@ -14,11 +14,11 @@ lock out its last way in by accident (the CLI ``reset-admin-2fa`` is the way
 back for the last admin). Every change writes one audit row with ids and
 statuses only (never a password, hashed or not).
 
-Why an invite (#457 phase 0): with email on, Add person also emails "You're invited" (a 7-day
-link to choose their own password, which proves the e-mail), made in the same transaction as
-the user and sent after it; the reply says whether it went (``invited``). The password the
-admin typed is always kept as a temporary one (the user must change it), the fallback when
-the email fails or never arrives. With email off it is exactly as before, with no ``invited``.
+Why Add person makes a company sign-in account (#737, ``kaagaz.api.keycloak_accounts``): the
+person is made in Keycloak and linked in the same step, and Keycloak emails them a 12-hour link to
+set a password and an authenticator. An email that already has a Keycloak account is refused (409),
+never taken over. The reply says whether the email went (``setup_email_sent``, ``message``);
+``POST /admin/users/{id}/resend-setup`` sends it again.
 
 Why the session version: disabling a user, setting their password, resetting
 their password or their two-step code all raise ``session_version`` (in
@@ -102,6 +102,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
 from kaagaz.api import emails, oidc
+from kaagaz.api import keycloak_accounts as accounts
+from kaagaz.api import keycloak_admin as kc_admin
 from kaagaz.api.auth import AdminSession, CurrentUser, hash_password, require_admin_session
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.emails import email_on
@@ -114,6 +116,7 @@ from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, google_rules, identities, listing, reading_days, storage_limits
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import folders as folders_sql
+from kaagaz.db import keycloak as keycloak_sql
 from kaagaz.db import runs as runs_sql
 from kaagaz.db import usage as usage_sql
 from kaagaz.db import users as users_sql
@@ -132,6 +135,7 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 RoleName = Literal["member", "reviewer", "admin"]
 PASSWORD_ONLY = ["password"]  # every account keeps its Kaagaz password (#457)
+ACCOUNT_EXISTS = "This email already has a company sign-in account. Ask your super admin."
 ALREADY_BELONGS = "This Google account already belongs to a Kaagaz user."
 # #507: the org admin's Google rules, refused in plain words (GOOGLE_OFF and ROLE_REFUSED: also
 # routers/oidc.py's).
@@ -179,7 +183,6 @@ class NewUserBody(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     display_name: str = Field(min_length=1, max_length=100)
     role: RoleName
-    password: str = Field(min_length=MIN_PASSWORD, max_length=MAX_PASSWORD)
 
 
 class UserChangesBody(BaseModel):
@@ -277,15 +280,21 @@ def list_users(user: AdminSession, context: Context) -> dict[str, Any]:
 
 @router.post("/admin/users", status_code=201)
 def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSONResponse:
+    """Add a person (#737): their company sign-in account is made and linked, and Keycloak emails
+    them a link to set a password and an authenticator. The Kaagaz user gets a password nobody
+    knows; it never signs in."""
     email = valid_email(body.email)
     name = body.display_name.strip()
     if not name:
         raise ApiError(400, "bad_request", "Enter a name.")
-    inviting = email_on(context)
-    # The typed password is the temporary one, with an invite too: the fallback if it never arrives.
-    password_hash = hash_password(body.password)
+    accounts.require(context)
+    unusable = hash_password(secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES * 2))
     with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
         users_sql.release_stale_signup(conn, email)
+    try:
+        subject = accounts.make_account(context, email=email, name=name)
+    except accounts.AccountExists:
+        raise ApiError(409, "conflict", ACCOUNT_EXISTS) from None
     try:
         with context.db.user(user.customer_id, user.user_id) as conn:
             row = users_sql.create_user(
@@ -294,31 +303,49 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
                 email=email,
                 display_name=name,
                 role=body.role,
-                password_hash=password_hash,
-                must_change_password=True,
+                password_hash=unusable,
+                must_change_password=False,
             )
+            target = str(row["id"])
             audit.record(
                 conn,
                 user.customer_id,
                 actor_user_id=user.user_id,
                 action="user.create",
                 target_type="user",
-                target_id=str(row["id"]),
+                target_id=target,
                 details={"role": body.role},
             )
-            target = str(row["id"])
-            link = emails.add_link(conn, context, user.customer_id, target, "invite") if inviting else None
-            rules = _google_on(conn, context, user.customer_id) if inviting else None
+            keycloak_sql.link_account(
+                conn, context.settings.keycloak_issuer or "", subject, now=context.clock(), as_user=target
+            )
     except users_sql.EmailTaken:
+        accounts.discard(context, subject)
         raise ApiError(409, "conflict", "That e-mail is already in use.") from None
-    if link is None:
-        return JSONResponse(admin_user(row, now=context.clock()), status_code=201)
-    google = rules is not None and body.role in rules.allowed_roles  # #507: "connect your Google account"
-    invited = emails.send(context, email, "invite", emails.invite(user.customer_name, link, google))
-    if invited:  # the one follow-up write, only when the email went
+    except Exception:
+        accounts.discard(context, subject)
+        raise
+    sent = accounts.send_setup(context, subject)
+    if sent:  # the one follow-up write, only when the email went
         with context.db.user(user.customer_id, user.user_id) as conn:
-            _audit_user(conn, user, "auth.invite_sent", target)
-    return JSONResponse({**admin_user(row, now=context.clock()), "invited": invited}, status_code=201)
+            _audit_user(conn, user, "auth.setup_email_sent", target)
+    message = accounts.sent_line(email) if sent else accounts.EMAIL_NOT_SENT
+    reply = {**admin_user(row, now=context.clock()), "setup_email_sent": sent, "message": message}
+    return JSONResponse(reply, status_code=201)
+
+
+@router.post("/admin/users/{user_id}/resend-setup")
+def resend_setup(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
+    """Email the person a fresh link to set a password and an authenticator."""
+    target = str(user_id)
+    subject = accounts.subject_of(context, user.customer_id, target) if accounts.enabled(context) else None
+    if subject is None:
+        raise ApiError(409, "conflict", accounts.NOT_LINKED)
+    if not accounts.send_setup(context, subject):
+        raise ApiError(502, "keycloak_unavailable", "We could not send the email. Try again in a minute.")
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        _audit_user(conn, user, "auth.setup_email_sent", target)
+    return {"setup_email_sent": True, "message": "Done. We emailed a new setup link. It works for 12 hours."}
 
 
 @router.patch("/admin/users/{user_id}")
@@ -375,6 +402,8 @@ def update_user(
         for identity in reapproved:
             _audit_identity(conn, user, "auth.identity_reapproval", {**identity, "user_id": target})
         [reply] = _people(conn, context, user.customer_id, [row])  # the role may change the tag
+    if body.disabled is not None:  # #737: company sign-in follows
+        accounts.mirror_enabled(context, user.customer_id, enabled_now=not body.disabled, only=[target])
     if reapproved:
         emails.after(
             background,
@@ -412,6 +441,7 @@ def unlock_user(user_id: uuid.UUID, user: AdminSession, context: Context) -> dic
         if row is None:
             raise ApiError(404, "not_found")
         _audit_user(conn, user, "user.unlock", target)
+    accounts.act(context, user.customer_id, target, kc_admin.clear_lock, needs_link=False)
     return admin_user(row, now=context.clock())
 
 
@@ -443,7 +473,8 @@ def reset_password(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
 def reset_two_step(
     user_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
 ) -> dict[str, Any]:
-    """Turn a user's two-step code off, so their password alone signs in again."""
+    """Remove a member's or reviewer's authenticator in company sign-in (an admin's is the super
+    admin's to reset): they set a new one at their next sign-in."""
     target = str(user_id)
     if target == user.user_id:
         raise ApiError(
@@ -452,15 +483,20 @@ def reset_two_step(
             "You can't reset your own two-step code. Ask another admin, or use the command line.",
         )
     with context.db.user(user.customer_id, user.user_id) as conn:
-        row = users_sql.reset_totp(conn, user.customer_id, target)
-        if row is None:
-            raise ApiError(404, "not_found")
+        row = next((r for r in users_sql.list_users(conn, user.customer_id) if str(r["id"]) == target), None)
+    if row is None:
+        raise ApiError(404, "not_found")
+    if row["role"] == "admin":
+        raise ApiError(403, "forbidden", "Only your super admin can reset another admin's authenticator.")
+    accounts.act(context, user.customer_id, target, kc_admin.remove_otp)
+    with context.db.user(user.customer_id, user.user_id) as conn:
         # The spec's auth.totp_reset (#457; it was user.reset_totp, never the plan's
         # "user.reset_2fa": audit actions must match ^[a-z_.]{1,64}$, the audit_log CHECK).
         _audit_user(conn, user, "auth.totp_reset", target)
     notice = emails.two_step_reset(row["display_name"])
     emails.after(background, "two_step_reset", emails.send, context, row["email"], "two_step_reset", notice)
-    return admin_user(row, now=context.clock())
+    message = f"Done. {row['display_name']} will set up their authenticator again at their next sign-in."
+    return {**admin_user(row, now=context.clock()), "message": message}
 
 
 @router.put("/admin/users/{user_id}/delete-forever")

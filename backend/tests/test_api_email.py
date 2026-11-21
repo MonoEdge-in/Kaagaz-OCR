@@ -1,15 +1,17 @@
-"""Email (#457 phase 0) through the API: confirm your email and invites. Forgot password, Change
-password, two-step notices and self sign-up went with Kaagaz's own sign-in (21 Nov 2026).
+"""Email (#457 phase 0) through the API: confirm your email, forgot password, invites,
+Change password with the code, security notices, and sign-ups that wait for an operator.
 
 SES is faked with ``MemoryMailer``; a failing mailer raises botocore's ClientError. Links
 are read back from the sent text (``#t=`` in the fragment). The first test needs no
 database; the rest (marked ``db``) run against a real PostgreSQL.
 """
 
+import base64
 import logging
 import re
 import uuid
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 
 import httpx2 as httpx
@@ -18,9 +20,14 @@ from botocore.exceptions import ClientError
 from sqlalchemy import text
 
 from kaagaz.adapters.email import MemoryMailer
+from kaagaz.api import totp
 from kaagaz.api.app import create_app
+from kaagaz.api.emails import token_hash
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers import email as email_router
+from kaagaz.db import email_links as links_sql
+from kaagaz.db import identities
+from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database, make_engine
 from tests.settings_factory import make_settings
 from tests.test_api_support import (
@@ -33,7 +40,9 @@ from tests.test_api_support import (
     ApiFakeStorage,
     FakeAnswers,
     TestClient,
+    wrong_code,
 )
+from tests.test_operator_auth_db import _Operator
 
 SITE = "https://kaagaz.example.com"
 SENDER = "no-reply@example.com"
@@ -175,70 +184,8 @@ def test_send_again_is_three_an_hour(db: Database) -> None:
 # --- forgot password ----------------------------------------------------------------------------
 
 
-# --- invites ------------------------------------------------------------------------------------
-
-
-@pytest.mark.db
-def test_an_invite_sets_the_password_and_proves_the_email(db: Database) -> None:
-    api, mailer = _email_api(db)
-    admin = api.new_admin("Invite Co")
-    api.add_document(admin.customer_id, name="secret-plan.pdf", page_count=2)
-    email = f"ramesh-{uuid.uuid4().hex[:8]}@example.com"
-    body = {"email": email, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
-
-    added = admin.client.post("/api/admin/users", json=body, headers=CSRF)
-    assert added.status_code == 201, added.text
-    assert added.json()["invited"] is True
-    assert "temporary_password" not in added.json()
-    [(subject, invite)] = _to(mailer, email)
-    assert subject == "You're invited to Kaagaz"
-    assert "Invite Co" in invite
-    assert not _email_confirmed(db, admin.customer_id, added.json()["id"])
-
-    token = _token(mailer, email, "/invite")
-    api.clock.advance(7 * 24 * 3600 - 1)  # 7 days
-    accepted = _post(api.client(), "/api/auth/invite/accept", {"token": token, "new_password": NEW_PASSWORD})
-    assert accepted.json() == {"ok": True}
-    again = _post(api.client(), "/api/auth/invite/accept", {"token": token, "new_password": PASSWORD})
-    assert again.json() == LINK_GONE
-    assert _email_confirmed(db, admin.customer_id, added.json()["id"])
-    actions = api.audit_actions(admin.customer_id)
-    assert {"user.create", "auth.invite_sent", "auth.invite_accepted"} <= set(actions)
-    for sent in mailer.sent:  # no document, its name or an id in any email
-        assert "secret-plan" not in sent.text and not _UUID.search(sent.subject + sent.text)
-
-
-@pytest.mark.db
-def test_an_invite_that_cannot_be_sent_falls_back_to_the_temporary_password(
-    db: Database, caplog: pytest.LogCaptureFixture
-) -> None:
-    api, _ = _email_api(db, FailingMailer())
-    admin = api.new_admin()
-    email = f"ramesh-{uuid.uuid4().hex[:8]}@example.com"
-    body = {"email": email, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
-
-    with caplog.at_level(logging.WARNING, logger="kaagaz.api.emails"):
-        added = admin.client.post("/api/admin/users", json=body, headers=CSRF)
-    assert added.status_code == 201, added.text
-    assert added.json()["invited"] is False
-    # Changed on purpose (#457 review): the failure says why (SES's code), at error level.
-    assert '{"event":"email_failed","purpose":"invite","error":"MessageRejected"}' in caplog.messages
-    assert email not in caplog.text  # never the address
-    user_id = added.json()["id"]
-    with db.customer(admin.customer_id) as conn:  # the link was made with the user, before the send
-        purposes = (
-            conn.execute(
-                text("SELECT purpose FROM email_links WHERE customer_id = :c AND user_id = :u"),
-                {"c": admin.customer_id, "u": user_id},
-            )
-            .scalars()
-            .all()
-        )
-    assert purposes == ["invite"]
-    assert "auth.invite_sent" not in api.audit_actions(admin.customer_id)
-
-
 # --- Change password and the security notices --------------------------------------------------
 
 
 # --- an email that breaks never breaks the action -----------------------------------------------
+

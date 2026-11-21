@@ -1,0 +1,736 @@
+/* Kaagaz's sign-in look for Keycloak (#735, #737). It copies frontend/app/login/AuthFrame.tsx
+   and login.module.css: the page on a dot field, one card, the brand panel in the accent on
+   the left, the form on the right, a short band above the form below 760 px. Fonts are the
+   app's own files, served from here: the browser never calls Google. */
+
+@font-face {
+  font-family: Archivo;
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+  src: url("../fonts/archivo-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url("../fonts/ibm-plex-sans-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans Devanagari";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("../fonts/ibm-plex-sans-devanagari-600.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: light;
+  --ground: #f6f5f1;
+  --surface: #ffffff;
+  --card-edge: rgba(14, 14, 16, 0.05);
+  --ink: #0e0e10;
+  --muted: #5b5b60;
+  --rule: #e6e3da;
+  --rule-strong: #cfcbc0;
+  --accent: #1e4396;
+  --accent-hover: #17357a;
+  --accent-ink: #ffffff;
+  --accent-soft: #e8ecf7;
+  --accent-line: rgba(255, 255, 255, 0.14);
+  --dot: rgba(30, 67, 150, 0.22);
+  --danger-bg: #fce6e2;
+  --danger-fg: #b42318;
+  --success-bg: #e1f2e7;
+  --success-fg: #1b7a4b;
+  --info-bg: #e7edf6;
+  --info-fg: #35588f;
+  --warning-bg: #fbf0d2;
+  --warning-fg: #8a5800;
+  --shadow: 0 28px 56px -24px rgba(20, 24, 40, 0.28), 0 6px 16px -6px rgba(20, 24, 40, 0.1);
+  --font-body: "IBM Plex Sans", "IBM Plex Sans Devanagari", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: Archivo, "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+
+/* The app's "system" choice: dark tokens follow the device. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --ground: #111113;
+    --surface: #18181b;
+    --card-edge: rgba(255, 255, 255, 0.06);
+    --ink: #f2f1ec;
+    --muted: #a6a5a0;
+    --rule: #2a2a2e;
+    --rule-strong: #3a3a40;
+    --accent: #8fa8f0;
+    --accent-hover: #b0c2f5;
+    --accent-ink: #0b1430;
+    --accent-soft: #1c2541;
+    --accent-line: rgba(255, 255, 255, 0.1);
+    --dot: rgba(143, 168, 240, 0.22);
+    --danger-bg: #3b1712;
+    --danger-fg: #f4917b;
+    --success-bg: #10301f;
+    --success-fg: #6fcf97;
+    --info-bg: #182638;
+    --info-fg: #9db8e6;
+    --warning-bg: #3a2c0a;
+    --warning-fg: #e0b24a;
+    --shadow: 0 28px 56px -20px rgba(0, 0, 0, 0.75), 0 4px 12px -4px rgba(0, 0, 0, 0.5);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  background: var(--ground);
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-wrap: break-word;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+a:hover,
+a:focus-visible {
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* --- The page and the card --- */
+
+.k-login {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 64px 16px 32px;
+  background-color: var(--ground);
+  background-image: radial-gradient(var(--dot) 1.2px, transparent 1.6px);
+  background-size: 22px 22px;
+  overflow-x: clip;
+}
+
+.k-shell {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 1000px;
+  min-height: 560px;
+  overflow: hidden;
+  border: 1px solid var(--card-edge);
+  border-radius: 28px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+/* --- The brand panel --- */
+
+.k-brand {
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 32px;
+  border-radius: 24px;
+  background-color: var(--accent);
+  background-image: radial-gradient(var(--accent-line) 1.2px, transparent 1.6px);
+  background-size: 18px 18px;
+  color: var(--accent-ink);
+}
+
+.k-mark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.k-mark-glyph {
+  position: relative;
+  flex: none;
+  width: 22px;
+  height: 28px;
+  border-radius: 3px;
+  background: var(--accent-ink);
+  clip-path: polygon(0 0, 66% 0, 100% 26%, 100% 100%, 0 100%);
+}
+
+.k-mark-glyph::before,
+.k-mark-glyph::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.k-mark-glyph::before {
+  top: 12px;
+}
+
+.k-mark-glyph::after {
+  top: 17px;
+}
+
+.k-mark-words {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.k-mark-name {
+  font-family: var(--font-display);
+  font-stretch: 112%;
+  font-size: 1.25rem;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.k-by {
+  font-family: var(--font-mono);
+  font-size: 0.59375rem;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.k-brand-words {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: k-cite 200ms cubic-bezier(0.2, 0, 0.2, 1) 400ms both;
+}
+
+.k-deva {
+  margin: 0;
+  font-family: "IBM Plex Sans Devanagari", var(--font-body);
+  font-size: 1.375rem;
+  font-weight: 600;
+}
+
+.k-value {
+  margin: 0;
+  max-width: 28ch;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  opacity: 0.9;
+}
+
+.k-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.8125rem;
+  opacity: 0.9;
+}
+
+.k-points li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.k-points svg {
+  flex: none;
+}
+
+@keyframes k-cite {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .k-brand-words {
+    animation: none;
+  }
+}
+
+/* --- The form side --- */
+
+.k-main {
+  flex: 2 1 340px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 36px 40px;
+}
+
+.k-card {
+  width: 100%;
+  max-width: 420px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.k-card-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#kc-page-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-stretch: 112%;
+  font-size: clamp(1.625rem, 1.4rem + 0.8vw, 1.875rem);
+  font-weight: 600;
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+}
+
+#kc-content-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+#kc-content-wrapper > p,
+.instruction {
+  margin: 0;
+  color: var(--muted);
+}
+
+.k-required {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+#kc-attempted-username {
+  font-weight: 600;
+}
+
+@media (max-width: 759.98px) {
+  .k-login {
+    padding-inline: 12px;
+  }
+
+  .k-shell {
+    min-height: 0;
+  }
+
+  .k-brand {
+    flex-basis: 100%;
+    padding: 24px;
+  }
+
+  .k-points {
+    display: none;
+  }
+
+  .k-main {
+    padding: 32px 24px;
+  }
+}
+
+/* --- Fields: a line on a paper form, "Email: ________" --- */
+
+/* One label column for every field, so the lines start at one place (the app's grid). */
+.k-form,
+#kc-form-login {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  row-gap: 24px;
+}
+
+.k-form > *,
+#kc-form-login > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+/* Full-width rows add nothing to the label column's width (only the fields' labels do). */
+.k-form > :not(.k-field),
+#kc-form-login > :not(.k-field) {
+  width: 0;
+  min-width: 100%;
+}
+
+#kc-form-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.k-field {
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: end;
+  column-gap: 12px;
+  row-gap: 4px;
+}
+
+/* A group with no label (the buttons, the sign-out-others tick) is an ordinary block. */
+.k-field:not(:has(.k-label)) {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.k-field :is(.k-input, .k-input-group, .k-field-error) {
+  grid-column: 2;
+}
+
+/* The one-time code's question is a sentence: its label sits above the line. */
+[data-page-id="login-login-otp"] .k-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+[data-page-id="login-login-otp"] .k-input {
+  flex: none;
+}
+
+[data-page-id="login-login-otp"] .k-label {
+  max-width: none;
+}
+
+[data-page-id="login-login-otp"] .k-label::after {
+  content: none;
+}
+
+.k-label-wrap,
+.k-input-wrap {
+  display: contents;
+}
+
+.k-label {
+  max-width: 11rem;
+  padding-bottom: 8px;
+  color: var(--ink);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.k-label::after {
+  content: ":";
+}
+
+.k-input {
+  flex: 1 1 10rem;
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 4px;
+  border: 0;
+  border-bottom: 2px solid var(--ink);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.125rem;
+  line-height: 1.25;
+}
+
+.k-input:focus-visible {
+  outline: none;
+  border-bottom: 3px solid var(--accent);
+}
+
+.k-input[aria-invalid="true"] {
+  border-bottom-color: var(--danger-fg);
+}
+
+.k-input-group {
+  flex: 1 1 10rem;
+  display: flex;
+  align-items: flex-end;
+  min-width: 0;
+}
+
+.k-input-group .k-input {
+  flex: 1 1 auto;
+}
+
+.k-field-error {
+  flex: 1 0 100%;
+  color: var(--danger-fg);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+/* "Show" / "Hide" as words on the line; the base script only swaps the icon class. */
+.k-reveal {
+  flex: none;
+  height: 40px;
+  padding: 0 4px 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.k-reveal i {
+  font-style: normal;
+}
+
+.k-reveal-show::before {
+  content: "Show";
+}
+
+.k-reveal-hide::before {
+  content: "Hide";
+}
+
+.k-setting,
+.k-options {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#kc-form-options:empty,
+.k-options-wrap:empty {
+  display: none;
+}
+
+/* --- Buttons: one control tall, a pill, the accent for the main action --- */
+
+.k-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 18px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: transform 120ms cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+.k-btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 1rem;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .k-btn-primary:hover {
+    border-color: var(--accent-hover);
+    background: var(--accent-hover);
+    box-shadow: 0 1px 2px rgba(20, 20, 30, 0.04), 0 2px 8px -4px rgba(20, 20, 30, 0.06);
+    transform: translateY(-1px);
+  }
+}
+
+.k-btn:active {
+  transform: scale(0.97);
+}
+
+.k-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.k-btn-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent);
+}
+
+.k-btn-block {
+  width: 100%;
+}
+
+@media (max-width: 479.98px) {
+  .k-btn {
+    height: auto;
+    min-height: 44px;
+    padding-block: 4px;
+  }
+}
+
+@media (pointer: coarse) {
+  .k-btn,
+  .k-input,
+  .k-reveal {
+    min-height: 44px;
+  }
+
+  .k-input {
+    font-size: max(1rem, 16px);
+  }
+}
+
+/* --- Messages --- */
+
+.k-alert {
+  padding: 12px 16px;
+  border: 1px solid var(--danger-fg);
+  border-radius: 10px;
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.k-alert.alert-success {
+  border-color: var(--success-fg);
+  background: var(--success-bg);
+  color: var(--success-fg);
+}
+
+.k-alert.alert-info {
+  border-color: var(--info-fg);
+  background: var(--info-bg);
+  color: var(--info-fg);
+}
+
+.k-alert.alert-warning {
+  border-color: var(--warning-fg);
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+}
+
+/* --- The other pages: authenticator setup, lists, small print --- */
+
+#kc-totp-settings {
+  margin: 0;
+  padding-inline-start: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+#kc-totp-settings p {
+  margin: 0 0 8px;
+}
+
+#kc-totp-settings ul {
+  margin: 0;
+  padding-inline-start: 20px;
+  color: var(--muted);
+}
+
+#kc-totp-secret-qr-code {
+  display: block;
+  width: 180px;
+  height: 180px;
+  padding: 8px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+#kc-totp-secret-key {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  letter-spacing: 0.06em;
+}
+
+.checkbox label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+#kc-info,
+#kc-registration {
+  padding-top: 16px;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.k-social hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.k-social h2 {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.k-social-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#kc-select-try-another-way-form,
+#kc-switch-organization-form {
+  margin: 0;
+}
+
+#traceId {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}

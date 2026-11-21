@@ -93,23 +93,69 @@ def test_each_change_names_its_organisation_and_admin_and_gets_its_reply(
         }
 
 
-def test_a_new_admins_temporary_password_is_shown_once_and_only_its_hash_is_stored(
+def test_a_new_admin_gets_a_company_sign_in_account_and_no_password_is_shown(
     offline: _Offline, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG)
     body: dict[str, Any] = {**NEW, "code": totp.code_at(OWN, STEP)}
     reply = offline.post(f"/{CID}/admins", body)
     assert reply.status_code == 201, reply.text
-    temporary = reply.json()["temporary_password"]
+    assert "temporary_password" not in reply.json() and reply.json()["setup_email_sent"] is True
     assert reply.json()["admin"] == {"id": UID, "email": "boss@mehta.example", "name": "Boss"}
     [(name, args, kwargs)] = offline.calls
     assert (name, args[1:], kwargs["email"]) == ("create_admin", (CID,), "boss@mehta.example")
-    assert verify_password(temporary, kwargs["password_hash"]) and temporary not in caplog.text
+    assert verify_password("", kwargs["password_hash"]) is False
+    assert offline.kc_names() == ["create_user", "link", "send_setup_email"]
+    assert "kc-new-1" not in caplog.text
+    offline.kc.clear()
     offline.outcome = Outcome("missing", None)
     assert offline.post(f"/{CID}/admins", body).status_code == 404
     for code in ("taken", "deleting"):  # taken: audited in the function, no e-mail stored
         offline.outcome = Outcome(code, None)
         assert offline.post(f"/{CID}/admins", body).status_code == 409
+    assert offline.kc == []  # nothing is made in Keycloak for a refused admin
+
+
+def test_an_admin_whose_email_keycloak_already_has_is_refused_before_the_code_is_used(
+    offline: _Offline,
+) -> None:
+    offline.existing.add("boss@mehta.example")
+    reply = offline.post(f"/{CID}/admins", {**NEW, "code": totp.code_at(OWN, STEP)})
+    assert reply.status_code == 409
+    assert "already has a company sign-in account" in reply.json()["error"]["message"]
+    assert offline.calls == [] and offline.kc == []
+
+
+def test_resetting_an_admins_two_step_removes_their_authenticator_in_keycloak(offline: _Offline) -> None:
+    reply = offline.post(f"{ADMIN}/reset-2fa", {"code": totp.code_at(OWN, STEP)})
+    assert reply.status_code == 200, reply.text
+    assert (
+        reply.json()["message"] == "Done. Asha will set up their authenticator again at their next sign-in."
+    )
+    assert offline.kc == [("remove_otp", ("kc-subject-1",))]
+    offline.kc.clear()
+    offline.subjects.clear()  # an admin who is not on company sign-in has no authenticator to remove
+    offline.last_step = None
+    again = offline.post(f"{ADMIN}/reset-2fa", {"code": totp.code_at(OWN, STEP + 1)})
+    assert (again.status_code, again.json()["error"]["message"]) == (
+        409,
+        "This person is not on company sign-in yet.",
+    )
+
+
+def test_unlocking_an_admin_clears_keycloaks_lock_too(offline: _Offline) -> None:
+    assert offline.post(f"{ADMIN}/unlock").status_code == 200
+    assert offline.kc == [("clear_lock", ("kc-subject-1",))]
+    offline.kc.clear()
+    offline.subjects.clear()  # not linked: the Kaagaz unlock still works, Keycloak has nothing to clear
+    assert offline.post(f"{ADMIN}/unlock").status_code == 200
+    assert offline.kc == []
+
+
+def test_disabling_and_enabling_an_admin_mirrors_in_keycloak(offline: _Offline) -> None:
+    assert offline.post(f"{ADMIN}/disable").status_code == 200
+    assert offline.post(f"{ADMIN}/enable").status_code == 200
+    assert offline.kc == [("set_enabled", ("kc-subject-1", False)), ("set_enabled", ("kc-subject-1", True))]
 
 
 def test_an_organisation_with_no_admin_row_is_not_found(

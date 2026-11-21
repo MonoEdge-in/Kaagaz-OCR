@@ -58,7 +58,6 @@ import { beginKeycloakReauth, isKeycloakManaged, isKeycloakReauthRequired, keycl
 import { closeAllowed, isBackdropClick } from "@/components/ui/drawerLogic";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { PasswordField } from "@/components/ui/PasswordField";
 import {
   ApiError,
   adminDisconnectWhatsApp,
@@ -70,6 +69,7 @@ import {
   listUsers,
   pendingConnections,
   removeConnections,
+  resendSetup,
   resetUser2fa,
   resetUserPassword,
   setDeleteForever,
@@ -92,7 +92,6 @@ import {
   ADD_USER_DRAFT,
   ALREADY_DECIDED,
   CONNECTIONS_FAILED,
-  MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
   addedNotice,
   addUserGoogleHint,
@@ -102,7 +101,6 @@ import {
   firstInvalidField,
   googleTag,
   foreverControl,
-  generatePassword,
   newUserDraft,
   newUserFromDraft,
   pendingLine,
@@ -337,7 +335,7 @@ const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string
   disable: (name) => `Disable ${name}'s account? They are signed out and can't sign in until it is enabled again.`,
   password: (name, _providers, ways) => resetPasswordQuestion(name, ways),
   "2fa": (name) =>
-    `Reset ${name}'s two-step code? They are signed out, and can sign in with their password, then set up a new code.`,
+    `Reset ${name}'s authenticator? They set up a new one at their next sign-in.`,
   forever: allowForeverQuestion,
   whatsapp: (name) => `Disconnect ${name}'s WhatsApp? Their chat can no longer reach Kaagaz. The Kaagaz bot tells them once.`,
   makeManagement: makeManagementQuestion,
@@ -349,7 +347,7 @@ const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string
 const CONFIRM_BUTTON: Record<Confirming, string> = {
   disable: "Disable",
   password: "Reset password",
-  "2fa": "Reset two-step code",
+  "2fa": "Reset authenticator",
   forever: "Allow Delete forever",
   connections: "Remove connected accounts",
   whatsapp: "Disconnect WhatsApp",
@@ -367,7 +365,8 @@ export const USER_MENU_HELP = {
   stopForever: "Takes back their right to delete documents in Trash permanently.",
   allowForever: "Lets them delete any document in Trash permanently. Deleted documents can't be recovered.",
   password: "Makes a one-time password for you to give them. They are signed out, then choose their own when they sign in.",
-  twoStep: "For a lost phone: turns off their two-step code and signs them out, so they can set up a new one.",
+  twoStep: "For a lost phone: removes their authenticator, so they set up a new one at their next sign-in.",
+  resendSetup: "Emails them a new link to set their password and authenticator. It works for 12 hours.",
   disable: "Signs them out and stops them signing in until you enable them again.",
   connections: "Stops them signing in with Google. Their password still works.",
   whatsapp: "Their WhatsApp chat can no longer reach their files. They can connect it again.",
@@ -470,6 +469,17 @@ function UserRow({
     }
   }
 
+  async function resend() {
+    setBusy(true);
+    try {
+      onNotice({ text: (await resendSetup(user.id)).message });
+    } catch (caught) {
+      onNotice({ problem: true, text: errorWords(caught) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const change =(changes: { role?: Role; disabled?: boolean }, done: string) =>
     act(() => updateUser(user.id, changes), done);
 
@@ -477,7 +487,7 @@ function UserRow({
     if (kind === "makeManagement" || kind === "stopManagement") return management(kind === "makeManagement");
     if (kind === "disable") return change({ disabled: true }, "disabled.");
     if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
-    if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step code reset.");
+    if (kind === "2fa") return act(() => resetUser2fa(user.id), "authenticator reset. They set up a new one at their next sign-in.");
     if (kind === "connections") return act(() => removeConnections(user.id), "connected accounts removed.");
     if (kind === "whatsapp") return disconnectWhatsApp();
     return act(async () => {
@@ -557,9 +567,10 @@ function UserRow({
     ...(can.resetPassword && !managed
       ? [{ label: "Reset password", description: USER_MENU_HELP.password, onSelect: () => setConfirming("password") }]
       : []),
-    ...(can.reset2fa && !managed
-      ? [{ label: "Reset two-step code", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
+    ...(can.reset2fa
+      ? [{ label: "Reset authenticator", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
       : []),
+...(managed      ? [{ label: "Resend setup email", description: USER_MENU_HELP.resendSetup, onSelect: () => void resend() }]      : []),
     ...((user.signs_in_with ?? []).some((way) => way !== "password")
       ? [{ label: "Remove connected accounts", description: USER_MENU_HELP.connections, onSelect: () => setConfirming("connections") }]
       : []),
@@ -867,7 +878,7 @@ function AddUserPanel({
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
-  // #468: what was typed before a session ended comes back; the password never does. A line says
+  // #468: what was typed before a session ended comes back. A line says
   // so (DRAFT_KEPT) until the form is edited or sent.
   const [kept] = useState(() => readDraft(userId, ADD_USER_DRAFT));
   const [input, setInput] = useState<NewUserInput>(() => newUserFromDraft(kept));
@@ -879,12 +890,11 @@ function AddUserPanel({
   const [errors, setErrors] = useState<NewUserErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [masked, setMasked] = useState(true);
   // #507: the organisation's Google rules, for the hint under the role; none until read (or if
   // reading fails: the hint is only a hint).
   const [googleRules, setGoogleRules] = useState<GoogleRules | undefined>(undefined);
   const googleHint = addUserGoogleHint(googleRules, input.role);
-  const unsaved = input.email !== "" || input.display_name !== "" || input.password !== "";
+  const unsaved = input.email !== "" || input.display_name !== "";
   const askClose = () => {
     if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) {
       clearDraft(userId, ADD_USER_DRAFT); // closed on purpose: what was typed is let go
@@ -926,7 +936,6 @@ function AddUserPanel({
     event.preventDefault();
     if (busy) return; // Enter in a field while adding: never a second user
     setKeptNote(false);
-    setMasked(true); // never leave a password showing once it is sent
     setServerError(null);
     const found = validateNewUser(input);
     setErrors(found);
@@ -1021,33 +1030,7 @@ function AddUserPanel({
               </span>
             )}
           </div>
-          {/* AD3: the password across the panel, Generate and Copy under it. */}
-          <div className={styles.passwordBlock}>
-            <PasswordField
-              id={NEW_USER_FIELD_IDS.password}
-              label="Temporary password"
-              autoComplete="new-password"
-              hint={`At least ${MIN_PASSWORD_LENGTH} characters. Give it to them yourself; they set their own when they sign in.`}
-              value={input.password}
-              onChange={(password) => edit({ ...input, password })}
-              error={errors.password ?? null}
-              masked={masked}
-              onMaskedChange={setMasked}
-            />
-            <div className={styles.passwordTools}>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  edit({ ...input, password: generatePassword() });
-                  setMasked(false); // shown, so it can be copied and given to them
-                }}
-              >
-                Generate
-              </button>
-              {input.password !== "" && <CopyButton text={input.password} what="Password" buttonText="Copy" />}
-            </div>
-          </div>
+          <p className="hint">They get an email with a link to set their password and authenticator.</p>
           {serverError && (
             <p className={`error-text ${styles.formEnd}`} role="alert">
               {serverError}
